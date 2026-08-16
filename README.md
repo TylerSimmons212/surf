@@ -10,8 +10,8 @@ loads, with back/forward/reload/stop, a live progress bar, and tabs. Links with
 
 The window is nothing but the page. Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be
-pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or
-double-click a tab) rather than a permanent toolbar. Each tab row has a link
+pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or the
+search button in the sidebar) rather than a permanent toolbar. Each tab row has a link
 button that copies its URL.
 
 Typing in the address bar autocompletes from history, which is held in memory

@@ -11,8 +11,6 @@ struct SearchView: View {
 
     var body: some View {
         ZStack {
-            VisualEffectBackground(material: .underWindowBackground)
-
             VStack(spacing: 28) {
                 Text("Glass")
                     .font(.system(size: 44, weight: .semibold, design: .rounded))

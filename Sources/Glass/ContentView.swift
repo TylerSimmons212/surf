@@ -22,34 +22,53 @@ struct ContentView: View {
 
     private var wantsReveal: Bool { pointerInHotZone || pointerInSidebar }
 
+    /// Room for the traffic lights. The window uses a hidden titlebar, so this
+    /// strip is what keeps them from sitting on top of the page.
+    private let titleBarHeight: CGFloat = 36
+
     var body: some View {
-        ZStack(alignment: .leading) {
-            HStack(spacing: 0) {
-                if isPinned {
-                    sidebar(isFloating: false)
-                    Divider()
-                }
-                tabContent
-            }
+        ZStack {
+            // One glass surface behind everything, so the title strip and a
+            // pinned sidebar read as the same material.
+            VisualEffectBackground(material: .underWindowBackground)
 
-            if !isPinned {
-                HoverZone { pointerInHotZone = $0 }
-                    .frame(width: hotZoneWidth)
-                    .frame(maxHeight: .infinity, alignment: .leading)
+            VStack(spacing: 0) {
+                Color.clear
+                    .frame(height: titleBarHeight)
 
-                if isRevealed {
-                    floatingSidebar
+                ZStack(alignment: .leading) {
+                    HStack(spacing: 0) {
+                        if isPinned {
+                            sidebar(isFloating: false)
+                            Divider()
+                        }
+                        tabContent
+                    }
+
+                    if !isPinned {
+                        HoverZone { pointerInHotZone = $0 }
+                            .frame(width: hotZoneWidth)
+                            .frame(maxHeight: .infinity, alignment: .leading)
+
+                        if isRevealed {
+                            floatingSidebar
+                        }
+                    }
+
                 }
             }
 
             if isAddressBarOpen {
+                // Outside the VStack so the dimmed backdrop covers the title
+                // strip too. The traffic lights render above SwiftUI content, so
+                // they stay visible and clickable.
                 URLPalette(tab: session.selectedTab, isPresented: $isAddressBarOpen)
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                     .zIndex(20)
             }
         }
-        // Hidden titlebar with full-size content: the page runs edge to edge and
-        // the sidebar reserves its own room for the traffic lights.
+        // Hidden titlebar with full-size content, so the glass runs to the
+        // window edges; the title strip above reserves the traffic-light row.
         .ignoresSafeArea()
         .navigationTitle(session.selectedTab.displayTitle)
         .onChange(of: wantsReveal) { _, wants in
@@ -92,7 +111,8 @@ struct ContentView: View {
                     .fill(.regularMaterial)
                     .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
             }
-            .padding(.vertical, 10)
+            .padding(.top, 4)
+            .padding(.bottom, 10)
             .padding(.leading, 8)
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointerInSidebar = $0 }

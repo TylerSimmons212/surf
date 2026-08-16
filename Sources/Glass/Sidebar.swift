@@ -8,10 +8,11 @@ import SwiftUI
 struct Sidebar: View {
     let session: BrowserSession
     @Binding var isPinned: Bool
-    /// Floating mode clears the traffic lights with a smaller inset; pinned mode
-    /// sits directly under them.
+    /// Floating mode draws its own material panel; pinned sits on the window's
+    /// glass. Kept only for that styling difference — the traffic lights are
+    /// handled by the title strip above, so both use the same insets.
     let isFloating: Bool
-    /// Double-clicking a tab asks for the floating address bar.
+    /// Opens the floating address bar (the magnifying-glass button, ⌘L).
     let onRequestAddressBar: () -> Void
 
     @State private var hoveredTab: Tab.ID?
@@ -63,8 +64,7 @@ struct Sidebar: View {
             }
         }
         .padding(.horizontal, 8)
-        // Reserves the traffic-light row when pinned flush to the window corner.
-        .padding(.top, isFloating ? 10 : 30)
+        .padding(.top, 8)
         .padding(.bottom, 6)
     }
 
@@ -137,12 +137,6 @@ struct Sidebar: View {
                 .fill(Color.primary.opacity(isSelected ? 0.14 : (isHovered ? 0.07 : 0)))
         }
         .contentShape(Rectangle())
-        // Double-click must be declared before the single-tap handler, or the
-        // single tap consumes the event and the second click never arrives.
-        .onTapGesture(count: 2) {
-            session.select(tab)
-            onRequestAddressBar()
-        }
         .onTapGesture { session.select(tab) }
         .onHover { hovering in
             hoveredTab = hovering ? tab.id : (hoveredTab == tab.id ? nil : hoveredTab)
