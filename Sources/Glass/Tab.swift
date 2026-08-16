@@ -475,10 +475,44 @@ extension Tab: WKNavigationDelegate {
         report(error)
     }
 
+    /// A navigation that turns out to be a download — an `<a download>` link,
+    /// or any response WebKit won't render inline.
+    func webView(
+        _ webView: WKWebView,
+        navigationAction: WKNavigationAction,
+        didBecome download: WKDownload
+    ) {
+        DownloadManager.shared.adopt(download, from: self)
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        navigationResponse: WKNavigationResponse,
+        didBecome download: WKDownload
+    ) {
+        DownloadManager.shared.adopt(download, from: self)
+    }
+
+    /// Tells WebKit to convert a response into a download when it can't be
+    /// displayed — `Content-Disposition: attachment`, or an unrenderable type.
+    /// Without this the load just fails.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationResponse: WKNavigationResponse
+    ) async -> WKNavigationResponsePolicy {
+        navigationResponse.canShowMIMEType ? .allow : .download
+    }
+
     private func report(_ error: Error) {
         let nsError = error as NSError
         // Cancellation isn't a failure — it's what every interrupted load emits.
         guard !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled) else {
+            return
+        }
+        // 102 is "frame load interrupted by policy change", which is exactly
+        // what a navigation becoming a download looks like. The download is
+        // running fine; showing an error page over it would be wrong.
+        guard !(nsError.domain == "WebKitErrorDomain" && nsError.code == 102) else {
             return
         }
         lastError = error.localizedDescription

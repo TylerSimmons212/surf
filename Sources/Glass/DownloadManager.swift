@@ -21,6 +21,7 @@ final class DownloadItem: Identifiable {
     @ObservationIgnored var download: WKDownload?
     @ObservationIgnored var progressObservation: NSKeyValueObservation?
 
+    /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
     }
@@ -46,6 +47,33 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func activeItem(for tab: Tab) -> DownloadItem? { itemsByTab[tab.id] }
 
+    // MARK: - Receiving
+
+    /// Adopts a download WebKit created for us.
+    ///
+    /// Link-initiated downloads arrive this way: WebKit turns a navigation into
+    /// a `WKDownload` and hands it over. Without a delegate it has nowhere to
+    /// put the file, so the navigation is simply cancelled — which is what
+    /// "Frame load interrupted" means.
+    func adopt(_ download: WKDownload, from tab: Tab?) {
+        // No filename of our own: the server's Content-Disposition knows best
+        // for a file the user asked for by name.
+        let item = DownloadItem(filename: "")
+        items.append(item)
+        if let tab { itemsByTab[tab.id] = item }
+        bind(item, to: download)
+    }
+
+    private func bind(_ item: DownloadItem, to download: WKDownload) {
+        download.delegate = self
+        item.download = download
+        item.progressObservation = download.progress.observe(
+            \.fractionCompleted, options: [.new]
+        ) { progress, _ in
+            MainActor.assumeIsolated { item.fraction = progress.fractionCompleted }
+        }
+    }
+
     // MARK: - Starting
 
     func downloadMedia(from tab: Tab) {
@@ -64,15 +92,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         }
 
         tab.webView.startDownload(using: request) { [weak self] download in
-            MainActor.assumeIsolated {
-                download.delegate = self
-                item.download = download
-                item.progressObservation = download.progress.observe(
-                    \.fractionCompleted, options: [.new]
-                ) { progress, _ in
-                    MainActor.assumeIsolated { item.fraction = progress.fractionCompleted }
-                }
-            }
+            MainActor.assumeIsolated { self?.bind(item, to: download) }
         }
     }
 
@@ -107,9 +127,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             ?? FileManager.default.homeDirectoryForCurrentUser
 
         let item = item(for: download)
-        // Our title-derived name is better, but the server knows the real file
-        // type — take its extension if ours guessed wrong.
-        var name = item?.filename ?? suggestedFilename
+        // A media download names itself from the page title; an adopted one has
+        // no name of its own and defers to Content-Disposition entirely.
+        var name = (item?.filename).flatMap { $0.isEmpty ? nil : $0 } ?? suggestedFilename
         let serverExt = (suggestedFilename as NSString).pathExtension
         if !serverExt.isEmpty, (name as NSString).pathExtension.lowercased() != serverExt.lowercased() {
             name = (name as NSString).deletingPathExtension + "." + serverExt
@@ -137,6 +157,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func downloadDidFinish(_ download: WKDownload) {
         guard let item = item(for: download) else { return }
+        NSSound(named: "Glass")?.play()
         let saved = FileManager.default
             .urls(for: .downloadsDirectory, in: .userDomainMask).first?
             .appendingPathComponent(item.filename)
