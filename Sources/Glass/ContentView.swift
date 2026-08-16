@@ -3,40 +3,107 @@ import SwiftUI
 struct ContentView: View {
     let session: BrowserSession
 
-    /// Hidden for a single tab, so a fresh window keeps the clean look.
-    private var showsTabBar: Bool { session.tabs.count > 1 }
+    @AppStorage("sidebarPinned") private var isPinned = false
+
+    @State private var isRevealed = false
+    @State private var pointerInHotZone = false
+    @State private var pointerInSidebar = false
+    @State private var revealTask: Task<Void, Never>?
+
+    /// Width of the invisible strip along the window's left edge that triggers
+    /// the reveal.
+    private let hotZoneWidth: CGFloat = 8
+
+    private var wantsReveal: Bool { pointerInHotZone || pointerInSidebar }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if showsTabBar {
-                TabBar(session: session)
+        ZStack(alignment: .leading) {
+            HStack(spacing: 0) {
+                if isPinned {
+                    Sidebar(session: session, isPinned: $isPinned, isFloating: false)
+                    Divider()
+                }
+                tabContent
             }
 
-            TabContent(
-                tab: session.selectedTab,
-                session: session,
-                needsTitlebarInset: !showsTabBar
-            )
-            // Identity tied to the tab, so switching tabs rebuilds the subtree
-            // and remounts the correct web view rather than reusing the old one.
-            .id(session.selectedTab.id)
-        }
-        .ignoresSafeArea(edges: showsTabBar ? .all : [])
-        .navigationTitle(session.selectedTab.displayTitle)
-        // Dev affordance: `GLASS_URL=example.com swift run` opens straight to a
-        // page, so navigation can be exercised without driving the UI by hand.
-        // Comma-separate to open several tabs at once.
-        .onAppear {
-            guard let start = ProcessInfo.processInfo.environment["GLASS_URL"], !start.isEmpty
-            else { return }
-            let targets = start.split(separator: ",").map(String.init)
-            for (offset, target) in targets.enumerated() {
-                let tab = offset == 0 ? session.selectedTab : session.addTab()
-                tab.submit(target)
+            if !isPinned {
+                HoverZone { pointerInHotZone = $0 }
+                    .frame(width: hotZoneWidth)
+                    .frame(maxHeight: .infinity, alignment: .leading)
+
+                if isRevealed {
+                    floatingSidebar
+                }
             }
-            // Land on the first tab, not the last one opened.
-            if let first = session.tabs.first { session.select(first) }
         }
+        // The window has a hidden titlebar with full-size content, so the
+        // sidebar and chrome run edge to edge; each reserves its own room for
+        // the traffic lights.
+        .ignoresSafeArea()
+        .navigationTitle(session.selectedTab.displayTitle)
+        .onChange(of: wantsReveal) { _, wants in
+            scheduleReveal(wants)
+        }
+        // Pinning mid-hover would otherwise leave a stale floating copy behind.
+        .onChange(of: isPinned) { _, _ in
+            revealTask?.cancel()
+            isRevealed = false
+        }
+        .onAppear(perform: applyLaunchEnvironment)
+    }
+
+    private var tabContent: some View {
+        TabContent(
+            tab: session.selectedTab,
+            session: session,
+            // Pinned: the sidebar already occupies the top-left, so the toolbar
+            // starts flush. Unpinned: the toolbar must clear the traffic lights.
+            needsTitlebarInset: !isPinned
+        )
+        // Identity tied to the tab, so switching rebuilds the subtree and mounts
+        // the correct web view instead of reusing the previous one.
+        .id(session.selectedTab.id)
+    }
+
+    private var floatingSidebar: some View {
+        Sidebar(session: session, isPinned: $isPinned, isFloating: true)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(.regularMaterial)
+                    .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
+            }
+            .padding(.vertical, 10)
+            .padding(.leading, 8)
+            .transition(.move(edge: .leading).combined(with: .opacity))
+            .onHover { pointerInSidebar = $0 }
+            .zIndex(1)
+    }
+
+    /// Asymmetric delays, tuned to how a pointer actually moves: opening is
+    /// nearly immediate so the sidebar feels responsive, closing waits longer so
+    /// crossing the gap from hot zone to sidebar doesn't dismiss it.
+    private func scheduleReveal(_ shouldReveal: Bool) {
+        revealTask?.cancel()
+        revealTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(shouldReveal ? 90 : 320))
+            guard !Task.isCancelled else { return }
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                isRevealed = shouldReveal
+            }
+        }
+    }
+
+    /// Dev affordance: `GLASS_URL=example.com swift run` opens straight to a
+    /// page. Comma-separate to open several tabs at once.
+    private func applyLaunchEnvironment() {
+        guard let start = ProcessInfo.processInfo.environment["GLASS_URL"], !start.isEmpty
+        else { return }
+        let targets = start.split(separator: ",").map(String.init)
+        for (offset, target) in targets.enumerated() {
+            let tab = offset == 0 ? session.selectedTab : session.addTab()
+            tab.submit(target)
+        }
+        if let first = session.tabs.first { session.select(first) }
     }
 }
 
@@ -47,24 +114,28 @@ private struct TabContent: View {
     let needsTitlebarInset: Bool
 
     var body: some View {
-        switch tab.mode {
-        case .home:
-            SearchView(tab: tab, session: session)
-        case .browsing:
-            VStack(spacing: 0) {
-                BrowserChrome(
-                    tab: tab,
-                    session: session,
-                    needsTitlebarInset: needsTitlebarInset
-                )
-                ZStack {
-                    WebView(webView: tab.webView)
-                    if let error = tab.lastError {
-                        ErrorOverlay(message: error) { tab.reload() }
+        Group {
+            switch tab.mode {
+            case .home:
+                SearchView(tab: tab, session: session)
+            case .browsing:
+                VStack(spacing: 0) {
+                    BrowserChrome(
+                        tab: tab,
+                        session: session,
+                        needsTitlebarInset: needsTitlebarInset
+                    )
+                    ZStack {
+                        WebView(webView: tab.webView)
+                        if let error = tab.lastError {
+                            ErrorOverlay(message: error) { tab.reload() }
+                        }
                     }
                 }
             }
         }
+        // A restored tab loads the first time it's actually shown, not at launch.
+        .onAppear { tab.activateRestoreIfNeeded() }
     }
 }
 

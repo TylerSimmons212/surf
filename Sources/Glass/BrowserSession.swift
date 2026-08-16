@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GlassCore
 import Observation
@@ -18,11 +19,66 @@ final class BrowserSession {
     /// A token rather than a Bool, so repeat presses each register.
     private(set) var focusAddressToken: Int = 0
 
-    init() {
-        let first = Tab()
-        tabs = [first]
-        selectedTabID = first.id
-        first.session = self
+    @ObservationIgnored private var saveTask: Task<Void, Never>?
+    /// Suppresses saves while restoring, so a half-built session can't
+    /// overwrite the file we're still reading from.
+    @ObservationIgnored private var isRestoring = false
+
+    init(restoring restored: PersistedSession? = SessionFile.load()) {
+        if let restored, !restored.tabs.isEmpty {
+            isRestoring = true
+            let tabs = restored.tabs.map { persisted -> Tab in
+                let tab = Tab()
+                tab.prepareRestore(from: persisted)
+                return tab
+            }
+            self.tabs = tabs
+            self.selectedTabID = tabs[min(restored.selectedIndex, tabs.count - 1)].id
+            tabs.forEach { $0.session = self }
+            isRestoring = false
+        } else {
+            let first = Tab()
+            self.tabs = [first]
+            self.selectedTabID = first.id
+            first.session = self
+        }
+
+        // Quitting doesn't give the debounced save time to fire, so flush.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { self.saveNow() }
+        }
+    }
+
+    // MARK: - Persistence
+
+    /// Coalesces the many save triggers (every title change, every navigation)
+    /// into one write.
+    func scheduleSave() {
+        guard !isRestoring else { return }
+        saveTask?.cancel()
+        saveTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            saveNow()
+        }
+    }
+
+    func saveNow() {
+        let snapshot = PersistedSession(
+            tabs: tabs.map { $0.snapshot() },
+            selectedIndex: tabs.firstIndex { $0.id == selectedTabID } ?? 0
+        )
+        // A session of only home tabs sanitizes to nil — write it as empty so
+        // closing everything and quitting doesn't resurrect old tabs.
+        do {
+            try SessionFile.save(snapshot.sanitized() ?? PersistedSession(tabs: [], selectedIndex: 0))
+        } catch {
+            fputs("[glass] session save failed: \(error)\n", stderr)
+        }
     }
 
     var selectedTab: Tab {
@@ -42,6 +98,7 @@ final class BrowserSession {
         let insertAt = (tabs.firstIndex { $0.id == selectedTabID }).map { $0 + 1 } ?? tabs.count
         tabs.insert(tab, at: insertAt)
         if select { selectedTabID = tab.id }
+        scheduleSave()
         return tab
     }
 
@@ -64,6 +121,7 @@ final class BrowserSession {
             fresh.session = self
             tabs = [fresh]
             selectedTabID = fresh.id
+            scheduleSave()
             return
         }
 
@@ -71,13 +129,17 @@ final class BrowserSession {
         if tab.id == selectedTabID {
             selectedTabID = tabs[nextIndex].id
         }
+        scheduleSave()
     }
 
     func closeSelectedTab() { close(selectedTab) }
 
     // MARK: - Selection
 
-    func select(_ tab: Tab) { selectedTabID = tab.id }
+    func select(_ tab: Tab) {
+        selectedTabID = tab.id
+        scheduleSave()
+    }
 
     func selectNextTab() { cycleSelection(by: 1) }
     func selectPreviousTab() { cycleSelection(by: -1) }

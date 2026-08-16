@@ -8,6 +8,10 @@ struct GlassApp: App {
     /// menu commands below can drive the same tabs the window is showing.
     @State private var session = BrowserSession()
 
+    /// Mirrors ContentView's storage, so the menu item reflects and drives the
+    /// same preference.
+    @AppStorage("sidebarPinned") private var isSidebarPinned = false
+
     var body: some Scene {
         WindowGroup("Glass") {
             ContentView(session: session)
@@ -31,6 +35,13 @@ struct GlassApp: App {
         }
 
         CommandGroup(after: .toolbar) {
+            Button(isSidebarPinned ? "Unpin Sidebar" : "Pin Sidebar") {
+                isSidebarPinned.toggle()
+            }
+            .keyboardShortcut("s", modifiers: .command)
+
+            Divider()
+
             Button("Show Next Tab") { session.selectNextTab() }
                 .keyboardShortcut("]", modifiers: [.command, .shift])
                 .disabled(session.tabs.count < 2)

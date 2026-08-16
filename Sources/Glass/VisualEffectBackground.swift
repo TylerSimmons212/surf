@@ -38,5 +38,9 @@ private final class TransparentHostView: NSVisualEffectView {
         window.styleMask.insert(.fullSizeContentView)
         // With no titlebar to grab, dragging the background moves the window.
         window.isMovableByWindowBackground = true
+
+        // Restores size and position across launches. Assigning the name also
+        // applies any saved frame immediately.
+        window.setFrameAutosaveName("GlassMainWindow")
     }
 }

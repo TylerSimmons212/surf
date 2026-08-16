@@ -69,6 +69,62 @@ final class Tab: NSObject, Identifiable {
         return webView.url?.host ?? "Loading…"
     }
 
+    // MARK: - Restore
+
+    /// Set on a restored tab and consumed the first time it's shown. Restoring
+    /// every tab at launch would fire N page loads at once; this defers each
+    /// one until the tab is actually looked at.
+    @ObservationIgnored private var pendingRestore: PersistedTab?
+
+    var isAwaitingRestore: Bool { pendingRestore != nil }
+
+    /// Populates the visible state from disk without loading anything yet, so
+    /// the sidebar shows real titles immediately on launch.
+    func prepareRestore(from persisted: PersistedTab) {
+        pendingRestore = persisted
+        pageTitle = persisted.title
+        addressText = persisted.url ?? ""
+        if persisted.isRestorable { mode = .browsing }
+    }
+
+    /// Called when a restored tab is first displayed.
+    func activateRestoreIfNeeded() {
+        guard let persisted = pendingRestore else { return }
+        pendingRestore = nil
+
+        let fallbackURL = persisted.url.flatMap(URL.init(string:))
+
+        if let state = persisted.interactionState {
+            // Restores back/forward history and scroll position, not just the URL.
+            webView.interactionState = state
+        }
+
+        // WebKit silently ignores an interaction state it doesn't recognise
+        // (different version, corrupt blob). Without this net, the tab would
+        // sit permanently blank.
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard webView.url == nil, let fallbackURL else { return }
+            debugLog("interaction state rejected, falling back to \(fallbackURL)")
+            webView.load(URLRequest(url: fallbackURL))
+        }
+
+        if persisted.interactionState == nil, let fallbackURL {
+            webView.load(URLRequest(url: fallbackURL))
+        }
+    }
+
+    func snapshot() -> PersistedTab {
+        // A tab restored but never opened still has an empty web view; hand
+        // back what we loaded so its history survives another quit.
+        if let pendingRestore { return pendingRestore }
+        return PersistedTab(
+            url: webView.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
+            title: pageTitle,
+            interactionState: webView.interactionState as? Data
+        )
+    }
+
     /// KVO is the only route to these — `WKNavigationDelegate` has no callbacks
     /// for progress or for the back/forward list changing, and the page title
     /// isn't populated yet when `didFinish` fires.
@@ -87,7 +143,10 @@ final class Tab: NSObject, Identifiable {
                 MainActor.assumeIsolated { self?.canGoForward = webView.canGoForward }
             },
             webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
-                MainActor.assumeIsolated { self?.pageTitle = webView.title ?? "" }
+                MainActor.assumeIsolated {
+                    self?.pageTitle = webView.title ?? ""
+                    self?.session?.scheduleSave()
+                }
             },
             webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
                 MainActor.assumeIsolated {
@@ -134,6 +193,7 @@ extension Tab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
+        session?.scheduleSave()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 
