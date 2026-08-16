@@ -49,7 +49,6 @@ struct IconButton: View {
     /// Incremented per activation to retrigger the symbol effect; the effect
     /// fires on value *change*, so a Bool would only work once.
     @State private var activations = 0
-    @State private var hasAppeared = false
 
     private var displayedSymbol: String {
         if isHovering, let hoverSymbol { return hoverSymbol }
@@ -82,7 +81,6 @@ struct IconButton: View {
         .onChange(of: isEnabled) { _, enabled in
             if !enabled { isHovering = false }
         }
-        .onAppear { hasAppeared = true }
         .help(help)
     }
 
@@ -119,11 +117,17 @@ struct IconButton: View {
         }
     }
 
-    /// Stroke-by-stroke draw-in on first appearance.
+    /// Stroke-by-stroke draw-in, applied as a *transition* rather than a state
+    /// effect.
+    ///
+    /// `.symbolEffect(.drawOn, isActive:)` renders the symbol undrawn — i.e.
+    /// invisible — whenever `isActive` is false. If the appear animation
+    /// doesn't run, the icon never comes back. A transition only participates
+    /// in insertion, so the steady state is always a fully drawn icon.
     @ViewBuilder
     private func drawIn(_ base: some View) -> some View {
         if drawsIn {
-            base.symbolEffect(.drawOn, options: .nonRepeating, isActive: hasAppeared)
+            base.transition(.symbolEffect(.drawOn))
         } else {
             base
         }

@@ -24,7 +24,6 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             navigationBar
-            progressLine
             tabList
         }
         .frame(width: Sidebar.width)
@@ -50,17 +49,23 @@ struct Sidebar: View {
                 help: "Forward (⌘])"
             ) { tab.goForward() }
 
-            // While loading, the arrow spins to show work in progress and only
-            // becomes a stop button under the pointer — so the control reports
-            // state at rest and offers the action on hover.
-            IconButton(
-                systemName: "arrow.clockwise",
-                hoverSymbol: tab.isLoading ? "xmark" : nil,
-                isEnabled: tab.mode == .browsing,
-                isSpinning: tab.isLoading,
-                help: tab.isLoading ? "Stop" : "Reload (⌘R)"
-            ) {
-                tab.isLoading ? tab.stop() : tab.reload()
+            // While loading, the arrow spins and a ring around it fills with
+            // real progress; it only becomes a stop button under the pointer.
+            // The control reports state at rest and offers the action on hover.
+            ZStack {
+                IconButton(
+                    systemName: "arrow.clockwise",
+                    hoverSymbol: tab.isLoading ? "xmark" : nil,
+                    isEnabled: tab.mode == .browsing,
+                    isSpinning: tab.isLoading,
+                    help: tab.isLoading ? "Stop" : "Reload (⌘R)"
+                ) {
+                    tab.isLoading ? tab.stop() : tab.reload()
+                }
+
+                if tab.isLoading {
+                    progressRing(tab.progress)
+                }
             }
             .animation(.easeOut(duration: 0.2), value: tab.isLoading)
 
@@ -87,19 +92,24 @@ struct Sidebar: View {
         .padding(.bottom, 6)
     }
 
-    /// The only load indicator left now that the toolbar is gone.
-    private var progressLine: some View {
-        GeometryReader { geometry in
-            Rectangle()
-                .fill(Color.accentColor)
-                .frame(width: geometry.size.width * session.selectedTab.progress)
-                .opacity(session.selectedTab.isLoading ? 1 : 0)
-                .animation(.easeOut(duration: 0.2), value: session.selectedTab.progress)
-                .animation(.easeOut(duration: 0.3), value: session.selectedTab.isLoading)
-        }
-        .frame(height: 2)
-        .padding(.horizontal, 8)
-        .padding(.bottom, 4)
+    /// Load progress drawn around the reload button, so the control *is* the
+    /// indicator and no separate bar is needed.
+    private func progressRing(_ progress: Double) -> some View {
+        Circle()
+            // A floor keeps a visible arc at 0%, so the ring appears the moment
+            // loading starts rather than materialising partway through.
+            .trim(from: 0, to: max(0.04, progress))
+            .stroke(
+                Color.accentColor,
+                style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
+            )
+            // Starts the arc at twelve o'clock instead of three.
+            .rotationEffect(.degrees(-90))
+            .frame(width: 21, height: 21)
+            .animation(.easeOut(duration: 0.25), value: progress)
+            .transition(.opacity.combined(with: .scale(scale: 0.7)))
+            // Purely decorative: clicks belong to the button underneath.
+            .allowsHitTesting(false)
     }
 
     // MARK: - Tabs
