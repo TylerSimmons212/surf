@@ -38,13 +38,20 @@ final class Tab: NSObject, Identifiable {
     /// `themeColor` is the site's declared `<meta name="theme-color">` and is
     /// the deliberate choice when present; `underPageBackgroundColor` is
     /// WebKit's read of the actual page background and covers everyone else.
+    /// Priority matters. The sampled colour is what the user actually sees
+    /// under the strip, so it wins: sites like YouTube render a fixed masthead
+    /// over a differently-coloured document, and `underPageBackgroundColor`
+    /// reports the document — the wrong answer. The declared theme colour and
+    /// the page background are fallbacks for when sampling can't run.
     var topColor: NSColor? {
         guard mode == .browsing else { return nil }
-        return themeColor ?? underPageColor
+        return sampledTopColor ?? themeColor ?? underPageColor
     }
 
     private var themeColor: NSColor?
     private var underPageColor: NSColor?
+    private var sampledTopColor: NSColor?
+    @ObservationIgnored private var sampleTask: Task<Void, Never>?
 
     /// Tracks the host the current favicon belongs to, so navigating within a
     /// site doesn't refetch and navigating away clears a now-wrong icon.
@@ -63,7 +70,7 @@ final class Tab: NSObject, Identifiable {
         if configuration == nil {
             // Shared by default, so cookies and logins carry across tabs.
             config.websiteDataStore = .default()
-            config.applicationNameForUserAgent = "Version/17.0 Safari/605.1.15 Glass/0.1"
+            // UA TEST
             // Left at the default (false): scripted `window.open` without a
             // user gesture is blocked, while real link clicks still open tabs.
             // This is the popup blocker.
@@ -142,6 +149,71 @@ final class Tab: NSObject, Identifiable {
         if persisted.interactionState == nil, let fallbackURL {
             webView.load(URLRequest(url: fallbackURL))
         }
+    }
+
+    // MARK: - Top colour sampling
+
+    /// Reads the colour actually painted at the top of the viewport.
+    ///
+    /// Walks up from the topmost element at a few points along the strip until
+    /// it finds an opaque background. That handles fixed headers, which is
+    /// exactly the case the WebKit-provided colours get wrong.
+    private static let topColorScript = """
+    return (function () {
+      function opaqueColor(el) {
+        if (!el) return null;
+        const match = getComputedStyle(el).backgroundColor.match(/^rgba?\\(([^)]+)\\)$/);
+        if (!match) return null;
+        const parts = match[1].split(',').map(Number);
+        const alpha = parts.length > 3 ? parts[3] : 1;
+        // Near-transparent backgrounds don't determine what's on screen.
+        return alpha >= 0.9 ? [parts[0], parts[1], parts[2]] : null;
+      }
+      // Several x positions: a centred logo or search box can sit on its own
+      // background that isn't representative of the whole bar.
+      const xs = [Math.floor(innerWidth / 2), 12, Math.max(12, innerWidth - 12)];
+      for (const x of xs) {
+        let el = document.elementFromPoint(x, 3);
+        while (el) {
+          const color = opaqueColor(el);
+          if (color) return JSON.stringify(color);
+          el = el.parentElement;
+        }
+      }
+      const fallback = opaqueColor(document.body) || opaqueColor(document.documentElement);
+      return fallback ? JSON.stringify(fallback) : null;
+    })();
+    """
+
+    /// SPAs repaint well after `didFinish`, so sampling is retried on a short
+    /// ladder rather than once.
+    private func scheduleTopColorSampling() {
+        sampleTask?.cancel()
+        sampleTask = Task { @MainActor in
+            for delay in [0, 400, 1200] {
+                if delay > 0 {
+                    try? await Task.sleep(for: .milliseconds(delay))
+                }
+                guard !Task.isCancelled else { return }
+                await sampleTopColor()
+            }
+        }
+    }
+
+    private func sampleTopColor() async {
+        guard let json = try? await webView.callAsyncJavaScript(
+            Self.topColorScript, arguments: [:], in: nil, contentWorld: .defaultClient
+        ) as? String,
+            let rgb = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double],
+            rgb.count >= 3
+        else { return }
+
+        sampledTopColor = NSColor(
+            srgbRed: rgb[0] / 255,
+            green: rgb[1] / 255,
+            blue: rgb[2] / 255,
+            alpha: 1
+        )
     }
 
     // MARK: - Favicon
@@ -236,6 +308,10 @@ final class Tab: NSObject, Identifiable {
                 MainActor.assumeIsolated {
                     guard let self, let url = webView.url else { return }
                     self.addressText = url.absoluteString
+                    // Covers SPA route changes, which never fire didFinish.
+                    // Clear first so a stale colour doesn't linger on the new page.
+                    self.sampledTopColor = nil
+                    self.scheduleTopColorSampling()
                     // A popup tab starts in .home but is loaded by WebKit
                     // directly, so the mode has to follow the URL.
                     if self.mode == .home { self.mode = .browsing }
@@ -289,6 +365,7 @@ extension Tab: WKNavigationDelegate {
         lastError = nil
         session?.scheduleSave()
         Task { await refreshFavicon() }
+        scheduleTopColorSampling()
         if let url = webView.url {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }
