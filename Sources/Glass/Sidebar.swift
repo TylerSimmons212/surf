@@ -39,35 +39,43 @@ struct Sidebar: View {
             IconButton(
                 systemName: "chevron.left",
                 isEnabled: tab.canGoBack,
+                drawsIn: true,
                 help: "Back (⌘[)"
             ) { tab.goBack() }
 
             IconButton(
                 systemName: "chevron.right",
                 isEnabled: tab.canGoForward,
+                drawsIn: true,
                 help: "Forward (⌘])"
             ) { tab.goForward() }
 
+            // While loading, the arrow spins to show work in progress and only
+            // becomes a stop button under the pointer — so the control reports
+            // state at rest and offers the action on hover.
             IconButton(
-                systemName: tab.isLoading ? "xmark" : "arrow.clockwise",
+                systemName: "arrow.clockwise",
+                hoverSymbol: tab.isLoading ? "xmark" : nil,
                 isEnabled: tab.mode == .browsing,
+                isSpinning: tab.isLoading,
                 help: tab.isLoading ? "Stop" : "Reload (⌘R)"
             ) {
                 tab.isLoading ? tab.stop() : tab.reload()
             }
-            // Drives the reload/stop morph when loading starts or ends, not
-            // just when the button itself is clicked.
             .animation(.easeOut(duration: 0.2), value: tab.isLoading)
 
             Spacer()
 
             IconButton(
                 systemName: "magnifyingglass",
+                motion: .pulse,
+                drawsIn: true,
                 help: "Open Address Bar (⌘L)"
             ) { onRequestAddressBar() }
 
             IconButton(
                 systemName: isPinned ? "sidebar.left" : "pin",
+                drawsIn: true,
                 help: isPinned ? "Unpin Sidebar (⌘S)" : "Pin Sidebar (⌘S)"
             ) {
                 isPinned.toggle()

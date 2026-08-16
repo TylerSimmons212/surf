@@ -86,7 +86,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/ContentView.swift` — tab bar + selected tab's content
 - `Sources/Glass/Sidebar.swift` — the vertical tab list
 - `Sources/Glass/HoverZone.swift` — click-through edge hover detection
-- `Sources/Glass/IconButton.swift` — shared icon button with hover/press feedback
+- `Sources/Glass/IconButton.swift` — shared icon button; hover/press feedback and
+  SF Symbols effects (spin, bounce, pulse, draw-in), gated by OS availability
 - `Sources/Glass/FaviconStore.swift` — favicon fetch, memory + disk cache
 - `Sources/Glass/URLPalette.swift` — the floating address bar
 - `Sources/Glass/SuggestionList.swift` — autocomplete dropdown and keyboard state
