@@ -15,7 +15,8 @@ The window is nothing but the page, under a slim title strip that tints itself
 from the current page's `theme-color` (or its background colour). Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be
 pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or the
-search button in the sidebar) rather than a permanent toolbar. Each tab row has a link
+search button in the sidebar) rather than a permanent toolbar — and it's the
+only place to type an address, including on a new tab. Each tab row has a link
 button that copies its URL.
 
 Typing in the address bar autocompletes from history, which is held in memory
@@ -97,7 +98,7 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/HistoryStore.swift` — in-memory visit history
 - `Sources/Glass/SettingsView.swift` — the Settings window
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
-- `Sources/Glass/SearchView.swift` — the centered home search bar
+- `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
 
 ## Dev

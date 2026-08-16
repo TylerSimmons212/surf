@@ -201,6 +201,9 @@ struct Sidebar: View {
     private var newTabButton: some View {
         Button {
             session.addTab()
+            // A new tab is a request to go somewhere, so ask where immediately
+            // rather than presenting a screen that asks the same thing.
+            onRequestAddressBar()
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "plus")

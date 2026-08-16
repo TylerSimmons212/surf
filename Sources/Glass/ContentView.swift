@@ -101,7 +101,11 @@ struct ContentView: View {
 
     /// The window is nothing but the page now — no toolbar above it.
     private var tabContent: some View {
-        TabContent(tab: session.selectedTab, session: session)
+        TabContent(
+            tab: session.selectedTab,
+            session: session,
+            onOpenAddressBar: openAddressBar
+        )
             // Identity tied to the tab, so switching rebuilds the subtree and
             // mounts the correct web view instead of reusing the previous one.
             .id(session.selectedTab.id)
@@ -160,12 +164,13 @@ struct ContentView: View {
 private struct TabContent: View {
     let tab: Tab
     let session: BrowserSession
+    let onOpenAddressBar: () -> Void
 
     var body: some View {
         Group {
             switch tab.mode {
             case .home:
-                SearchView(tab: tab, session: session)
+                EmptyTabView(onOpenAddressBar: onOpenAddressBar)
             case .browsing:
                 ZStack {
                     WebView(webView: tab.webView)

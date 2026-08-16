@@ -38,8 +38,11 @@ struct GlassApp: App {
     @CommandsBuilder
     private var tabCommands: some Commands {
         CommandGroup(after: .newItem) {
-            Button("New Tab") { session.addTab() }
-                .keyboardShortcut("t", modifiers: .command)
+            Button("New Tab") {
+                session.addTab()
+                session.requestAddressFocus()
+            }
+            .keyboardShortcut("t", modifiers: .command)
 
             Button("Close Tab") { session.closeSelectedTab() }
                 .keyboardShortcut("w", modifiers: .command)
