@@ -12,7 +12,12 @@ struct ContentView: View {
 
     /// Width of the invisible strip along the window's left edge that triggers
     /// the reveal.
-    private let hotZoneWidth: CGFloat = 8
+    ///
+    /// Generous on purpose: `HoverZone` doesn't intercept clicks, so the only
+    /// cost of a wider strip is opening when the pointer merely passes near the
+    /// edge. The open delay absorbs most of that — a pointer travelling through
+    /// leaves before the timer fires.
+    private let hotZoneWidth: CGFloat = 28
 
     private var wantsReveal: Bool { pointerInHotZone || pointerInSidebar }
 
