@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var pointerInHotZone = false
     @State private var pointerInSidebar = false
     @State private var revealTask: Task<Void, Never>?
+    @State private var isAddressBarOpen = false
 
     /// Width of the invisible strip along the window's left edge that triggers
     /// the reveal.
@@ -25,7 +26,7 @@ struct ContentView: View {
         ZStack(alignment: .leading) {
             HStack(spacing: 0) {
                 if isPinned {
-                    Sidebar(session: session, isPinned: $isPinned, isFloating: false)
+                    sidebar(isFloating: false)
                     Divider()
                 }
                 tabContent
@@ -40,10 +41,15 @@ struct ContentView: View {
                     floatingSidebar
                 }
             }
+
+            if isAddressBarOpen {
+                URLPalette(tab: session.selectedTab, isPresented: $isAddressBarOpen)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                    .zIndex(20)
+            }
         }
-        // The window has a hidden titlebar with full-size content, so the
-        // sidebar and chrome run edge to edge; each reserves its own room for
-        // the traffic lights.
+        // Hidden titlebar with full-size content: the page runs edge to edge and
+        // the sidebar reserves its own room for the traffic lights.
         .ignoresSafeArea()
         .navigationTitle(session.selectedTab.displayTitle)
         .onChange(of: wantsReveal) { _, wants in
@@ -54,24 +60,33 @@ struct ContentView: View {
             revealTask?.cancel()
             isRevealed = false
         }
+        // ⌘L routes through the session so the menu command reaches whichever
+        // window is frontmost.
+        .onChange(of: session.focusAddressToken) { _, _ in
+            openAddressBar()
+        }
         .onAppear(perform: applyLaunchEnvironment)
     }
 
-    private var tabContent: some View {
-        TabContent(
-            tab: session.selectedTab,
+    private func sidebar(isFloating: Bool) -> some View {
+        Sidebar(
             session: session,
-            // Pinned: the sidebar already occupies the top-left, so the toolbar
-            // starts flush. Unpinned: the toolbar must clear the traffic lights.
-            needsTitlebarInset: !isPinned
+            isPinned: $isPinned,
+            isFloating: isFloating,
+            onRequestAddressBar: openAddressBar
         )
-        // Identity tied to the tab, so switching rebuilds the subtree and mounts
-        // the correct web view instead of reusing the previous one.
-        .id(session.selectedTab.id)
+    }
+
+    /// The window is nothing but the page now — no toolbar above it.
+    private var tabContent: some View {
+        TabContent(tab: session.selectedTab, session: session)
+            // Identity tied to the tab, so switching rebuilds the subtree and
+            // mounts the correct web view instead of reusing the previous one.
+            .id(session.selectedTab.id)
     }
 
     private var floatingSidebar: some View {
-        Sidebar(session: session, isPinned: $isPinned, isFloating: true)
+        sidebar(isFloating: true)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(.regularMaterial)
@@ -82,6 +97,12 @@ struct ContentView: View {
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointerInSidebar = $0 }
             .zIndex(1)
+    }
+
+    private func openAddressBar() {
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
+            isAddressBarOpen = true
+        }
     }
 
     /// Asymmetric delays, tuned to how a pointer actually moves: opening is
@@ -112,11 +133,10 @@ struct ContentView: View {
     }
 }
 
-/// One tab's content: either the home search screen or chrome plus the page.
+/// One tab's content: the home search screen, or the bare page.
 private struct TabContent: View {
     let tab: Tab
     let session: BrowserSession
-    let needsTitlebarInset: Bool
 
     var body: some View {
         Group {
@@ -124,17 +144,10 @@ private struct TabContent: View {
             case .home:
                 SearchView(tab: tab, session: session)
             case .browsing:
-                VStack(spacing: 0) {
-                    BrowserChrome(
-                        tab: tab,
-                        session: session,
-                        needsTitlebarInset: needsTitlebarInset
-                    )
-                    ZStack {
-                        WebView(webView: tab.webView)
-                        if let error = tab.lastError {
-                            ErrorOverlay(message: error) { tab.reload() }
-                        }
+                ZStack {
+                    WebView(webView: tab.webView)
+                    if let error = tab.lastError {
+                        ErrorOverlay(message: error) { tab.reload() }
                     }
                 }
             }

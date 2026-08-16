@@ -68,6 +68,21 @@ struct GlassApp: App {
 
             Divider()
 
+            // With the toolbar gone these are the primary way to navigate when
+            // the sidebar is hidden.
+            Button("Back") { session.selectedTab.goBack() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!session.selectedTab.canGoBack)
+
+            Button("Forward") { session.selectedTab.goForward() }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!session.selectedTab.canGoForward)
+
+            Button("Reload") { session.selectedTab.reload() }
+                .keyboardShortcut("r", modifiers: .command)
+
+            Divider()
+
             // ⌘1–⌘9 jump by position; ⌘9 means "last", per convention.
             ForEach(1...9, id: \.self) { index in
                 Button("Show Tab \(index)") { session.selectTab(atOneBasedIndex: index) }

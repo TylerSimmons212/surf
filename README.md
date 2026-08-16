@@ -8,8 +8,14 @@ Working tabbed browser: type a search or an address on the home screen and it
 loads, with back/forward/reload/stop, a live progress bar, and tabs. Links with
 `target="_blank"` open in a new tab; scripted popups are blocked.
 
-Tabs live in an Arc-style sidebar that reveals on hover near the left window
-edge, and can be pinned open with `⌘S`. Tabs, window size, and window position
+The window is nothing but the page. Navigation controls and tabs live in an
+Arc-style sidebar that reveals on hover near the left window edge, and can be
+pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or
+double-click a tab) rather than a permanent toolbar. Each tab row has a link
+button that copies its URL.
+
+Typing in the address bar autocompletes from history, which is held in memory
+only unless you turn on "Remember browsing history". Tabs, window size, and window position
 all restore on relaunch — including each tab's back/forward history and scroll
 position.
 
@@ -38,7 +44,9 @@ enforce it.
 | `⌘⇧]` / `⌘⇧[` | Next / previous tab |
 | `⌘1`–`⌘8` | Select tab by position |
 | `⌘9` | Select last tab |
-| `⌘L` | Focus the address field |
+| `⌘L` | Open the floating address bar |
+| `⌘[` / `⌘]` | Back / forward |
+| `⌘R` | Reload |
 | `⌘S` | Pin / unpin the sidebar |
 | `⌘,` | Settings |
 
@@ -70,6 +78,7 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/PersistedSession.swift` — session file model and IO
 - `Sources/GlassCore/FaviconPicker.swift` — chooses which declared icon to fetch
 - `Sources/GlassCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
+- `Sources/GlassCore/HistorySearch.swift` — autocomplete ranking
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
@@ -77,10 +86,12 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/Sidebar.swift` — the vertical tab list
 - `Sources/Glass/HoverZone.swift` — click-through edge hover detection
 - `Sources/Glass/FaviconStore.swift` — favicon fetch, memory + disk cache
+- `Sources/Glass/URLPalette.swift` — the floating address bar
+- `Sources/Glass/SuggestionList.swift` — autocomplete dropdown and keyboard state
+- `Sources/Glass/HistoryStore.swift` — in-memory visit history
 - `Sources/Glass/SettingsView.swift` — the Settings window
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
 - `Sources/Glass/SearchView.swift` — the centered home search bar
-- `Sources/Glass/BrowserChrome.swift` — toolbar, address field, progress bar
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
 
 ## Dev

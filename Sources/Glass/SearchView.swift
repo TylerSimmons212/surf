@@ -1,3 +1,4 @@
+import GlassCore
 import SwiftUI
 
 struct SearchView: View {
@@ -5,6 +6,7 @@ struct SearchView: View {
     let session: BrowserSession
 
     @State private var query: String = ""
+    @State private var completions = SuggestionController()
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -45,6 +47,24 @@ struct SearchView: View {
                 .font(.system(size: 20))
                 .focused($searchFocused)
                 .onSubmit { submit() }
+                .onChange(of: query) { _, text in
+                    completions.update(for: text, isFocused: searchFocused)
+                }
+                .onKeyPress(.downArrow) {
+                    guard completions.isShowing else { return .ignored }
+                    completions.moveHighlight(by: 1)
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    guard completions.isShowing else { return .ignored }
+                    completions.moveHighlight(by: -1)
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard completions.isShowing else { return .ignored }
+                    completions.dismiss()
+                    return .handled
+                }
 
             if !query.isEmpty {
                 Button {
@@ -75,10 +95,30 @@ struct SearchView: View {
                 .shadow(color: .black.opacity(0.12), radius: 18, y: 6)
         }
         .animation(.easeOut(duration: 0.15), value: searchFocused)
+        .overlay(alignment: .topLeading) {
+            if completions.isShowing {
+                SuggestionList(
+                    suggestions: completions.suggestions,
+                    highlighted: completions.highlighted
+                ) { entry in
+                    tab.submit(entry.url)
+                    completions.dismiss()
+                }
+                .offset(y: 66)
+                .zIndex(10)
+            }
+        }
     }
 
     private func submit() {
+        // A highlighted suggestion wins; otherwise submit exactly what was typed.
+        if let entry = completions.highlightedEntry {
+            tab.submit(entry.url)
+            completions.dismiss()
+            return
+        }
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        completions.dismiss()
         tab.submit(query)
     }
 }

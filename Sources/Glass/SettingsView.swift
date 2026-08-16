@@ -19,6 +19,12 @@ struct SettingsView: View {
         Form {
             Section {
                 Toggle("Remember browsing history", isOn: $rememberHistory)
+                    .onChange(of: rememberHistory) { _, isOn in
+                        // Turning it off must erase what was already written,
+                        // not just stop writing more.
+                        if isOn { HistoryStore.shared.saveNow() }
+                        else { HistoryStore.shared.handlePersistenceDisabled() }
+                    }
                 explain("""
                 Off by default. Glass keeps no record of the pages you visit. \
                 With this on, each tab's back and forward list is also saved to \
@@ -95,6 +101,8 @@ struct SettingsView: View {
             var settings = PrivacySettings.current
             settings.clearTracesOnQuit = true
             await BrowsingDataCleaner.clear(PrivacyPolicy.categoriesToClearOnQuit(settings))
+            // Autocomplete history is ours, not WebKit's, so clear it too.
+            HistoryStore.shared.clear()
             isClearing = false
             withAnimation { clearedMessage = "Cleared." }
             try? await Task.sleep(for: .seconds(3))

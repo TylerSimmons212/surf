@@ -83,6 +83,11 @@ final class Tab: NSObject, Identifiable {
 
     var isAwaitingRestore: Bool { pendingRestore != nil }
 
+    /// Set once the user (or code) navigates deliberately. A pending restore
+    /// must never overwrite that — restoring a tab you've already typed into
+    /// would silently throw the new page away.
+    @ObservationIgnored private var hasNavigatedExplicitly = false
+
     /// Populates the visible state from disk without loading anything yet, so
     /// the sidebar shows real titles immediately on launch.
     func prepareRestore(from persisted: PersistedTab) {
@@ -101,6 +106,7 @@ final class Tab: NSObject, Identifiable {
     func activateRestoreIfNeeded() {
         guard let persisted = pendingRestore else { return }
         pendingRestore = nil
+        guard !hasNavigatedExplicitly else { return }
 
         let fallbackURL = persisted.url.flatMap(URL.init(string:))
 
@@ -114,7 +120,7 @@ final class Tab: NSObject, Identifiable {
         // sit permanently blank.
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            guard webView.url == nil, let fallbackURL else { return }
+            guard !hasNavigatedExplicitly, webView.url == nil, let fallbackURL else { return }
             debugLog("interaction state rejected, falling back to \(fallbackURL)")
             webView.load(URLRequest(url: fallbackURL))
         }
@@ -200,6 +206,10 @@ final class Tab: NSObject, Identifiable {
                 MainActor.assumeIsolated {
                     self?.pageTitle = webView.title ?? ""
                     self?.session?.scheduleSave()
+                    // Titles arrive after didFinish, so backfill the entry.
+                    if let url = webView.url, let title = webView.title {
+                        HistoryStore.shared.updateTitle(title, for: url)
+                    }
                 }
             },
             webView.observe(\.url, options: [.new]) { [weak self] webView, _ in
@@ -226,6 +236,8 @@ final class Tab: NSObject, Identifiable {
 
     func submit(_ input: String) {
         guard let url = URLResolver.resolve(input) else { return }
+        hasNavigatedExplicitly = true
+        pendingRestore = nil
         lastError = nil
         mode = .browsing
         webView.load(URLRequest(url: url))
@@ -257,6 +269,9 @@ extension Tab: WKNavigationDelegate {
         lastError = nil
         session?.scheduleSave()
         Task { await refreshFavicon() }
+        if let url = webView.url {
+            HistoryStore.shared.record(url: url, title: webView.title ?? "")
+        }
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 
