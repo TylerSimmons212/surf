@@ -10,6 +10,9 @@ struct ContentView: View {
     @State private var pointerInSidebar = false
     @State private var revealTask: Task<Void, Never>?
     @State private var isAddressBarOpen = false
+    /// Captured when the palette opens, because the session's flag may have
+    /// changed again by the time it's dismissed.
+    @State private var cancelDiscardsTab = false
 
     /// Width of the invisible strip along the window's left edge that triggers
     /// the reveal.
@@ -65,7 +68,11 @@ struct ContentView: View {
                 // Outside the VStack so the dimmed backdrop covers the title
                 // strip too. The traffic lights render above SwiftUI content, so
                 // they stay visible and clickable.
-                URLPalette(tab: session.selectedTab, isPresented: $isAddressBarOpen)
+                URLPalette(
+                    tab: session.selectedTab,
+                    isPresented: $isAddressBarOpen,
+                    onCancel: handleAddressBarCancelled
+                )
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                     .zIndex(20)
             }
@@ -85,6 +92,7 @@ struct ContentView: View {
         // ⌘L routes through the session so the menu command reaches whichever
         // window is frontmost.
         .onChange(of: session.focusAddressToken) { _, _ in
+            cancelDiscardsTab = session.addressFocusIsForNewTab
             openAddressBar()
         }
         .onAppear(perform: applyLaunchEnvironment)
@@ -94,8 +102,7 @@ struct ContentView: View {
         Sidebar(
             session: session,
             isPinned: $isPinned,
-            isFloating: isFloating,
-            onRequestAddressBar: openAddressBar
+            isFloating: isFloating
         )
     }
 
@@ -104,7 +111,7 @@ struct ContentView: View {
         TabContent(
             tab: session.selectedTab,
             session: session,
-            onOpenAddressBar: openAddressBar
+            onOpenAddressBar: { session.requestAddressFocus() }
         )
             // Identity tied to the tab, so switching rebuilds the subtree and
             // mounts the correct web view instead of reusing the previous one.
@@ -124,6 +131,13 @@ struct ContentView: View {
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointerInSidebar = $0 }
             .zIndex(1)
+    }
+
+    /// Escaping out of a brand-new tab throws it away, so abandoning "new tab"
+    /// leaves no trace. Tabs that already existed are always kept.
+    private func handleAddressBarCancelled() {
+        guard cancelDiscardsTab else { return }
+        session.discardIfBlank(session.selectedTab)
     }
 
     private func openAddressBar() {
@@ -157,6 +171,8 @@ struct ContentView: View {
             tab.submit(target)
         }
         if let first = session.tabs.first { session.select(first) }
+    }
+        }
     }
 }
 

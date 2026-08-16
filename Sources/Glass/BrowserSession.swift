@@ -15,9 +15,14 @@ final class BrowserSession {
     private(set) var tabs: [Tab] = []
     private(set) var selectedTabID: Tab.ID
 
-    /// Incremented to ask the focused view to select the address field (⌘L).
+    /// Incremented to ask the focused view to open the address bar (⌘L).
     /// A token rather than a Bool, so repeat presses each register.
     private(set) var focusAddressToken: Int = 0
+
+    /// Whether the pending address-bar request came from creating a tab. Only
+    /// then does cancelling discard the tab — someone who opens the address bar
+    /// on a tab that already exists and changes their mind should keep it.
+    private(set) var addressFocusIsForNewTab = false
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     /// Suppresses saves while restoring, so a half-built session can't
@@ -177,5 +182,22 @@ final class BrowserSession {
         selectedTabID = tabs[target].id
     }
 
-    func requestAddressFocus() { focusAddressToken += 1 }
+    func requestAddressFocus(forNewTab: Bool = false) {
+        addressFocusIsForNewTab = forNewTab
+        focusAddressToken += 1
+    }
+
+    /// The whole new-tab flow: make the tab, then ask where to go.
+    func openNewTabAndPrompt() {
+        addTab()
+        requestAddressFocus(forNewTab: true)
+    }
+
+    /// Discards a tab that was created and then abandoned.
+    func discardIfBlank(_ tab: Tab) {
+        // Closing the last tab just recreates an identical empty one, so
+        // there's nothing to gain and a visible flicker to lose.
+        guard tabs.count > 1, tab.isBlank else { return }
+        close(tab)
+    }
 }

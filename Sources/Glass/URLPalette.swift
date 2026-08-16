@@ -8,6 +8,8 @@ import SwiftUI
 struct URLPalette: View {
     let tab: Tab
     @Binding var isPresented: Bool
+    /// Called when dismissed *without* navigating — escape or a click outside.
+    let onCancel: () -> Void
 
     @State private var text: String = ""
     @State private var completions = SuggestionController()
@@ -18,7 +20,7 @@ struct URLPalette: View {
             // Dimmed backdrop; clicking anywhere outside dismisses.
             Color.black.opacity(0.28)
                 .ignoresSafeArea()
-                .onTapGesture { dismiss() }
+                .onTapGesture { cancel() }
 
             VStack(spacing: 8) {
                 field
@@ -74,7 +76,7 @@ struct URLPalette: View {
                     if completions.isShowing {
                         completions.dismiss()
                     } else {
-                        dismiss()
+                        cancel()
                     }
                     return .handled
                 }
@@ -125,6 +127,11 @@ struct URLPalette: View {
     private func navigate(to entry: HistoryEntry) {
         tab.submit(entry.url)
         dismiss()
+    }
+
+    private func cancel() {
+        dismiss()
+        onCancel()
     }
 
     private func dismiss() {

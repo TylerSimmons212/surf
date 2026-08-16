@@ -12,9 +12,6 @@ struct Sidebar: View {
     /// glass. Kept only for that styling difference — the traffic lights are
     /// handled by the title strip above, so both use the same insets.
     let isFloating: Bool
-    /// Opens the floating address bar (the magnifying-glass button, ⌘L).
-    let onRequestAddressBar: () -> Void
-
     @State private var hoveredTab: Tab.ID?
     @State private var isHoveringNewTab = false
     @State private var copiedTab: Tab.ID?
@@ -76,7 +73,7 @@ struct Sidebar: View {
                 motion: .pulse,
                 drawsIn: true,
                 help: "Open Address Bar (⌘L)"
-            ) { onRequestAddressBar() }
+            ) { session.requestAddressFocus() }
 
             IconButton(
                 systemName: isPinned ? "sidebar.left" : "pin",
@@ -200,10 +197,9 @@ struct Sidebar: View {
 
     private var newTabButton: some View {
         Button {
-            session.addTab()
             // A new tab is a request to go somewhere, so ask where immediately
             // rather than presenting a screen that asks the same thing.
-            onRequestAddressBar()
+            session.openNewTabAndPrompt()
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: "plus")
