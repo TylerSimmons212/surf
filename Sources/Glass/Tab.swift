@@ -30,6 +30,11 @@ final class Tab: NSObject, Identifiable {
     private(set) var canGoBack: Bool = false
     private(set) var canGoForward: Bool = false
     private(set) var lastError: String?
+    private(set) var favicon: NSImage?
+
+    /// Tracks the host the current favicon belongs to, so navigating within a
+    /// site doesn't refetch and navigating away clears a now-wrong icon.
+    @ObservationIgnored private var faviconHost: String?
 
     @ObservationIgnored let webView: WKWebView
     /// Weak: the session owns its tabs, so a strong link back would retain-cycle.
@@ -85,6 +90,11 @@ final class Tab: NSObject, Identifiable {
         pageTitle = persisted.title
         addressText = persisted.url ?? ""
         if persisted.isRestorable { mode = .browsing }
+        // Disk-cached icons mean a restored tab looks complete before it loads.
+        if let host = persisted.url.flatMap(URL.init(string:))?.host {
+            faviconHost = host
+            favicon = FaviconStore.shared.cachedIcon(forHost: host)
+        }
     }
 
     /// Called when a restored tab is first displayed.
@@ -112,6 +122,50 @@ final class Tab: NSObject, Identifiable {
         if persisted.interactionState == nil, let fallbackURL {
             webView.load(URLRequest(url: fallbackURL))
         }
+    }
+
+    // MARK: - Favicon
+
+    /// Reads the page's declared icons and fetches the best one. Cheap when the
+    /// host is already cached, which is the common case while browsing a site.
+    private func refreshFavicon() async {
+        guard let pageURL = webView.url, let host = pageURL.host else { return }
+
+        if let cached = FaviconStore.shared.cachedIcon(forHost: host) {
+            favicon = cached
+            faviconHost = host
+            return
+        }
+        guard FaviconStore.shared.shouldFetch(forHost: host) else { return }
+
+        // `link.href` is already absolute — the DOM resolves it against the
+        // document, so relative paths and <base> tags are handled for free.
+        let script = """
+        return JSON.stringify(
+          Array.from(document.querySelectorAll('link[rel~="icon" i]'))
+            .map((l) => ({ href: l.href || '', sizes: l.getAttribute('sizes') || '' }))
+        );
+        """
+
+        var candidates: [FaviconCandidate] = []
+        if let json = try? await webView.callAsyncJavaScript(
+            script, arguments: [:], in: nil, contentWorld: .defaultClient
+        ) as? String,
+           let raw = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: String]] {
+            candidates = raw.map {
+                FaviconCandidate(href: $0["href"] ?? "", sizes: $0["sizes"] ?? "")
+            }
+        }
+
+        var origin = ""
+        if let scheme = pageURL.scheme { origin = "\(scheme)://\(host)" }
+        guard let href = FaviconPicker.best(from: candidates, origin: origin) else { return }
+
+        let image = await FaviconStore.shared.fetchIcon(from: href, host: host)
+        // The tab may have navigated elsewhere during the download.
+        guard webView.url?.host == host else { return }
+        favicon = image
+        faviconHost = host
     }
 
     func snapshot() -> PersistedTab {
@@ -155,6 +209,14 @@ final class Tab: NSObject, Identifiable {
                     // A popup tab starts in .home but is loaded by WebKit
                     // directly, so the mode has to follow the URL.
                     if self.mode == .home { self.mode = .browsing }
+                    // Swap the icon as soon as the host changes, so a stale
+                    // favicon never sits next to a different site's title.
+                    if url.host != self.faviconHost {
+                        self.faviconHost = url.host
+                        self.favicon = url.host.flatMap {
+                            FaviconStore.shared.cachedIcon(forHost: $0)
+                        }
+                    }
                 }
             },
         ]
@@ -194,6 +256,7 @@ extension Tab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
         session?.scheduleSave()
+        Task { await refreshFavicon() }
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 

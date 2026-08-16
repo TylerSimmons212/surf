@@ -11,12 +11,12 @@ struct Sidebar: View {
     let isFloating: Bool
 
     @State private var hoveredTab: Tab.ID?
+    @State private var isHoveringNewTab = false
 
     var body: some View {
         VStack(spacing: 0) {
             header
             tabList
-            footer
         }
         .frame(width: Sidebar.width)
     }
@@ -52,32 +52,40 @@ struct Sidebar: View {
                 ForEach(session.tabs) { tab in
                     row(for: tab)
                 }
+                // Sits directly under the last tab and scrolls with the list, so
+                // it reads as "add one more here" rather than a fixed control.
+                newTabButton
             }
             .padding(.horizontal, 8)
+            .padding(.bottom, 8)
         }
     }
 
-    private var footer: some View {
-        VStack(spacing: 0) {
-            Divider().opacity(0.5)
-            Button {
-                session.addTab()
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("New Tab")
-                        .font(.system(size: 12))
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 9)
-                .contentShape(Rectangle())
+    private var newTabButton: some View {
+        Button {
+            session.addTab()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 13, height: 13)
+                Text("New Tab")
+                    .font(.system(size: 12))
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("New Tab (⌘T)")
+            // Matches a tab row's metrics exactly, so it lines up with the list.
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(isHoveringNewTab ? 0.07 : 0))
+        }
+        .onHover { isHoveringNewTab = $0 }
+        .help("New Tab (⌘T)")
     }
 
     private func row(for tab: Tab) -> some View {
@@ -124,12 +132,20 @@ struct Sidebar: View {
         .help(tab.displayTitle)
     }
 
+    /// Loading spinner > real favicon > generic placeholder. The spinner wins so
+    /// a cached icon can't make a loading tab look finished.
     @ViewBuilder
     private func statusIcon(for tab: Tab) -> some View {
         if tab.isLoading {
             ProgressView()
                 .controlSize(.small)
                 .scaleEffect(0.5)
+                .frame(width: 13, height: 13)
+        } else if let favicon = tab.favicon {
+            Image(nsImage: favicon)
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
                 .frame(width: 13, height: 13)
         } else {
             Image(systemName: tab.mode == .home ? "magnifyingglass" : "globe")

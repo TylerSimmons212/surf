@@ -51,12 +51,14 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/URLResolver.swift` — decides address vs. search
 - `Sources/GlassCore/TabSelection.swift` — tab index math (close, cycle, ⌘N)
 - `Sources/GlassCore/PersistedSession.swift` — session file model and IO
+- `Sources/GlassCore/FaviconPicker.swift` — chooses which declared icon to fetch
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
 - `Sources/Glass/ContentView.swift` — tab bar + selected tab's content
 - `Sources/Glass/Sidebar.swift` — the vertical tab list
 - `Sources/Glass/HoverZone.swift` — click-through edge hover detection
+- `Sources/Glass/FaviconStore.swift` — favicon fetch, memory + disk cache
 - `Sources/Glass/SearchView.swift` — the centered home search bar
 - `Sources/Glass/BrowserChrome.swift` — toolbar, address field, progress bar
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
