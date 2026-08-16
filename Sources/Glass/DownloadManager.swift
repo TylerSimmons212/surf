@@ -25,6 +25,8 @@ final class DownloadItem: Identifiable {
     var destinationURL: URL?
     /// Where it came from, for the list's subtitle.
     var host: String?
+    /// The page the download was started from, recorded on the saved file.
+    var pageURL: URL?
 
     var isActive: Bool { state == .downloading }
 
@@ -139,6 +141,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         let item = DownloadItem(filename: "")
         item.sourceURL = download.originalRequest?.url
         item.host = download.originalRequest?.url?.host
+        item.pageURL = tab?.webView.url
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
         bind(item, to: download)
@@ -168,6 +171,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         let item = DownloadItem(filename: suggestedName(for: media, url: url))
         item.sourceURL = url
         item.host = tab.webView.url?.host ?? url.host
+        item.pageURL = tab.webView.url
         items.insert(item, at: 0)
         itemsByTab[tab.id] = item
 
@@ -250,8 +254,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             .appendingPathComponent(item.filename)
 
         item.fraction = 1
-        item.state = .finished(saved ?? URL(fileURLWithPath: item.filename))
+        let location = item.destinationURL ?? saved ?? URL(fileURLWithPath: item.filename)
+        item.state = .finished(location)
         item.progressObservation = nil
+        tagProvenance(of: location, for: item)
         releaseTabBinding(for: item, after: .seconds(4))
     }
 
@@ -276,6 +282,53 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             try? await Task.sleep(for: delay)
             itemsByTab = itemsByTab.filter { $0.value !== item }
         }
+    }
+
+    // MARK: - Provenance
+
+    /// Records where the file came from, on the file.
+    ///
+    /// This is the durable answer to "where did this come from" — it lives with
+    /// the file forever, survives moving it, and shows up in Finder's Get Info.
+    /// A browser-side list would only duplicate it, and worse.
+    private func tagProvenance(of url: URL, for item: DownloadItem) {
+        let sources = [item.sourceURL?.absoluteString, item.pageURL?.absoluteString]
+            .compactMap { $0 }
+        guard !sources.isEmpty else { return }
+
+        // Finder reads this as a binary plist array: [file URL, page URL].
+        if let data = try? PropertyListSerialization.data(
+            fromPropertyList: sources, format: .binary, options: 0
+        ) {
+            _ = data.withUnsafeBytes { buffer in
+                setxattr(url.path, "com.apple.metadata:kMDItemWhereFroms",
+                         buffer.baseAddress, data.count, 0, 0)
+            }
+        }
+
+        stampQuarantineAgent(on: url)
+    }
+
+    /// WebKit sets the quarantine flag but leaves the agent name blank, so
+    /// Gatekeeper's warning can't say which app did the downloading.
+    private func stampQuarantineAgent(on url: URL) {
+        let key = "com.apple.quarantine"
+        let length = getxattr(url.path, key, nil, 0, 0, 0)
+        guard length > 0 else { return }
+
+        var buffer = [UInt8](repeating: 0, count: length)
+        guard getxattr(url.path, key, &buffer, length, 0, 0) == length,
+              let existing = String(bytes: buffer, encoding: .utf8)
+        else { return }
+
+        // Format is flags;timestamp;agent;uuid — fill in the agent only.
+        var fields = existing.components(separatedBy: ";")
+        while fields.count < 4 { fields.append("") }
+        guard fields[2].isEmpty else { return }
+        fields[2] = "Glass"
+
+        let updated = Array(fields.joined(separator: ";").utf8)
+        _ = setxattr(url.path, key, updated, updated.count, 0, 0)
     }
 
     func reveal(_ item: DownloadItem) {
