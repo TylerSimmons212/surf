@@ -11,6 +11,7 @@ enum PreferenceKeys {
     static let restoreTabs = "restoreTabs"
     static let clearTracesOnQuit = "clearTracesOnQuit"
     static let sidebarPinned = "sidebarPinned"
+    static let autoPopOutVideo = "autoPopOutVideo"
 }
 
 extension PrivacySettings {
@@ -24,6 +25,7 @@ extension PrivacySettings {
             PreferenceKeys.keepSignedIn: PrivacySettings.default.keepSignedIn,
             PreferenceKeys.restoreTabs: PrivacySettings.default.restoreTabs,
             PreferenceKeys.clearTracesOnQuit: PrivacySettings.default.clearTracesOnQuit,
+            PreferenceKeys.autoPopOutVideo: true,
         ])
     }
 
@@ -35,6 +37,13 @@ extension PrivacySettings {
             restoreTabs: defaults.bool(forKey: PreferenceKeys.restoreTabs),
             clearTracesOnQuit: defaults.bool(forKey: PreferenceKeys.clearTracesOnQuit)
         )
+    }
+}
+
+enum MediaPreferences {
+    /// Whether leaving a tab that's playing video should pop it out.
+    static var autoPopOut: Bool {
+        UserDefaults.standard.bool(forKey: PreferenceKeys.autoPopOutVideo)
     }
 }
 

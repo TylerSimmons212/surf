@@ -21,7 +21,9 @@ button that copies its URL.
 
 A tab that's playing media shows a now-playing strip at the bottom of the
 sidebar, with play/pause and a button to pop video out into a floating
-always-on-top panel.
+always-on-top panel. Switching away from a tab that's playing video pops it out
+automatically, and returning to the tab folds it back in — toggle it off under
+Media in Settings.
 
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position

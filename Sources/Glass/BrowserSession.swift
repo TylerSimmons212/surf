@@ -127,7 +127,7 @@ final class BrowserSession {
         // a tab opened from a link belongs beside its opener.
         let insertAt = (tabs.firstIndex { $0.id == selectedTabID }).map { $0 + 1 } ?? tabs.count
         tabs.insert(tab, at: insertAt)
-        if select { selectedTabID = tab.id }
+        if select { setSelection(to: tab.id) }
         scheduleSave()
         return tab
     }
@@ -174,8 +174,40 @@ final class BrowserSession {
     // MARK: - Selection
 
     func select(_ tab: Tab) {
-        selectedTabID = tab.id
+        setSelection(to: tab.id)
+    }
+
+    /// Every selection change funnels through here, so the pop-out rules live
+    /// in exactly one place instead of at each call site.
+    private func setSelection(to id: Tab.ID) {
+        guard id != selectedTabID else { return }
+
+        let outgoing = tabs.first { $0.id == selectedTabID }
+        let incoming = tabs.first { $0.id == id }
+
+        // Coming back to a popped-out tab folds it back into the window.
+        if let incoming, PopOutController.shared.isPoppedOut(incoming) {
+            PopOutController.shared.restore()
+        }
+
+        // Leaving a tab mid-video pops it out so it stays watchable. Measured
+        // before the selection changes, while the web view is still laid out.
+        if let outgoing, shouldAutoPopOut(outgoing) {
+            PopOutController.shared.popOut(outgoing)
+        }
+
+        selectedTabID = id
         scheduleSave()
+    }
+
+    private func shouldAutoPopOut(_ tab: Tab) -> Bool {
+        guard MediaPreferences.autoPopOut else { return false }
+        // A tab being closed is already torn down — nothing to pop out.
+        guard tabs.contains(where: { $0.id == tab.id }) else { return false }
+        guard !PopOutController.shared.isPoppedOut(tab) else { return false }
+        // Audio-only playback has no rectangle to crop to.
+        guard let media = tab.media, media.isPlaying, media.hasVideo else { return false }
+        return true
     }
 
     func selectNextTab() { cycleSelection(by: 1) }
@@ -186,13 +218,13 @@ final class BrowserSession {
         guard let current = tabs.firstIndex(where: { $0.id == selectedTabID }),
               let next = TabSelection.cycled(from: current, by: offset, count: tabs.count)
         else { return }
-        selectedTabID = tabs[next].id
+        setSelection(to: tabs[next].id)
     }
 
     /// ⌘1–⌘8 pick by position; ⌘9 is last, again matching convention.
     func selectTab(atOneBasedIndex index: Int) {
         guard let target = TabSelection.index(forOneBased: index, count: tabs.count) else { return }
-        selectedTabID = tabs[target].id
+        setSelection(to: tabs[target].id)
     }
 
     func requestAddressFocus(forNewTab: Bool = false) {

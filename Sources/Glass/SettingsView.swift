@@ -12,6 +12,8 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.restoreTabs) private var restoreTabs = true
     @AppStorage(PreferenceKeys.clearTracesOnQuit) private var clearTracesOnQuit = true
 
+    @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
+
     @State private var isClearing = false
     @State private var clearedMessage: String?
 
@@ -38,6 +40,16 @@ struct SettingsView: View {
                 """)
             } header: {
                 Text("Privacy")
+            }
+
+            Section {
+                Toggle("Pop out video when switching tabs", isOn: $autoPopOutVideo)
+                explain("""
+                Leaving a tab that's playing video floats it in a small window \
+                that stays on top. Returning to the tab puts it back.
+                """)
+            } header: {
+                Text("Media")
             }
 
             Section {

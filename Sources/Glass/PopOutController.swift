@@ -49,13 +49,18 @@ final class PopOutController: NSObject, NSWindowDelegate {
     func popOut(_ tab: Tab) {
         if poppedOutTab != nil { restore() }
 
+        // Read the size synchronously: on an automatic pop-out the selection
+        // changes immediately after this call, and the web view is unmounted
+        // before an awaited read would run.
+        let capturedSize = tab.webView.bounds.size
+        guard capturedSize.width > 0, capturedSize.height > 0 else { return }
+
         Task { @MainActor in
-            // Measure while the view is still mounted and laid out. If there's
+            // Measure while the page is still laid out at that size. If there's
             // no measurable video, do nothing at all — a lens onto nothing is
             // worse than no lens.
             guard let rect = await tab.measureVideoFrame() else { return }
-            pageSize = tab.webView.bounds.size
-            guard pageSize.width > 0, pageSize.height > 0 else { return }
+            pageSize = capturedSize
             lastVideoFrame = rect
 
             tab.setPageScrollLocked(true)
