@@ -72,6 +72,8 @@ struct Sidebar: View {
 
             Spacer()
 
+            DownloadsButton(session: session)
+
             IconButton(
                 systemName: "magnifyingglass",
                 motion: .pulse,

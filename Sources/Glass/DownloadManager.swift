@@ -16,6 +16,29 @@ final class DownloadItem: Identifiable {
     var filename: String
     var fraction: Double = 0
     var state: State = .downloading
+    var bytesWritten: Int64 = 0
+    var totalBytes: Int64 = 0
+    /// Kept so a failed download can be retried without the page's help.
+    var sourceURL: URL?
+    /// Where the bytes are being written, so a cancelled transfer can clean up
+    /// after itself.
+    var destinationURL: URL?
+    /// Where it came from, for the list's subtitle.
+    var host: String?
+
+    var isActive: Bool { state == .downloading }
+
+    var sizeDescription: String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        guard totalBytes > 0 else {
+            return bytesWritten > 0 ? formatter.string(fromByteCount: bytesWritten) : ""
+        }
+        if isActive {
+            return "\(formatter.string(fromByteCount: bytesWritten)) of \(formatter.string(fromByteCount: totalBytes))"
+        }
+        return formatter.string(fromByteCount: totalBytes)
+    }
 
     /// Holds the download alive; WebKit doesn't retain it for us.
     @ObservationIgnored var download: WKDownload?
@@ -38,14 +61,69 @@ final class DownloadItem: Identifiable {
 final class DownloadManager: NSObject, WKDownloadDelegate {
     static let shared = DownloadManager()
 
+    /// Newest first. This is the history list; entries persist until cleared
+    /// rather than disappearing when the transfer ends.
     private(set) var items: [DownloadItem] = []
 
-    /// The download for a given tab, so the player can show its progress.
+    /// The download for a given tab, so the media player can show its progress
+    /// inline. Released shortly after finishing so the row returns to normal —
+    /// the entry itself stays in `items`.
     private(set) var itemsByTab: [Tab.ID: DownloadItem] = [:]
 
     private override init() { super.init() }
 
     func activeItem(for tab: Tab) -> DownloadItem? { itemsByTab[tab.id] }
+
+    var activeCount: Int { items.filter(\.isActive).count }
+
+    /// Aggregate progress across everything still running, for the toolbar ring.
+    var activeProgress: Double {
+        let running = items.filter(\.isActive)
+        guard !running.isEmpty else { return 0 }
+        return running.reduce(0) { $0 + $1.fraction } / Double(running.count)
+    }
+
+    // MARK: - List management
+
+    func cancel(_ item: DownloadItem) {
+        item.state = .failed("Cancelled")
+        item.progressObservation = nil
+
+        item.download?.cancel { _ in
+            MainActor.assumeIsolated {
+                // WebKit leaves the partial file on disk. Half a download in
+                // the Downloads folder looks like a real file and isn't one.
+                if let url = item.destinationURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+            }
+        }
+    }
+
+    func remove(_ item: DownloadItem) {
+        if item.isActive { item.download?.cancel() }
+        items.removeAll { $0 === item }
+        itemsByTab = itemsByTab.filter { $0.value !== item }
+    }
+
+    func clearFinished() {
+        let doomed = items.filter { !$0.isActive }
+        for item in doomed { remove(item) }
+    }
+
+    func retry(_ item: DownloadItem, in tab: Tab?) {
+        guard let url = item.sourceURL else { return }
+        remove(item)
+        let fresh = DownloadItem(filename: item.filename)
+        fresh.sourceURL = url
+        fresh.host = url.host
+        items.insert(fresh, at: 0)
+        let webView = tab?.webView ?? PopOutController.shared.poppedOutTab?.webView
+        guard let webView else { return }
+        webView.startDownload(using: URLRequest(url: url)) { [weak self] download in
+            MainActor.assumeIsolated { self?.bind(fresh, to: download) }
+        }
+    }
 
     // MARK: - Receiving
 
@@ -59,7 +137,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         // No filename of our own: the server's Content-Disposition knows best
         // for a file the user asked for by name.
         let item = DownloadItem(filename: "")
-        items.append(item)
+        item.sourceURL = download.originalRequest?.url
+        item.host = download.originalRequest?.url?.host
+        items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
         bind(item, to: download)
     }
@@ -70,7 +150,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.progressObservation = download.progress.observe(
             \.fractionCompleted, options: [.new]
         ) { progress, _ in
-            MainActor.assumeIsolated { item.fraction = progress.fractionCompleted }
+            MainActor.assumeIsolated {
+                item.fraction = progress.fractionCompleted
+                item.bytesWritten = progress.completedUnitCount
+                item.totalBytes = progress.totalUnitCount
+            }
         }
     }
 
@@ -82,7 +166,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         else { return }
 
         let item = DownloadItem(filename: suggestedName(for: media, url: url))
-        items.append(item)
+        item.sourceURL = url
+        item.host = tab.webView.url?.host ?? url.host
+        items.insert(item, at: 0)
         itemsByTab[tab.id] = item
 
         var request = URLRequest(url: url)
@@ -137,6 +223,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         let destination = uniqueURL(in: downloads, named: name)
         item?.filename = destination.lastPathComponent
+        item?.destinationURL = destination
         return destination
     }
 
@@ -165,7 +252,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.fraction = 1
         item.state = .finished(saved ?? URL(fileURLWithPath: item.filename))
         item.progressObservation = nil
-        clearTabBinding(for: item, after: .seconds(4))
+        releaseTabBinding(for: item, after: .seconds(4))
     }
 
     func download(
@@ -174,18 +261,20 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         resumeData: Data?
     ) {
         guard let item = item(for: download) else { return }
-        item.state = .failed(error.localizedDescription)
+        // A cancel arrives here too; don't overwrite the nicer message.
+        if item.state == .downloading {
+            item.state = .failed(error.localizedDescription)
+        }
         item.progressObservation = nil
-        clearTabBinding(for: item, after: .seconds(6))
+        releaseTabBinding(for: item, after: .seconds(6))
     }
 
-    /// Frees the player's slot once the outcome has been on screen long enough
-    /// to read.
-    private func clearTabBinding(for item: DownloadItem, after delay: Duration) {
+    /// Frees the media player's inline slot once the outcome has been on screen
+    /// long enough to read. The entry stays in `items` — that's the history.
+    private func releaseTabBinding(for item: DownloadItem, after delay: Duration) {
         Task { @MainActor in
             try? await Task.sleep(for: delay)
             itemsByTab = itemsByTab.filter { $0.value !== item }
-            items.removeAll { $0 === item }
         }
     }
 

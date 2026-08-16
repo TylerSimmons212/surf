@@ -25,6 +25,10 @@ always-on-top panel. Switching away from a tab that's playing video pops it out
 automatically, and returning to the tab folds it back in — toggle it off under
 Media in Settings.
 
+Downloads land in `~/Downloads` and appear in a list behind the sidebar's
+download button, with progress, cancel, retry, and Show in Finder. The list is
+kept in memory only and is empty again on relaunch.
+
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position
 all restore on relaunch — including each tab's back/forward history and scroll
@@ -107,7 +111,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
-- `Sources/Glass/DownloadManager.swift` — saves direct-URL media via WebKit downloads
+- `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes
+- `Sources/Glass/DownloadsPanel.swift` — toolbar button and downloads list
 - `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
