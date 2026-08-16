@@ -32,6 +32,10 @@ final class Tab: NSObject, Identifiable {
     private(set) var lastError: String?
     private(set) var favicon: NSImage?
 
+    /// Nil until the page reports media. Survives pausing, so a paused tab
+    /// still shows in the player rather than vanishing mid-track.
+    private(set) var media: MediaState?
+
     /// The colour at the top of the page, used to tint the title strip so the
     /// window chrome belongs to the site rather than sitting apart from it.
     ///
@@ -89,6 +93,7 @@ final class Tab: NSObject, Identifiable {
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        installMediaBridge()
         observeWebViewState()
     }
 
@@ -157,6 +162,60 @@ final class Tab: NSObject, Identifiable {
 
         if persisted.interactionState == nil, let fallbackURL {
             webView.load(URLRequest(url: fallbackURL))
+        }
+    }
+
+    // MARK: - Media
+
+    private func installMediaBridge() {
+        let controller = webView.configuration.userContentController
+        // Popup tabs inherit WebKit's configuration, which may already carry
+        // this handler; adding a duplicate name throws.
+        controller.removeScriptMessageHandler(forName: MediaBridge.handlerName)
+        controller.add(WeakScriptMessageProxy(target: self), name: MediaBridge.handlerName)
+        controller.addUserScript(
+            WKUserScript(
+                source: MediaBridge.script,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false,
+                in: .page
+            )
+        )
+    }
+
+    func toggleMediaPlayback() {
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                MediaBridge.toggleScript, arguments: [:], in: nil, contentWorld: .page
+            )
+        }
+    }
+
+    /// Releases everything the tab is holding: media, loads, observers, and the
+    /// script handler.
+    ///
+    /// Relying on deallocation isn't enough — a web view whose audio is playing
+    /// keeps its content process alive, so a closed tab can keep making noise
+    /// long after it's gone from the sidebar.
+    func teardown() {
+        sampleTask?.cancel()
+        observations.forEach { $0.invalidate() }
+        observations.removeAll()
+
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.stopLoading()
+        webView.configuration.userContentController
+            .removeScriptMessageHandler(forName: MediaBridge.handlerName)
+
+        media = nil
+
+        Task { @MainActor in
+            // Pause first for an immediate stop, then navigate away to tear the
+            // media elements down for good.
+            await webView.pauseAllMediaPlayback()
+            await webView.closeAllMediaPresentations()
+            webView.load(URLRequest(url: URL(string: "about:blank")!))
         }
     }
 
@@ -321,6 +380,8 @@ final class Tab: NSObject, Identifiable {
                     // Clear first so a stale colour doesn't linger on the new page.
                     self.sampledTopColor = nil
                     self.scheduleTopColorSampling()
+                    // The old page's media is gone the moment we navigate.
+                    self.media = nil
                     // A popup tab starts in .home but is loaded by WebKit
                     // directly, so the mode has to follow the URL.
                     if self.mode == .home { self.mode = .browsing }
@@ -401,6 +462,23 @@ extension Tab: WKNavigationDelegate {
         }
         lastError = error.localizedDescription
         debugLog("failed — \(error.localizedDescription)")
+    }
+}
+
+// MARK: - WKScriptMessageHandler
+
+extension Tab: WKScriptMessageHandler {
+    nonisolated func userContentController(
+        _ controller: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        guard message.name == MediaBridge.handlerName else { return }
+        let body = message.body
+        MainActor.assumeIsolated {
+            guard let state = MediaBridge.decode(body) else { return }
+            // Media that never started isn't worth showing in the player.
+            if state.isPlaying || media != nil { media = state }
+        }
     }
 }
 

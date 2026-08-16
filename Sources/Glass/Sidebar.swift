@@ -22,8 +22,12 @@ struct Sidebar: View {
         VStack(spacing: 0) {
             navigationBar
             tabList
+            if let playing = session.nowPlayingTab {
+                MediaPlayerBar(tab: playing, session: session)
+            }
         }
         .frame(width: Sidebar.width)
+        .animation(.spring(response: 0.32, dampingFraction: 0.8), value: session.nowPlayingTab?.id)
     }
 
     // MARK: - Navigation

@@ -105,6 +105,12 @@ final class BrowserSession {
         }
     }
 
+    /// The tab to show in the media player: whatever is playing, else the most
+    /// recent thing that was.
+    var nowPlayingTab: Tab? {
+        tabs.first { $0.media?.isPlaying == true } ?? tabs.first { $0.media != nil }
+    }
+
     var selectedTab: Tab {
         // Safe by the invariant; the fallback keeps a corrupted state from
         // crashing the app mid-session.
@@ -129,9 +135,10 @@ final class BrowserSession {
     func close(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
 
-        // Stop loading before dropping the reference, or the web view can keep
-        // running a navigation with no one observing it.
-        tab.stop()
+        // Explicit teardown, not just dropping the reference: a web view with
+        // audio playing keeps its content process alive, so a closed tab would
+        // otherwise keep playing.
+        tab.teardown()
         let nextIndex = TabSelection.indexAfterClosing(
             closedIndex: index,
             originalCount: tabs.count
