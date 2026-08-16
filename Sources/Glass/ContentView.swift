@@ -172,8 +172,6 @@ struct ContentView: View {
         }
         if let first = session.tabs.first { session.select(first) }
     }
-        }
-    }
 }
 
 /// One tab's content: the home search screen, or the bare page.
