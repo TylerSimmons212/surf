@@ -75,6 +75,10 @@ final class Tab: NSObject, Identifiable {
             // user gesture is blocked, while real link clicks still open tabs.
             // This is the popup blocker.
             config.preferences.javaScriptCanOpenWindowsAutomatically = false
+            // Lets pages use the Fullscreen API — the fullscreen button on
+            // video players does nothing without it. Off by default in
+            // WKWebView; Safari has it on.
+            config.preferences.isElementFullscreenEnabled = true
         }
 
         webView = WKWebView(frame: .zero, configuration: config)
