@@ -49,7 +49,10 @@ struct SuggestionList: View {
         .background {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(Color.accentColor.opacity(isActive ? 0.85 : 0))
+                // Arrowing through results glides rather than snapping.
+                .animation(.easeOut(duration: 0.13), value: isActive)
         }
+        .scaleEffect(isActive ? 1.005 : 1, anchor: .leading)
         .foregroundStyle(isActive ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
         .contentShape(Rectangle())
         .onTapGesture { onPick(entry) }

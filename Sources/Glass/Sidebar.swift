@@ -36,32 +36,43 @@ struct Sidebar: View {
         let tab = session.selectedTab
 
         return HStack(spacing: 2) {
-            navButton("chevron.left", enabled: tab.canGoBack, help: "Back (⌘[)") {
-                tab.goBack()
-            }
-            navButton("chevron.right", enabled: tab.canGoForward, help: "Forward (⌘])") {
-                tab.goForward()
-            }
-            navButton(
-                tab.isLoading ? "xmark" : "arrow.clockwise",
-                enabled: tab.mode == .browsing,
+            IconButton(
+                systemName: "chevron.left",
+                isEnabled: tab.canGoBack,
+                help: "Back (⌘[)"
+            ) { tab.goBack() }
+
+            IconButton(
+                systemName: "chevron.right",
+                isEnabled: tab.canGoForward,
+                help: "Forward (⌘])"
+            ) { tab.goForward() }
+
+            IconButton(
+                systemName: tab.isLoading ? "xmark" : "arrow.clockwise",
+                isEnabled: tab.mode == .browsing,
                 help: tab.isLoading ? "Stop" : "Reload (⌘R)"
             ) {
                 tab.isLoading ? tab.stop() : tab.reload()
             }
+            // Drives the reload/stop morph when loading starts or ends, not
+            // just when the button itself is clicked.
+            .animation(.easeOut(duration: 0.2), value: tab.isLoading)
 
             Spacer()
 
-            navButton("magnifyingglass", enabled: true, help: "Open Address Bar (⌘L)") {
-                onRequestAddressBar()
-            }
-            navButton(
-                isPinned ? "sidebar.left" : "pin",
-                enabled: true,
+            IconButton(
+                systemName: "magnifyingglass",
+                help: "Open Address Bar (⌘L)"
+            ) { onRequestAddressBar() }
+
+            IconButton(
+                systemName: isPinned ? "sidebar.left" : "pin",
                 help: isPinned ? "Unpin Sidebar (⌘S)" : "Pin Sidebar (⌘S)"
             ) {
                 isPinned.toggle()
             }
+            .animation(.easeOut(duration: 0.2), value: isPinned)
         }
         .padding(.horizontal, 8)
         .padding(.top, 8)
@@ -105,6 +116,8 @@ struct Sidebar: View {
 
         return HStack(spacing: 7) {
             statusIcon(for: tab)
+                .scaleEffect(isHovered ? 1.12 : 1)
+                .animation(.spring(response: 0.3, dampingFraction: 0.65), value: isHovered)
 
             Text(tab.displayTitle)
                 .font(.system(size: 12, weight: isSelected ? .medium : .regular))
@@ -114,27 +127,50 @@ struct Sidebar: View {
 
             Spacer(minLength: 0)
 
-            if showsActions {
+            // Always laid out, faded in on hover. Inserting them on hover
+            // instead would resize the title and make rows twitch as the
+            // pointer moves down the list.
+            HStack(spacing: 1) {
                 // Momentary checkmark: copying is invisible otherwise, and a
                 // silent copy leaves you unsure it worked.
-                rowButton(
-                    copiedTab == tab.id ? "checkmark" : "link",
+                IconButton(
+                    systemName: copiedTab == tab.id ? "checkmark" : "link",
+                    size: 9,
+                    weight: .bold,
+                    width: 17,
+                    height: 17,
+                    cornerRadius: 5,
+                    tint: copiedTab == tab.id ? .green : nil,
                     help: "Copy Link"
                 ) {
                     copyURL(of: tab)
                 }
-                .foregroundStyle(copiedTab == tab.id ? Color.green : Color.secondary)
+                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: copiedTab == tab.id)
 
-                rowButton("xmark", help: "Close Tab (⌘W)") {
+                IconButton(
+                    systemName: "xmark",
+                    size: 9,
+                    weight: .bold,
+                    width: 17,
+                    height: 17,
+                    cornerRadius: 5,
+                    help: "Close Tab (⌘W)"
+                ) {
                     session.close(tab)
                 }
             }
+            .opacity(showsActions ? 1 : 0)
+            .scaleEffect(showsActions ? 1 : 0.7, anchor: .trailing)
+            .allowsHitTesting(showsActions)
+            .animation(.spring(response: 0.26, dampingFraction: 0.7), value: showsActions)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(isSelected ? 0.14 : (isHovered ? 0.07 : 0)))
+                .animation(.easeOut(duration: 0.16), value: isHovered)
+                .animation(.easeOut(duration: 0.2), value: isSelected)
         }
         .contentShape(Rectangle())
         .onTapGesture { session.select(tab) }
@@ -152,6 +188,8 @@ struct Sidebar: View {
                 Image(systemName: "plus")
                     .font(.system(size: 10, weight: .semibold))
                     .frame(width: 13, height: 13)
+                    .rotationEffect(.degrees(isHoveringNewTab ? 90 : 0))
+                    .scaleEffect(isHoveringNewTab ? 1.15 : 1)
                 Text("New Tab")
                     .font(.system(size: 12))
                 Spacer(minLength: 0)
@@ -166,6 +204,7 @@ struct Sidebar: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(Color.primary.opacity(isHoveringNewTab ? 0.07 : 0))
         }
+        .animation(.spring(response: 0.32, dampingFraction: 0.65), value: isHoveringNewTab)
         .onHover { isHoveringNewTab = $0 }
         .help("New Tab (⌘T)")
     }
@@ -211,37 +250,4 @@ struct Sidebar: View {
         }
     }
 
-    private func rowButton(
-        _ symbol: String,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 9, weight: .bold))
-                .frame(width: 15, height: 15)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help(help)
-    }
-
-    private func navButton(
-        _ symbol: String,
-        enabled: Bool,
-        help: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 26, height: 22)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .foregroundStyle(enabled ? .primary : .tertiary)
-        .help(help)
-    }
 }

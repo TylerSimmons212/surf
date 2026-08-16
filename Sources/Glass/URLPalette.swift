@@ -54,7 +54,9 @@ struct URLPalette: View {
                 .focused($focused)
                 .onSubmit(submit)
                 .onChange(of: text) { _, value in
-                    completions.update(for: value, isFocused: true)
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                        completions.update(for: value, isFocused: true)
+                    }
                 }
                 .onKeyPress(.downArrow) {
                     guard completions.isShowing else { return .ignored }
@@ -78,20 +80,27 @@ struct URLPalette: View {
                 }
 
             if !text.isEmpty {
-                Button {
+                IconButton(
+                    systemName: "xmark",
+                    size: 11,
+                    weight: .bold,
+                    width: 22,
+                    height: 22,
+                    cornerRadius: 11,
+                    help: "Clear"
+                ) {
                     text = ""
                     focused = true
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 15))
-                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
         .frame(width: 620)
+        // Drives the clear button's scale-in; the text binding itself isn't
+        // animated, so the transition needs a scope to run in.
+        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: text.isEmpty)
         .background {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.regularMaterial)

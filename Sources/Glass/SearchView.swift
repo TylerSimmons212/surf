@@ -65,16 +65,19 @@ struct SearchView: View {
                 }
 
             if !query.isEmpty {
-                Button {
+                IconButton(
+                    systemName: "xmark",
+                    size: 11,
+                    weight: .bold,
+                    width: 24,
+                    height: 24,
+                    cornerRadius: 12,
+                    help: "Clear"
+                ) {
                     query = ""
                     searchFocused = true
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .help("Clear")
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
         .padding(.horizontal, 22)
@@ -93,6 +96,7 @@ struct SearchView: View {
                 .shadow(color: .black.opacity(0.12), radius: 18, y: 6)
         }
         .animation(.easeOut(duration: 0.15), value: searchFocused)
+        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: query.isEmpty)
         .overlay(alignment: .topLeading) {
             if completions.isShowing {
                 SuggestionList(
