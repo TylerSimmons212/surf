@@ -8,7 +8,8 @@ Working tabbed browser: type a search or an address on the home screen and it
 loads, with back/forward/reload/stop, a live progress bar, and tabs. Links with
 `target="_blank"` open in a new tab; scripted popups are blocked.
 
-The window is nothing but the page. Navigation controls and tabs live in an
+The window is nothing but the page, under a slim title strip that tints itself
+from the current page's `theme-color` (or its background colour). Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be
 pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or the
 search button in the sidebar) rather than a permanent toolbar. Each tab row has a link

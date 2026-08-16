@@ -22,9 +22,9 @@ struct ContentView: View {
 
     private var wantsReveal: Bool { pointerInHotZone || pointerInSidebar }
 
-    /// Room for the traffic lights. The window uses a hidden titlebar, so this
-    /// strip is what keeps them from sitting on top of the page.
-    private let titleBarHeight: CGFloat = 36
+    /// Just tall enough for the traffic lights — this is macOS's own titlebar
+    /// height, so the buttons sit centred with no slack around them.
+    private let titleBarHeight: CGFloat = 28
 
     var body: some View {
         ZStack {
@@ -33,8 +33,11 @@ struct ContentView: View {
             VisualEffectBackground(material: .underWindowBackground)
 
             VStack(spacing: 0) {
-                Color.clear
+                // Tinted from the page so the strip reads as part of the site.
+                // Falls back to clear, letting the window glass through.
+                (session.selectedTab.topColor.map(Color.init(nsColor:)) ?? Color.clear)
                     .frame(height: titleBarHeight)
+                    .animation(.easeOut(duration: 0.25), value: session.selectedTab.topColor)
 
                 ZStack(alignment: .leading) {
                     HStack(spacing: 0) {

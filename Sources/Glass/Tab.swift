@@ -32,6 +32,20 @@ final class Tab: NSObject, Identifiable {
     private(set) var lastError: String?
     private(set) var favicon: NSImage?
 
+    /// The colour at the top of the page, used to tint the title strip so the
+    /// window chrome belongs to the site rather than sitting apart from it.
+    ///
+    /// `themeColor` is the site's declared `<meta name="theme-color">` and is
+    /// the deliberate choice when present; `underPageBackgroundColor` is
+    /// WebKit's read of the actual page background and covers everyone else.
+    var topColor: NSColor? {
+        guard mode == .browsing else { return nil }
+        return themeColor ?? underPageColor
+    }
+
+    private var themeColor: NSColor?
+    private var underPageColor: NSColor?
+
     /// Tracks the host the current favicon belongs to, so navigating within a
     /// site doesn't refetch and navigating away clears a now-wrong icon.
     @ObservationIgnored private var faviconHost: String?
@@ -201,6 +215,12 @@ final class Tab: NSObject, Identifiable {
             },
             webView.observe(\.canGoForward, options: [.new]) { [weak self] webView, _ in
                 MainActor.assumeIsolated { self?.canGoForward = webView.canGoForward }
+            },
+            webView.observe(\.themeColor, options: [.new]) { [weak self] webView, _ in
+                MainActor.assumeIsolated { self?.themeColor = webView.themeColor }
+            },
+            webView.observe(\.underPageBackgroundColor, options: [.new]) { [weak self] webView, _ in
+                MainActor.assumeIsolated { self?.underPageColor = webView.underPageBackgroundColor }
             },
             webView.observe(\.title, options: [.new]) { [weak self] webView, _ in
                 MainActor.assumeIsolated {
