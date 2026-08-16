@@ -9,6 +9,19 @@ struct MediaState: Equatable {
     var hasVideo: Bool
     var duration: Double
     var currentTime: Double
+    /// The resolved media URL, or empty if the element has no source yet.
+    var sourceURL: String = ""
+
+    /// Streamed in segments via Media Source Extensions. There is no file at
+    /// the other end of a `blob:` URL — it's a handle into the page's own
+    /// buffer — so it can't be fetched.
+    var isStreamed: Bool { sourceURL.hasPrefix("blob:") }
+
+    /// A plain media file we can fetch, the same as "Download Video" in any
+    /// browser's context menu.
+    var isDownloadable: Bool {
+        sourceURL.hasPrefix("http://") || sourceURL.hasPrefix("https://")
+    }
 
     var progress: Double {
         guard duration > 0 else { return 0 }
@@ -60,7 +73,11 @@ enum MediaBridge {
           artist: (meta && meta.artist) || location.hostname,
           hasVideo: current.tagName === 'VIDEO' && current.videoWidth > 0,
           duration: isFinite(current.duration) ? current.duration : 0,
-          currentTime: current.currentTime || 0
+          currentTime: current.currentTime || 0,
+          // `currentSrc` is the resolved source, including <source> children.
+          // A blob: URL means Media Source Extensions — a segmented stream with
+          // no single fetchable file behind it.
+          src: current.currentSrc || current.src || ''
         };
       }
 
@@ -129,7 +146,8 @@ enum MediaBridge {
             artist: dict["artist"] as? String ?? "",
             hasVideo: dict["hasVideo"] as? Bool ?? false,
             duration: dict["duration"] as? Double ?? 0,
-            currentTime: dict["currentTime"] as? Double ?? 0
+            currentTime: dict["currentTime"] as? Double ?? 0,
+            sourceURL: dict["src"] as? String ?? ""
         )
     }
 }

@@ -30,6 +30,8 @@ struct MediaPlayerBar: View {
 
                     Spacer(minLength: 0)
 
+                    downloadControl(media)
+
                     if media.hasVideo {
                         IconButton(
                             systemName: PopOutController.shared.isPoppedOut(tab)
@@ -69,6 +71,71 @@ struct MediaPlayerBar: View {
             }
             .background(.quaternary.opacity(0.25))
             .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    /// Three states, deliberately distinct: downloading shows progress,
+    /// finished offers Finder, and streamed media is shown disabled with an
+    /// explanation rather than a button that does nothing.
+    @ViewBuilder
+    private func downloadControl(_ media: MediaState) -> some View {
+        if let item = DownloadManager.shared.activeItem(for: tab) {
+            switch item.state {
+            case .downloading:
+                ZStack {
+                    Circle()
+                        .trim(from: 0, to: max(0.04, item.fraction))
+                        .stroke(Color.accentColor,
+                                style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: 19, height: 19)
+                        .animation(.easeOut(duration: 0.25), value: item.fraction)
+                    Image(systemName: "square.fill")
+                        .font(.system(size: 6))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 24, height: 24)
+                .help("Downloading \(Int(item.fraction * 100))%")
+
+            case .finished:
+                IconButton(
+                    systemName: "checkmark.circle.fill",
+                    size: 12, width: 24, height: 24, cornerRadius: 12,
+                    tint: .green,
+                    help: "Saved — click to show in Finder"
+                ) {
+                    DownloadManager.shared.reveal(item)
+                }
+
+            case .failed(let message):
+                IconButton(
+                    systemName: "exclamationmark.triangle.fill",
+                    size: 11, width: 24, height: 24, cornerRadius: 12,
+                    tint: .orange,
+                    motion: .wiggle,
+                    help: "Download failed: \(message)"
+                ) {
+                    DownloadManager.shared.downloadMedia(from: tab)
+                }
+            }
+        } else if media.isDownloadable {
+            IconButton(
+                systemName: "arrow.down.circle",
+                size: 12, width: 24, height: 24, cornerRadius: 12,
+                help: "Download Video"
+            ) {
+                DownloadManager.shared.downloadMedia(from: tab)
+            }
+        } else if media.isStreamed {
+            // Disabled with a reason. A missing button reads as a bug; a dead
+            // one reads worse.
+            IconButton(
+                systemName: "arrow.down.circle",
+                size: 12, width: 24, height: 24, cornerRadius: 12,
+                isEnabled: false,
+                motion: .none,
+                help: "This video is streamed in segments and can't be saved as a file"
+            ) {}
         }
     }
 

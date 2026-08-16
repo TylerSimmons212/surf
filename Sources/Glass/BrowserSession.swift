@@ -111,6 +111,14 @@ final class BrowserSession {
         tabs.first { $0.media?.isPlaying == true } ?? tabs.first { $0.media != nil }
     }
 
+    /// Every tab holding media, with the active one first — that's the row the
+    /// stack shows when collapsed.
+    var mediaTabs: [Tab] {
+        let holding = tabs.filter { $0.media != nil }
+        guard let primary = nowPlayingTab else { return holding }
+        return [primary] + holding.filter { $0.id != primary.id }
+    }
+
     var selectedTab: Tab {
         // Safe by the invariant; the fallback keeps a corrupted state from
         // crashing the app mid-session.
