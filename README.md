@@ -106,7 +106,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
-- `Sources/Glass/MediaPlayerBar.swift` — now-playing strip at the sidebar's foot
+- `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
+- `Sources/Glass/DownloadManager.swift` — saves direct-URL media via WebKit downloads
 - `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
