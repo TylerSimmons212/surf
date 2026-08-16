@@ -3,9 +3,8 @@ import SwiftUI
 /// Now-playing controls at the foot of the sidebar.
 ///
 /// One row per tab holding media, drawn as a stack of cards. Collapsed, only
-/// the active tab's row is legible and the others peek out behind it — enough
-/// to say "there's more here" without spending vertical space on it. Hovering
-/// fans them into full rows.
+/// the active tab's row is visible — the rest sit hidden directly behind it,
+/// announced by a count chip. Hovering fans them into full rows.
 struct MediaPlayerStack: View {
     let session: BrowserSession
 
@@ -16,10 +15,6 @@ struct MediaPlayerStack: View {
     /// late and makes the fan-out jitter.
     private let rowHeight: CGFloat = 42
     private let rowSpacing: CGFloat = 2
-    /// How far each collapsed card peeks above the one in front of it.
-    private let peek: CGFloat = 4
-    /// Past this, extra cards stack in place rather than peeking further.
-    private let maxPeekingCards = 2
 
     private var tabs: [Tab] { session.mediaTabs }
 
@@ -44,13 +39,16 @@ struct MediaPlayerStack: View {
                             .zIndex(-Double(index))
                     }
 
-                    MediaRow(tab: primary, session: session, isPrimary: true)
-                        .frame(height: rowHeight)
-                        .zIndex(1)
+                    MediaRow(
+                        tab: primary,
+                        session: session,
+                        isPrimary: true,
+                        stackedCount: isExpanded ? 0 : others.count
+                    )
+                    .frame(height: rowHeight)
+                    .zIndex(1)
                 }
                 .frame(height: stackHeight(otherCount: others.count), alignment: .bottom)
-                // Room for the peeking edges so they aren't clipped by the divider.
-                .padding(.top, others.isEmpty ? 0 : peek * CGFloat(min(others.count, maxPeekingCards)))
             }
             .background(.quaternary.opacity(0.25))
             .onHover { hovering in
@@ -62,24 +60,26 @@ struct MediaPlayerStack: View {
         }
     }
 
-    /// Expanded, rows sit in a column above the front one. Collapsed, they tuck
-    /// behind it with a few points showing.
+    /// Expanded, rows sit in a column above the front one. Collapsed, they sit
+    /// exactly behind it — see `cardOpacity` for why they're hidden outright.
     private func offset(forCardAt index: Int) -> CGFloat {
-        if isExpanded {
-            return -(rowHeight + rowSpacing) * CGFloat(index + 1)
-        }
-        return -peek * CGFloat(min(index + 1, maxPeekingCards))
+        isExpanded ? -(rowHeight + rowSpacing) * CGFloat(index + 1) : 0
     }
 
-    /// Slightly narrower as they recede, which reads as depth.
+    /// Slightly narrower on the way in, so the fan-out reads as cards springing
+    /// forward rather than rows appearing from nowhere.
     private func cardScale(_ index: Int) -> CGFloat {
-        isExpanded ? 1 : 1 - 0.04 * CGFloat(min(index + 1, maxPeekingCards))
+        isExpanded ? 1 : 0.94
     }
 
+    /// Fully hidden when collapsed rather than dimmed.
+    ///
+    /// Materials are translucent to their own siblings, so a partly-visible
+    /// card still smudges through the row in front no matter what background
+    /// sits between them. Zero opacity is the only way to be certain nothing
+    /// shows through; the count chip carries the affordance instead.
     private func cardOpacity(_ index: Int) -> Double {
-        guard !isExpanded else { return 1 }
-        // Anything past the peek limit hides completely behind the stack.
-        return index < maxPeekingCards ? 0.75 - 0.25 * Double(index) : 0
+        isExpanded ? 1 : 0
     }
 
     private func stackHeight(otherCount: Int) -> CGFloat {
@@ -97,6 +97,9 @@ struct MediaRow: View {
     let tab: Tab
     let session: BrowserSession
     let isPrimary: Bool
+    /// How many other tabs are holding media, shown as a chip on the front row
+    /// so the hidden stack is still discoverable. Zero hides the chip.
+    var stackedCount: Int = 0
 
     @State private var isHovering = false
 
@@ -119,6 +122,10 @@ struct MediaRow: View {
                     }
 
                     Spacer(minLength: 0)
+
+                    if stackedCount > 0 {
+                        stackChip
+                    }
 
                     if isPrimary {
                         downloadControl(media)
@@ -147,10 +154,11 @@ struct MediaRow: View {
                 }
             }
             .background {
-                // Stacked rows get their own plate so they read as separate
-                // cards rather than one tall panel.
+                // Both get a plate. The front row needs one so the hidden cards
+                // behind it have something solid to sit under; stacked rows get
+                // rounded corners so they read as separate cards.
                 RoundedRectangle(cornerRadius: isPrimary ? 0 : 8, style: .continuous)
-                    .fill(isPrimary ? AnyShapeStyle(.clear) : AnyShapeStyle(.regularMaterial))
+                    .fill(.regularMaterial)
                     .overlay {
                         if !isPrimary {
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -165,6 +173,23 @@ struct MediaRow: View {
             .onHover { isHovering = $0 }
             .help("Go to \(tab.displayTitle)")
         }
+    }
+
+    /// Signals the collapsed stack, since the cards themselves are invisible.
+    private var stackChip: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "square.stack.fill")
+                .font(.system(size: 8))
+            Text("\(stackedCount + 1)")
+                .font(.system(size: 9, weight: .medium))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 2)
+        .background {
+            Capsule().fill(Color.primary.opacity(0.09))
+        }
+        .help("\(stackedCount + 1) tabs playing — hover to show all")
     }
 
     private func artwork(_ media: MediaState) -> some View {
