@@ -91,93 +91,34 @@ enum MediaBridge {
     return true;
     """
 
-    /// Promotes the playing element to fill the viewport.
+    /// Where the playing video sits in the viewport, in CSS pixels.
     ///
-    /// Styling the video alone is not enough. `position: fixed` resolves
-    /// against the nearest ancestor with a `transform`, `filter`, `perspective`,
-    /// `contain`, or `backdrop-filter` — and real players (YouTube among them)
-    /// wrap their video in exactly those. The element would go "fullscreen"
-    /// inside its own little container and nothing would appear to happen.
-    ///
-    /// So every ancestor is marked and those properties are neutralised, which
-    /// hands the containing block back to the viewport.
-    static let focusScript = """
+    /// This is the entire site-specific surface of the lens approach: one
+    /// rectangle. No styling is injected into the player, so there is no
+    /// stacking-context or containing-block fight to lose.
+    static let measureScript = """
     const el = window.__glassMedia;
-    if (!el) { return false; }
-
-    el.setAttribute('data-glass-popout', '1');
-    for (let node = el.parentElement; node; node = node.parentElement) {
-      node.setAttribute('data-glass-popout-ancestor', '1');
-    }
-
-    let style = document.getElementById('__glass_popout');
-    if (!style) {
-      style = document.createElement('style');
-      style.id = '__glass_popout';
-      document.documentElement.appendChild(style);
-    }
-    // A stylesheet rule with !important also outranks the inline styles that
-    // players rewrite on every resize.
-    style.textContent = `
-      html, body { overflow: hidden !important; background: #000 !important; }
-      [data-glass-popout-ancestor] {
-        transform: none !important;
-        filter: none !important;
-        perspective: none !important;
-        backdrop-filter: none !important;
-        contain: none !important;
-        will-change: auto !important;
-        overflow: visible !important;
-      }
-      [data-glass-popout] {
-        position: fixed !important; inset: 0 !important;
-        width: 100vw !important; height: 100vh !important;
-        max-width: none !important; max-height: none !important;
-        min-width: 0 !important; min-height: 0 !important;
-        margin: 0 !important; padding: 0 !important;
-        object-fit: contain !important; background: #000 !important;
-        z-index: 2147483647 !important;
-      }`;
-    return true;
-    """
-
-    static let unfocusScript = """
-    document.getElementById('__glass_popout')?.remove();
-    document.querySelectorAll('[data-glass-popout], [data-glass-popout-ancestor]')
-      .forEach((el) => {
-        el.removeAttribute('data-glass-popout');
-        el.removeAttribute('data-glass-popout-ancestor');
-      });
-    return true;
-    """
-
-    /// Confirms the video actually ended up filling the viewport, since a page
-    /// can always out-specify us.
-    static let verifyScript = """
-    const el = document.querySelector('[data-glass-popout]');
-    if (!el) { return 'not styled'; }
+    if (!el || !el.isConnected) { return null; }
     const r = el.getBoundingClientRect();
-    // Position and stacking matter as much as size: a transformed ancestor
-    // offsets the origin and traps z-index in its own stacking context, so the
-    // page's own chrome can still paint on top.
-    const topHit = document.elementFromPoint(Math.round(window.innerWidth / 2), 20);
-    const midHit = document.elementFromPoint(Math.round(window.innerWidth / 2),
-                                             Math.round(window.innerHeight / 2));
-    return JSON.stringify({
-      origin: Math.round(r.x) + ',' + Math.round(r.y),
-      size: Math.round(r.width) + 'x' + Math.round(r.height),
-      viewport: window.innerWidth + 'x' + window.innerHeight,
-      atOrigin: Math.abs(r.x) < 2 && Math.abs(r.y) < 2,
-      topmostAtTop: topHit === el,
-      topmostAtCentre: midHit === el
-    });
+    if (r.width < 10 || r.height < 10) { return null; }
+    return JSON.stringify([r.x, r.y, r.width, r.height]);
     """
 
-    /// Natural size of the playing video, for sizing the panel.
-    static let dimensionsScript = """
-    const el = window.__glassMedia;
-    if (!el || !el.videoWidth) { return null; }
-    return JSON.stringify([el.videoWidth, el.videoHeight]);
+    /// Stops wheel events from scrolling the page under the lens, which would
+    /// slide the video out of the cropped region.
+    static let lockScrollScript = """
+    if (!document.getElementById('__glass_lens')) {
+      const s = document.createElement('style');
+      s.id = '__glass_lens';
+      s.textContent = 'html, body { overflow: hidden !important; }';
+      document.documentElement.appendChild(s);
+    }
+    return true;
+    """
+
+    static let unlockScrollScript = """
+    document.getElementById('__glass_lens')?.remove();
+    return true;
     """
 
     static func decode(_ body: Any) -> MediaState? {

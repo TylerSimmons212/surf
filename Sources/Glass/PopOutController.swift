@@ -2,12 +2,24 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Floats a playing tab in a small always-on-top panel.
+/// Floats a playing tab's video in a small always-on-top panel — by cropping,
+/// not by restyling.
 ///
-/// The live `WKWebView` is *moved* into the panel rather than a second one
-/// being created. Loading the page again would restart the video, lose the
-/// position, and outright fail for streamed sources whose URLs are `blob:`
-/// handles valid only inside their original document.
+/// The live `WKWebView` keeps its full main-window size inside a clipping
+/// container whose `bounds` are set to the video's rectangle. AppKit's
+/// frame/bounds decoupling then does everything at once: translation, scaling,
+/// clipping, *and* correct hit-testing, so the site's own player controls keep
+/// working inside the lens.
+///
+/// Why not inject CSS to blow the video up to fill the page? Because that's a
+/// war: any ancestor with a transform, filter, containment, or z-index forms a
+/// containing block or stacking context that re-scopes `position: fixed`, and
+/// real players (YouTube) nest the video many such layers deep. The lens never
+/// touches the page's layout, so there is nothing to fight.
+///
+/// The same reasoning covers streaming sites: this is the original document in
+/// the original web view, so DRM playback and `blob:` media keep working —
+/// nothing is scraped or re-loaded.
 @Observable
 @MainActor
 final class PopOutController: NSObject, NSWindowDelegate {
@@ -17,6 +29,12 @@ final class PopOutController: NSObject, NSWindowDelegate {
     private(set) var poppedOutTab: Tab?
 
     @ObservationIgnored private var panel: NSPanel?
+    @ObservationIgnored private var lensContainer: NSView?
+    /// The web view's size at pop-out time. Its frame is pinned to this so the
+    /// page never reflows inside the panel and the measured rect stays valid.
+    @ObservationIgnored private var pageSize: CGSize = .zero
+    @ObservationIgnored private var lastVideoFrame: CGRect = .zero
+    @ObservationIgnored private var trackingTask: Task<Void, Never>?
 
     private override init() { super.init() }
 
@@ -31,22 +49,28 @@ final class PopOutController: NSObject, NSWindowDelegate {
     func popOut(_ tab: Tab) {
         if poppedOutTab != nil { restore() }
 
-        tab.setPopOutStyling(true)
-        // Publishing first makes the main window swap in its placeholder, which
-        // releases the web view from SwiftUI's hierarchy. Taking the view while
-        // SwiftUI still owns it invites it to be pulled back out again.
-        poppedOutTab = tab
-
         Task { @MainActor in
-            // One turn for SwiftUI to apply the placeholder before we adopt the view.
+            // Measure while the view is still mounted and laid out. If there's
+            // no measurable video, do nothing at all — a lens onto nothing is
+            // worse than no lens.
+            guard let rect = await tab.measureVideoFrame() else { return }
+            pageSize = tab.webView.bounds.size
+            guard pageSize.width > 0, pageSize.height > 0 else { return }
+            lastVideoFrame = rect
+
+            tab.setPageScrollLocked(true)
+            // Publishing first makes the main window swap in its placeholder,
+            // which releases the web view from SwiftUI's hierarchy before we
+            // adopt it into the panel.
+            poppedOutTab = tab
             try? await Task.sleep(for: .milliseconds(60))
-            let size = await tab.videoDimensions()
-            presentPanel(for: tab, videoSize: size)
+            presentPanel(for: tab, videoFrame: rect)
+            startTracking(tab)
         }
     }
 
-    private func presentPanel(for tab: Tab, videoSize: CGSize?) {
-        let contentSize = panelSize(for: videoSize)
+    private func presentPanel(for tab: Tab, videoFrame: CGRect) {
+        let contentSize = panelSize(for: videoFrame.size)
         let panel = NSPanel(
             contentRect: NSRect(origin: .zero, size: contentSize),
             styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel],
@@ -58,31 +82,72 @@ final class PopOutController: NSObject, NSWindowDelegate {
         // the entire point of a pop-out.
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isMovableByWindowBackground = true
+        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
+        panel.contentAspectRatio = videoFrame.size
+        panel.contentMinSize = NSSize(width: 240, height: 135)
         panel.delegate = self
-        if let ratio = videoSize, ratio.height > 0 {
-            panel.contentAspectRatio = ratio
-        }
 
         let container = NSView(frame: NSRect(origin: .zero, size: contentSize))
-        container.autoresizingMask = [.width, .height]
-        tab.webView.frame = container.bounds
-        tab.webView.autoresizingMask = [.width, .height]
-        // addSubview moves the view out of whatever hierarchy it was in.
+        container.clipsToBounds = true
+
+        // The web view keeps the size it had in the main window — the page
+        // must not reflow — and is never autoresized by the panel.
+        tab.webView.autoresizingMask = []
+        tab.webView.frame = NSRect(origin: .zero, size: pageSize)
         container.addSubview(tab.webView)
+
         panel.contentView = container
+        lensContainer = container
+        applyLens(videoFrame)
 
         positionInBottomTrailingCorner(panel, size: contentSize)
         panel.orderFront(nil)
         self.panel = panel
     }
 
+    /// The heart of the lens: point the container's bounds at the video.
+    ///
+    /// With `frame` at panel size and `bounds` set to the video's rect in the
+    /// web view's coordinate space, AppKit renders exactly that rect scaled to
+    /// fill the panel — and routes events with the same mapping. The rect
+    /// arrives in CSS coordinates (top-left origin), so flip into AppKit's
+    /// bottom-left space.
+    private func applyLens(_ videoFrame: CGRect) {
+        lensContainer?.bounds = NSRect(
+            x: videoFrame.minX,
+            y: pageSize.height - videoFrame.maxY,
+            width: videoFrame.width,
+            height: videoFrame.height
+        )
+    }
+
+    /// Sites move their players — layout settles late, ads collapse, theater
+    /// mode toggles. Re-measure on a slow beat and follow.
+    private func startTracking(_ tab: Tab) {
+        trackingTask?.cancel()
+        trackingTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(700))
+                guard !Task.isCancelled, poppedOutTab?.id == tab.id else { return }
+                guard let rect = await tab.measureVideoFrame() else {
+                    // The video left the DOM — nothing to show anymore.
+                    restore()
+                    return
+                }
+                if rect != lastVideoFrame {
+                    lastVideoFrame = rect
+                    applyLens(rect)
+                }
+            }
+        }
+    }
+
     /// Scales the video's own aspect ratio to a comfortable size, clamped so a
     /// tall or enormous video can't produce an unusable panel.
-    private func panelSize(for videoSize: CGSize?) -> NSSize {
-        guard let videoSize, videoSize.width > 0, videoSize.height > 0 else {
+    private func panelSize(for videoSize: CGSize) -> NSSize {
+        guard videoSize.width > 0, videoSize.height > 0 else {
             return NSSize(width: 480, height: 270)
         }
         let targetWidth: CGFloat = 480
@@ -104,12 +169,16 @@ final class PopOutController: NSObject, NSWindowDelegate {
     func restore() {
         guard let tab = poppedOutTab else { return }
 
+        trackingTask?.cancel()
+        trackingTask = nil
+
         // Detach before the panel goes away, or closing it would take the web
         // view down with it and the tab would come back blank.
         tab.webView.removeFromSuperview()
-        tab.webView.autoresizingMask = []
-        tab.setPopOutStyling(false)
+        tab.webView.autoresizingMask = [.width, .height]
+        tab.setPageScrollLocked(false)
 
+        lensContainer = nil
         panel?.delegate = nil
         panel?.close()
         panel = nil
@@ -118,8 +187,16 @@ final class PopOutController: NSObject, NSWindowDelegate {
         poppedOutTab = nil
     }
 
+    // MARK: - NSWindowDelegate
+
     /// The panel's own close button routes here.
     nonisolated func windowWillClose(_ notification: Notification) {
         MainActor.assumeIsolated { restore() }
+    }
+
+    /// Resizing a view's frame resets its bounds scale, which would break the
+    /// lens mapping — so re-point it after every live resize.
+    nonisolated func windowDidResize(_ notification: Notification) {
+        MainActor.assumeIsolated { applyLens(lastVideoFrame) }
     }
 }

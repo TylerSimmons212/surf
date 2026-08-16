@@ -183,25 +183,25 @@ final class Tab: NSObject, Identifiable {
         )
     }
 
-    /// Applies or removes the pop-out styling inside the page.
-    func setPopOutStyling(_ active: Bool) {
+    /// Prevents or restores page scrolling while the lens panel is showing.
+    func setPageScrollLocked(_ locked: Bool) {
         Task { @MainActor in
             _ = try? await webView.callAsyncJavaScript(
-                active ? MediaBridge.focusScript : MediaBridge.unfocusScript,
+                locked ? MediaBridge.lockScrollScript : MediaBridge.unlockScrollScript,
                 arguments: [:], in: nil, contentWorld: .page
             )
         }
     }
 
-    /// The video's intrinsic size, used to shape the pop-out panel.
-    func videoDimensions() async -> CGSize? {
+    /// The playing video's viewport rectangle, in CSS pixels (== points).
+    func measureVideoFrame() async -> CGRect? {
         guard let json = try? await webView.callAsyncJavaScript(
-            MediaBridge.dimensionsScript, arguments: [:], in: nil, contentWorld: .page
+            MediaBridge.measureScript, arguments: [:], in: nil, contentWorld: .page
         ) as? String,
-            let pair = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double],
-            pair.count == 2, pair[0] > 0, pair[1] > 0
+            let v = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double],
+            v.count == 4
         else { return nil }
-        return CGSize(width: pair[0], height: pair[1])
+        return CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
     }
 
     func toggleMediaPlayback() {

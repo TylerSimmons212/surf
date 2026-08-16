@@ -105,7 +105,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerBar.swift` — now-playing strip at the sidebar's foot
-- `Sources/Glass/PopOutController.swift` — floating video panel (moves the live web view)
+- `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
+  to the video's rectangle instead of restyling the page
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
 
 ## Dev
