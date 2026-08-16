@@ -13,9 +13,17 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.clearTracesOnQuit) private var clearTracesOnQuit = true
 
     @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
+    @AppStorage(PreferenceKeys.ytdlpPath) private var ytdlpPath = ""
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
+
+    /// Resolved once at launch, so this reports the copy actually in use rather
+    /// than what the path field currently says.
+    private var extractorStatus: String {
+        guard let url = MediaExtractor.shared.executableURL else { return "yt-dlp not found" }
+        return url.path
+    }
 
     var body: some View {
         Form {
@@ -48,6 +56,29 @@ struct SettingsView: View {
                 Leaving a tab that's playing video floats it in a small window \
                 that stays on top. Returning to the tab puts it back.
                 """)
+
+                Divider()
+
+                LabeledContent("Stream downloads") {
+                    Text(extractorStatus)
+                        .font(.callout)
+                        .foregroundStyle(MediaExtractor.shared.isAvailable ? .green : .secondary)
+                }
+                explain("""
+                Videos streamed in segments have no file to save, so Glass uses \
+                yt-dlp to reassemble them. A copy ships with Glass; set a path \
+                below to use your own, newer one instead.
+                """)
+
+                TextField("yt-dlp path", text: $ytdlpPath, prompt: Text("Bundled copy"))
+                    .textFieldStyle(.roundedBorder)
+                if !MediaExtractor.shared.hasFFmpeg {
+                    explain("""
+                    ffmpeg wasn't found, so downloads are limited to the best \
+                    single stream a site offers — often 720p. Install it with \
+                    `brew install ffmpeg` for full quality.
+                    """, isCaveat: true)
+                }
             } header: {
                 Text("Media")
             }

@@ -12,6 +12,7 @@ enum PreferenceKeys {
     static let clearTracesOnQuit = "clearTracesOnQuit"
     static let sidebarPinned = "sidebarPinned"
     static let autoPopOutVideo = "autoPopOutVideo"
+    static let ytdlpPath = "ytdlpPath"
 }
 
 extension PrivacySettings {

@@ -29,6 +29,18 @@ Downloads land in `~/Downloads` and appear in a list behind the sidebar's
 download button, with progress, cancel, retry, and Show in Finder. The list is
 kept in memory only and is empty again on relaunch.
 
+A plain media file is saved by WebKit itself, so it inherits the page's session
+and referrer. Video that's streamed in segments — a `blob:` source from Media
+Source Extensions, or an HLS/DASH manifest — has no single file to fetch, and is
+reassembled by [yt-dlp](https://github.com/yt-dlp/yt-dlp) instead. A pinned copy
+of yt-dlp is bundled into `Glass.app` by `scripts/bundle.sh`; a copy on your own
+system wins if you point at it in Settings, and `swift run` builds fall back to
+one on `PATH`. Only the cookies for the site being downloaded from are handed
+over, in a temp file deleted when the run ends. With `ffmpeg` installed
+(`brew install ffmpeg`) separate video and audio streams can be merged, which is
+what full quality usually requires; without it, downloads are capped at the best
+pre-muxed stream a site offers.
+
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position
 all restore on relaunch — including each tab's back/forward history and scroll
@@ -111,8 +123,13 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
-- `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes
+- `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes;
+  routes each source to WebKit or to yt-dlp
 - `Sources/Glass/DownloadsPanel.swift` — toolbar button and downloads list
+- `Sources/Glass/MediaExtractor.swift` — finds yt-dlp, exports one site's cookies,
+  and runs the process
+- `Sources/GlassCore/MediaSource.swift` — file vs manifest vs `blob:` classification
+- `Sources/GlassCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
 - `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window

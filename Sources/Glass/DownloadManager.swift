@@ -1,4 +1,5 @@
 import AppKit
+import GlassCore
 import Observation
 import WebKit
 
@@ -27,6 +28,9 @@ final class DownloadItem: Identifiable {
     var host: String?
     /// The page the download was started from, recorded on the saved file.
     var pageURL: URL?
+    /// Set when yt-dlp is doing the work, in which case the page URL is the
+    /// input and there is no direct media URL to retry against.
+    var isExtracted = false
 
     var isActive: Bool { state == .downloading }
 
@@ -45,6 +49,9 @@ final class DownloadItem: Identifiable {
     /// Holds the download alive; WebKit doesn't retain it for us.
     @ObservationIgnored var download: WKDownload?
     @ObservationIgnored var progressObservation: NSKeyValueObservation?
+    /// The yt-dlp run, for extracted downloads. Mutually exclusive with
+    /// `download` — a given item is fetched one way or the other.
+    @ObservationIgnored var extraction: Extraction?
 
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
@@ -52,12 +59,20 @@ final class DownloadItem: Identifiable {
     }
 }
 
-/// Saves media files to disk using WebKit's own download machinery.
+/// Saves media files to disk.
 ///
-/// `startDownload(using:)` rather than `URLSession` on purpose: it inherits the
-/// web view's cookies, referrer, and session, so media that's only served to an
-/// authenticated session still downloads. A separate URLSession would be logged
-/// out and get a 403.
+/// Two engines, chosen by what the source turns out to be:
+///
+/// - A plain media file goes through `WKWebView.startDownload(using:)` rather
+///   than `URLSession`, because it inherits the web view's cookies, referrer and
+///   session — media served only to an authenticated session still downloads.
+///   A separate URLSession would be logged out and get a 403.
+/// - Segmented media (`blob:` from Media Source Extensions, or an HLS/DASH
+///   manifest) has no single URL to fetch, so `MediaExtractor` runs yt-dlp
+///   against the *page*.
+///
+/// Everything downstream — the item's state machine, the progress ring, the
+/// list, provenance tagging — is shared, and doesn't know which engine ran.
 @Observable
 @MainActor
 final class DownloadManager: NSObject, WKDownloadDelegate {
@@ -91,6 +106,15 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.state = .failed("Cancelled")
         item.progressObservation = nil
 
+        if let extraction = item.extraction {
+            // Everything a yt-dlp run produced lives in its own scratch
+            // directory, so there's nothing to pick through.
+            extraction.cancel()
+            extraction.cleanUp()
+            item.extraction = nil
+            return
+        }
+
         item.download?.cancel { _ in
             MainActor.assumeIsolated {
                 // WebKit leaves the partial file on disk. Half a download in
@@ -103,7 +127,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func remove(_ item: DownloadItem) {
-        if item.isActive { item.download?.cancel() }
+        if item.isActive { cancel(item) }
         items.removeAll { $0 === item }
         itemsByTab = itemsByTab.filter { $0.value !== item }
     }
@@ -114,6 +138,18 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func retry(_ item: DownloadItem, in tab: Tab?) {
+        // An extracted download's input was the page, and re-running yt-dlp
+        // against it needs none of the web view's help.
+        if item.isExtracted, let pageURL = item.pageURL {
+            remove(item)
+            startExtraction(
+                from: pageURL,
+                title: (item.filename as NSString).deletingPathExtension,
+                tab: tab
+            )
+            return
+        }
+
         guard let url = item.sourceURL else { return }
         remove(item)
         let fresh = DownloadItem(filename: item.filename)
@@ -163,10 +199,23 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     // MARK: - Starting
 
+    /// The one entry point for "save what's playing". Picks the engine.
     func downloadMedia(from tab: Tab) {
-        guard let media = tab.media, media.isDownloadable,
-              let url = URL(string: media.sourceURL)
-        else { return }
+        guard let media = tab.media else { return }
+
+        switch media.kind {
+        case .file:
+            startDirectDownload(from: tab, media: media)
+        case .manifest, .streamed:
+            guard let pageURL = tab.webView.url else { return }
+            startExtraction(from: pageURL, title: media.title, tab: tab)
+        case .none, .unsupported:
+            return
+        }
+    }
+
+    private func startDirectDownload(from tab: Tab, media: MediaState) {
+        guard let url = URL(string: media.sourceURL) else { return }
 
         let item = DownloadItem(filename: suggestedName(for: media, url: url))
         item.sourceURL = url
@@ -185,6 +234,110 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             MainActor.assumeIsolated { self?.bind(item, to: download) }
         }
     }
+
+    // MARK: - Extraction
+
+    /// Hands a page to yt-dlp and wires its output into the same `DownloadItem`
+    /// the direct path uses, so the UI needs no idea which engine is running.
+    func startExtraction(from pageURL: URL, title: String, tab: Tab?) {
+        guard MediaExtractor.shared.isAvailable else { return }
+
+        // A placeholder name until yt-dlp reports the real one: a row reading
+        // "Downloading…" for the thirty seconds it takes to resolve formats
+        // looks stalled.
+        let placeholder = sanitize(title.isEmpty ? (pageURL.host ?? "video") : title)
+        let item = DownloadItem(filename: placeholder + ".mp4")
+        item.host = pageURL.host
+        item.pageURL = pageURL
+        item.isExtracted = true
+        items.insert(item, at: 0)
+        if let tab { itemsByTab[tab.id] = item }
+
+        Task { @MainActor in
+            let extraction = await MediaExtractor.shared.start(
+                pageURL: pageURL,
+                // Held strongly on purpose: the manager is a singleton and the
+                // item is in `items` until the user clears it, so there is no
+                // cycle to break and nothing to outlive.
+                onProgress: { progress in
+                    guard item.isActive else { return }
+                    item.bytesWritten = progress.bytesWritten
+                    item.totalBytes = progress.totalBytes
+                    // Never backwards. Two things push it that way: each
+                    // progress line reaches the main actor as its own task with
+                    // no ordering guarantee, and a fragmented stream's total is
+                    // an estimate that revises itself downward as it goes. A
+                    // ring that retreats reads as a stalled download.
+                    item.fraction = max(item.fraction, progress.fraction)
+                },
+                onFinish: { result in
+                    self.finishExtraction(item, result: result)
+                }
+            )
+
+            guard let extraction else {
+                item.state = .failed("Couldn't start yt-dlp")
+                self.releaseTabBinding(for: item, after: .seconds(6))
+                return
+            }
+
+            // A cancel that landed while we were exporting cookies would
+            // otherwise be forgotten the moment the process handle arrives.
+            guard item.isActive else {
+                extraction.cancel()
+                extraction.cleanUp()
+                return
+            }
+            item.extraction = extraction
+        }
+    }
+
+    /// Moves the finished file out of the run's scratch directory and into
+    /// ~/Downloads, where the direct path would have put it.
+    private func finishExtraction(_ item: DownloadItem, result: Result<URL, ExtractionFailure>) {
+        defer {
+            item.extraction?.cleanUp()
+            item.extraction = nil
+        }
+
+        guard item.isActive else { return }
+
+        switch result {
+        case .failure(let failure):
+            item.state = .failed(failure.message)
+            releaseTabBinding(for: item, after: .seconds(6))
+
+        case .success(let produced):
+            let downloads = FileManager.default
+                .urls(for: .downloadsDirectory, in: .userDomainMask).first
+                ?? FileManager.default.homeDirectoryForCurrentUser
+            let destination = uniqueURL(in: downloads, named: produced.lastPathComponent)
+
+            do {
+                try FileManager.default.moveItem(at: produced, to: destination)
+            } catch {
+                // Across filesystems a move can fail where a copy won't — the
+                // scratch directory is in /tmp, which need not be the same
+                // volume as the home directory.
+                guard (try? FileManager.default.copyItem(at: produced, to: destination)) != nil
+                else {
+                    item.state = .failed("Couldn't save to Downloads")
+                    releaseTabBinding(for: item, after: .seconds(6))
+                    return
+                }
+            }
+
+            NSSound(named: "Glass")?.play()
+            item.filename = destination.lastPathComponent
+            item.destinationURL = destination
+            item.fraction = 1
+            item.state = .finished(destination)
+            tagProvenance(of: destination, for: item)
+            releaseTabBinding(for: item, after: .seconds(4))
+        }
+    }
+
+    // MARK: - Naming
 
     /// Prefers the page's own title over the URL's filename, which is usually
     /// an opaque CDN hash. The extension still comes from the URL.

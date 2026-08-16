@@ -1,4 +1,5 @@
 import Foundation
+import GlassCore
 import WebKit
 
 /// What a tab is currently playing.
@@ -12,16 +13,17 @@ struct MediaState: Equatable {
     /// The resolved media URL, or empty if the element has no source yet.
     var sourceURL: String = ""
 
-    /// Streamed in segments via Media Source Extensions. There is no file at
-    /// the other end of a `blob:` URL — it's a handle into the page's own
-    /// buffer — so it can't be fetched.
-    var isStreamed: Bool { sourceURL.hasPrefix("blob:") }
+    /// What the source actually is, which decides how it gets downloaded.
+    var kind: MediaSourceKind { MediaSource.kind(of: sourceURL) }
 
     /// A plain media file we can fetch, the same as "Download Video" in any
     /// browser's context menu.
-    var isDownloadable: Bool {
-        sourceURL.hasPrefix("http://") || sourceURL.hasPrefix("https://")
-    }
+    var isDownloadable: Bool { kind == .file }
+
+    /// Segmented: either a `blob:` handle into the page's own buffer, or an
+    /// HLS/DASH index whose URL points at a playlist rather than the video.
+    /// Neither can be fetched — both need yt-dlp, which starts from the page.
+    var needsExtraction: Bool { kind == .streamed || kind == .manifest }
 
     var progress: Double {
         guard duration > 0 else { return 0 }

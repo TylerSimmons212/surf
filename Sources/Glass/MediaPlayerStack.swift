@@ -282,16 +282,21 @@ struct MediaRow: View {
             ) {
                 DownloadManager.shared.downloadMedia(from: tab)
             }
-        } else if media.isStreamed {
-            // Disabled with a reason. A missing button reads as a bug; a dead
-            // one reads worse.
+        } else if media.needsExtraction {
+            // Segmented media: no URL to fetch, so yt-dlp reassembles it from
+            // the page. Marked with a different glyph because it's a slower,
+            // best-effort job rather than a straight file copy.
             IconButton(
-                systemName: "arrow.down.circle",
+                systemName: "arrow.down.circle.dotted",
                 size: 12, width: 24, height: 24, cornerRadius: 12,
-                isEnabled: false,
-                motion: .none,
-                help: "This video is streamed in segments and can't be saved as a file"
-            ) {}
+                isEnabled: MediaExtractor.shared.isAvailable,
+                motion: MediaExtractor.shared.isAvailable ? .bounce : .none,
+                help: MediaExtractor.shared.isAvailable
+                    ? "Download Video — reassembled from the stream with yt-dlp"
+                    : MediaExtractor.shared.unavailableReason
+            ) {
+                DownloadManager.shared.downloadMedia(from: tab)
+            }
         }
     }
 
