@@ -1,33 +1,68 @@
 import SwiftUI
 
-/// Switches between the home search screen and the browsing view.
 struct ContentView: View {
-    @State private var engine = BrowserEngine()
+    let session: BrowserSession
+
+    /// Hidden for a single tab, so a fresh window keeps the clean look.
+    private var showsTabBar: Bool { session.tabs.count > 1 }
 
     var body: some View {
-        Group {
-            switch engine.mode {
-            case .home:
-                SearchView(engine: engine)
-            case .browsing:
-                VStack(spacing: 0) {
-                    BrowserChrome(engine: engine)
-                    ZStack {
-                        WebView(webView: engine.webView)
-                        if let error = engine.lastError {
-                            ErrorOverlay(message: error) { engine.reload() }
-                        }
-                    }
-                }
-                .ignoresSafeArea()
-                .navigationTitle(engine.pageTitle.isEmpty ? "Glass" : engine.pageTitle)
+        VStack(spacing: 0) {
+            if showsTabBar {
+                TabBar(session: session)
             }
+
+            TabContent(
+                tab: session.selectedTab,
+                session: session,
+                needsTitlebarInset: !showsTabBar
+            )
+            // Identity tied to the tab, so switching tabs rebuilds the subtree
+            // and remounts the correct web view rather than reusing the old one.
+            .id(session.selectedTab.id)
         }
+        .ignoresSafeArea(edges: showsTabBar ? .all : [])
+        .navigationTitle(session.selectedTab.displayTitle)
         // Dev affordance: `GLASS_URL=example.com swift run` opens straight to a
         // page, so navigation can be exercised without driving the UI by hand.
+        // Comma-separate to open several tabs at once.
         .onAppear {
-            if let start = ProcessInfo.processInfo.environment["GLASS_URL"], !start.isEmpty {
-                engine.submit(start)
+            guard let start = ProcessInfo.processInfo.environment["GLASS_URL"], !start.isEmpty
+            else { return }
+            let targets = start.split(separator: ",").map(String.init)
+            for (offset, target) in targets.enumerated() {
+                let tab = offset == 0 ? session.selectedTab : session.addTab()
+                tab.submit(target)
+            }
+            // Land on the first tab, not the last one opened.
+            if let first = session.tabs.first { session.select(first) }
+        }
+    }
+}
+
+/// One tab's content: either the home search screen or chrome plus the page.
+private struct TabContent: View {
+    let tab: Tab
+    let session: BrowserSession
+    let needsTitlebarInset: Bool
+
+    var body: some View {
+        switch tab.mode {
+        case .home:
+            SearchView(tab: tab, session: session)
+        case .browsing:
+            VStack(spacing: 0) {
+                BrowserChrome(
+                    tab: tab,
+                    session: session,
+                    needsTitlebarInset: needsTitlebarInset
+                )
+                ZStack {
+                    WebView(webView: tab.webView)
+                    if let error = tab.lastError {
+                        ErrorOverlay(message: error) { tab.reload() }
+                    }
+                }
             }
         }
     }

@@ -3,31 +3,37 @@ import SwiftUI
 /// The toolbar shown while browsing: navigation controls, address field, and a
 /// hairline progress indicator.
 struct BrowserChrome: View {
-    @Bindable var engine: BrowserEngine
+    @Bindable var tab: Tab
+    let session: BrowserSession
+
+    /// True only when this is the topmost row, i.e. the tab bar is hidden.
+    /// Otherwise the tab bar above already cleared the traffic lights.
+    let needsTitlebarInset: Bool
+
     @FocusState private var addressFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                // Leading inset clears the traffic lights, since the window
-                // uses a hidden titlebar with full-size content.
-                Spacer().frame(width: 68)
-
-                navButton("chevron.left", enabled: engine.canGoBack, help: "Back") {
-                    engine.goBack()
+                if needsTitlebarInset {
+                    Spacer().frame(width: 68)
                 }
-                navButton("chevron.right", enabled: engine.canGoForward, help: "Forward") {
-                    engine.goForward()
+
+                navButton("chevron.left", enabled: tab.canGoBack, help: "Back") {
+                    tab.goBack()
+                }
+                navButton("chevron.right", enabled: tab.canGoForward, help: "Forward") {
+                    tab.goForward()
                 }
                 navButton(
-                    engine.isLoading ? "xmark" : "arrow.clockwise",
+                    tab.isLoading ? "xmark" : "arrow.clockwise",
                     enabled: true,
-                    help: engine.isLoading ? "Stop" : "Reload"
+                    help: tab.isLoading ? "Stop" : "Reload"
                 ) {
-                    engine.isLoading ? engine.stop() : engine.reload()
+                    tab.isLoading ? tab.stop() : tab.reload()
                 }
                 navButton("house", enabled: true, help: "New Search") {
-                    engine.goHome()
+                    tab.goHome()
                 }
 
                 addressField
@@ -38,20 +44,25 @@ struct BrowserChrome: View {
             progressBar
         }
         .background(.bar)
+        // ⌘L: the session bumps a token, and whichever chrome is on screen
+        // takes focus. A token rather than a flag so repeats each register.
+        .onChange(of: session.focusAddressToken) { _, _ in
+            addressFocused = true
+        }
     }
 
     private var addressField: some View {
         HStack(spacing: 8) {
-            Image(systemName: engine.lastError == nil ? "magnifyingglass" : "exclamationmark.triangle")
+            Image(systemName: tab.lastError == nil ? "magnifyingglass" : "exclamationmark.triangle")
                 .font(.system(size: 12))
-                .foregroundStyle(engine.lastError == nil ? Color.secondary : Color.orange)
+                .foregroundStyle(tab.lastError == nil ? Color.secondary : Color.orange)
 
-            TextField("Search or enter address", text: $engine.addressText)
+            TextField("Search or enter address", text: $tab.addressText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($addressFocused)
                 .onSubmit {
-                    engine.submit(engine.addressText)
+                    tab.submit(tab.addressText)
                     addressFocused = false
                 }
         }
@@ -79,10 +90,10 @@ struct BrowserChrome: View {
         GeometryReader { geometry in
             Rectangle()
                 .fill(Color.accentColor)
-                .frame(width: geometry.size.width * engine.progress)
-                .opacity(engine.isLoading ? 1 : 0)
-                .animation(.easeOut(duration: 0.2), value: engine.progress)
-                .animation(.easeOut(duration: 0.3), value: engine.isLoading)
+                .frame(width: geometry.size.width * tab.progress)
+                .opacity(tab.isLoading ? 1 : 0)
+                .animation(.easeOut(duration: 0.2), value: tab.progress)
+                .animation(.easeOut(duration: 0.3), value: tab.isLoading)
         }
         .frame(height: 2)
     }

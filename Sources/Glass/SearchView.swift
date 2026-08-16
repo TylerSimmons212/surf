@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct SearchView: View {
-    let engine: BrowserEngine
+    let tab: Tab
+    let session: BrowserSession
 
     @State private var query: String = ""
     @FocusState private var searchFocused: Bool
@@ -26,6 +27,11 @@ struct SearchView: View {
         }
         .ignoresSafeArea()
         .onAppear { searchFocused = true }
+        // ⌘L on the home screen focuses the search field, since it's the
+        // address field for this tab.
+        .onChange(of: session.focusAddressToken) { _, _ in
+            searchFocused = true
+        }
     }
 
     private var searchBar: some View {
@@ -73,6 +79,6 @@ struct SearchView: View {
 
     private func submit() {
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        engine.submit(query)
+        tab.submit(query)
     }
 }
