@@ -91,6 +91,47 @@ enum MediaBridge {
     return true;
     """
 
+    /// Promotes the playing element to fill the viewport.
+    ///
+    /// Nothing is hidden — the video is pinned over everything at max z-index
+    /// instead. Hiding a site's chrome tends to break players that measure
+    /// their own layout; covering it doesn't.
+    static let focusScript = """
+    const el = window.__glassMedia;
+    if (!el) { return false; }
+    el.setAttribute('data-glass-popout', '1');
+    let style = document.getElementById('__glass_popout');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = '__glass_popout';
+      style.textContent = `
+        html, body { overflow: hidden !important; background: #000 !important; }
+        [data-glass-popout] {
+          position: fixed !important; inset: 0 !important;
+          width: 100vw !important; height: 100vh !important;
+          max-width: none !important; max-height: none !important;
+          object-fit: contain !important; background: #000 !important;
+          z-index: 2147483647 !important;
+        }`;
+      document.documentElement.appendChild(style);
+    }
+    return true;
+    """
+
+    static let unfocusScript = """
+    document.getElementById('__glass_popout')?.remove();
+    document.querySelectorAll('[data-glass-popout]')
+      .forEach((el) => el.removeAttribute('data-glass-popout'));
+    return true;
+    """
+
+    /// Natural size of the playing video, for sizing the panel.
+    static let dimensionsScript = """
+    const el = window.__glassMedia;
+    if (!el || !el.videoWidth) { return null; }
+    return JSON.stringify([el.videoWidth, el.videoHeight]);
+    """
+
     static func decode(_ body: Any) -> MediaState? {
         guard let dict = body as? [String: Any] else { return nil }
         return MediaState(

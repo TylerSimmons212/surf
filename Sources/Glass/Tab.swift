@@ -183,6 +183,27 @@ final class Tab: NSObject, Identifiable {
         )
     }
 
+    /// Applies or removes the pop-out styling inside the page.
+    func setPopOutStyling(_ active: Bool) {
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                active ? MediaBridge.focusScript : MediaBridge.unfocusScript,
+                arguments: [:], in: nil, contentWorld: .page
+            )
+        }
+    }
+
+    /// The video's intrinsic size, used to shape the pop-out panel.
+    func videoDimensions() async -> CGSize? {
+        guard let json = try? await webView.callAsyncJavaScript(
+            MediaBridge.dimensionsScript, arguments: [:], in: nil, contentWorld: .page
+        ) as? String,
+            let pair = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double],
+            pair.count == 2, pair[0] > 0, pair[1] > 0
+        else { return nil }
+        return CGSize(width: pair[0], height: pair[1])
+    }
+
     func toggleMediaPlayback() {
         Task { @MainActor in
             _ = try? await webView.callAsyncJavaScript(

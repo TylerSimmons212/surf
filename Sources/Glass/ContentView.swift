@@ -187,7 +187,13 @@ private struct TabContent: View {
                 EmptyTabView(onOpenAddressBar: onOpenAddressBar)
             case .browsing:
                 ZStack {
-                    WebView(webView: tab.webView)
+                    if PopOutController.shared.isPoppedOut(tab) {
+                        // The web view itself now lives in the pop-out panel; it
+                        // can only be in one hierarchy at a time.
+                        PoppedOutPlaceholder(tab: tab)
+                    } else {
+                        WebView(webView: tab.webView)
+                    }
                     if let error = tab.lastError {
                         ErrorOverlay(message: error) { tab.reload() }
                     }
@@ -196,6 +202,30 @@ private struct TabContent: View {
         }
         // A restored tab loads the first time it's actually shown, not at launch.
         .onAppear { tab.activateRestoreIfNeeded() }
+    }
+}
+
+/// Stands in for a tab whose web view has been moved into the pop-out panel.
+private struct PoppedOutPlaceholder: View {
+    let tab: Tab
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "rectangle.on.rectangle")
+                .font(.system(size: 30))
+                .foregroundStyle(.secondary)
+            Text("Playing in a pop-out window")
+                .font(.title3.weight(.medium))
+            Text(tab.displayTitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Button("Bring Back") { PopOutController.shared.restore() }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.regularMaterial)
     }
 }
 

@@ -135,6 +135,12 @@ final class BrowserSession {
     func close(_ tab: Tab) {
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
 
+        // A popped-out tab still owns its panel; tearing it down first would
+        // leave a floating window with a dead web view inside.
+        if PopOutController.shared.isPoppedOut(tab) {
+            PopOutController.shared.restore()
+        }
+
         // Explicit teardown, not just dropping the reference: a web view with
         // audio playing keeps its content process alive, so a closed tab would
         // otherwise keep playing.

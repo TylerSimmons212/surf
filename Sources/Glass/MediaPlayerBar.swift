@@ -30,6 +30,22 @@ struct MediaPlayerBar: View {
 
                     Spacer(minLength: 0)
 
+                    if media.hasVideo {
+                        IconButton(
+                            systemName: PopOutController.shared.isPoppedOut(tab)
+                                ? "arrow.down.right.and.arrow.up.left"
+                                : "rectangle.on.rectangle",
+                            size: 11,
+                            width: 24,
+                            height: 24,
+                            cornerRadius: 12,
+                            help: PopOutController.shared.isPoppedOut(tab)
+                                ? "Bring Back" : "Pop Out Video"
+                        ) {
+                            PopOutController.shared.toggle(tab)
+                        }
+                    }
+
                     IconButton(
                         systemName: media.isPlaying ? "pause.fill" : "play.fill",
                         size: 11,

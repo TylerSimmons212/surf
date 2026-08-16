@@ -19,6 +19,10 @@ search button in the sidebar) rather than a permanent toolbar — and it's the
 only place to type an address, including on a new tab. Each tab row has a link
 button that copies its URL.
 
+A tab that's playing media shows a now-playing strip at the bottom of the
+sidebar, with play/pause and a button to pop video out into a floating
+always-on-top panel.
+
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position
 all restore on relaunch — including each tab's back/forward history and scroll
@@ -101,6 +105,7 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerBar.swift` — now-playing strip at the sidebar's foot
+- `Sources/Glass/PopOutController.swift` — floating video panel (moves the live web view)
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
 
 ## Dev
