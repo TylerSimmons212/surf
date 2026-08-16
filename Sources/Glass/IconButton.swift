@@ -10,7 +10,7 @@ enum IconMotion {
     case bounce
     /// A soft fade in place — for things that are waiting rather than acting.
     case pulse
-    /// A refusal. macOS 15+, falls back to bounce.
+    /// A refusal.
     case wiggle
     case none
 }
@@ -39,7 +39,7 @@ struct IconButton: View {
     var motion: IconMotion = .bounce
     /// Spins continuously — for work in progress, not for feedback.
     var isSpinning: Bool = false
-    /// Draws itself in stroke-by-stroke on first appearance (macOS 26+).
+    /// Draws itself in stroke-by-stroke on first appearance.
     var drawsIn: Bool = false
 
     var help: String
@@ -95,21 +95,11 @@ struct IconButton: View {
             .contentTransition(.symbolEffect(.replace.downUp))
 
         if isSpinning {
-            spinning(base)
-        } else {
-            activation(base)
-        }
-    }
-
-    /// Continuous rotation. `.rotate` spins the symbol's own geometry, which
-    /// looks better than rotating the rendered image — but it's macOS 15+, so
-    /// older systems get a plain transform instead.
-    @ViewBuilder
-    private func spinning(_ base: some View) -> some View {
-        if #available(macOS 15.0, *) {
+            // `.rotate` spins the symbol's own geometry rather than the
+            // rendered image, so strokes stay optically correct throughout.
             base.symbolEffect(.rotate, options: .repeating)
         } else {
-            base.modifier(ContinuousRotation())
+            activation(base)
         }
     }
 
@@ -123,40 +113,20 @@ struct IconButton: View {
         case .pulse:
             drawn.symbolEffect(.pulse, value: activations)
         case .wiggle:
-            if #available(macOS 15.0, *) {
-                drawn.symbolEffect(.wiggle, value: activations)
-            } else {
-                drawn.symbolEffect(.bounce, value: activations)
-            }
+            drawn.symbolEffect(.wiggle, value: activations)
         case .none:
             drawn
         }
     }
 
-    /// Stroke-by-stroke draw-in on first appearance. Newest of the symbol
-    /// effects, so everything older simply skips it.
+    /// Stroke-by-stroke draw-in on first appearance.
     @ViewBuilder
     private func drawIn(_ base: some View) -> some View {
-        if drawsIn, #available(macOS 26.0, *) {
+        if drawsIn {
             base.symbolEffect(.drawOn, options: .nonRepeating, isActive: hasAppeared)
         } else {
             base
         }
-    }
-}
-
-/// Fallback spin for macOS 14, where `.rotate` doesn't exist.
-private struct ContinuousRotation: ViewModifier {
-    @State private var angle: Double = 0
-
-    func body(content: Content) -> some View {
-        content
-            .rotationEffect(.degrees(angle))
-            .onAppear {
-                withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                    angle = 360
-                }
-            }
     }
 }
 
