@@ -3,7 +3,7 @@ import SwiftUI
 struct ContentView: View {
     let session: BrowserSession
 
-    @AppStorage("sidebarPinned") private var isPinned = false
+    @AppStorage(PreferenceKeys.sidebarPinned) private var isPinned = false
 
     @State private var isRevealed = false
     @State private var pointerInHotZone = false

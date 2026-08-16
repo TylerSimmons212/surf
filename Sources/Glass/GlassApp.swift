@@ -1,3 +1,4 @@
+import GlassCore
 import SwiftUI
 
 @main
@@ -6,11 +7,17 @@ struct GlassApp: App {
 
     /// One session for the app. Held here rather than in `ContentView` so the
     /// menu commands below can drive the same tabs the window is showing.
-    @State private var session = BrowserSession()
+    @State private var session: BrowserSession
+
+    init() {
+        // Must precede BrowserSession, which consults these on construction.
+        PrivacySettings.registerDefaults()
+        _session = State(initialValue: BrowserSession())
+    }
 
     /// Mirrors ContentView's storage, so the menu item reflects and drives the
     /// same preference.
-    @AppStorage("sidebarPinned") private var isSidebarPinned = false
+    @AppStorage(PreferenceKeys.sidebarPinned) private var isSidebarPinned = false
 
     var body: some Scene {
         WindowGroup("Glass") {
@@ -20,6 +27,10 @@ struct GlassApp: App {
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 640)
         .commands { tabCommands }
+
+        Settings {
+            SettingsView()
+        }
     }
 
     /// Standard browser shortcuts. These live in the menu bar because that's
@@ -79,5 +90,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    /// Erasing data is async, and a normal quit won't wait for it. `.terminateLater`
+    /// holds the app open until the clear finishes and we explicitly reply —
+    /// otherwise the promise in Settings would be silently broken at the exact
+    /// moment it's supposed to be kept.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let categories = PrivacyPolicy.categoriesToClearOnQuit(.current)
+        guard !categories.isEmpty else { return .terminateNow }
+
+        Task { @MainActor in
+            await BrowsingDataCleaner.clear(categories)
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

@@ -24,7 +24,7 @@ final class BrowserSession {
     /// overwrite the file we're still reading from.
     @ObservationIgnored private var isRestoring = false
 
-    init(restoring restored: PersistedSession? = SessionFile.load()) {
+    init(restoring restored: PersistedSession? = BrowserSession.restorableSession()) {
         if let restored, !restored.tabs.isEmpty {
             isRestoring = true
             let tabs = restored.tabs.map { persisted -> Tab in
@@ -53,6 +53,12 @@ final class BrowserSession {
         }
     }
 
+    /// Honours "Reopen tabs on launch" — with it off, the file isn't even read.
+    private static func restorableSession() -> PersistedSession? {
+        guard PrivacyPolicy.shouldPersistSession(.current) else { return nil }
+        return SessionFile.load()
+    }
+
     // MARK: - Persistence
 
     /// Coalesces the many save triggers (every title change, every navigation)
@@ -68,14 +74,27 @@ final class BrowserSession {
     }
 
     func saveNow() {
+        let settings = PrivacySettings.current
+
+        // Tab restore turned off: leave nothing behind, and delete anything a
+        // previous run wrote. Turning the setting off has to erase the trail,
+        // not merely stop adding to it.
+        guard PrivacyPolicy.shouldPersistSession(settings) else {
+            try? FileManager.default.removeItem(at: SessionFile.url)
+            return
+        }
+
         let snapshot = PersistedSession(
             tabs: tabs.map { $0.snapshot() },
             selectedIndex: tabs.firstIndex { $0.id == selectedTabID } ?? 0
         )
+        // Strips each tab's back/forward blob when history is off.
+        let redacted = PrivacyPolicy.redact(snapshot, for: settings)
+
         // A session of only home tabs sanitizes to nil — write it as empty so
         // closing everything and quitting doesn't resurrect old tabs.
         do {
-            try SessionFile.save(snapshot.sanitized() ?? PersistedSession(tabs: [], selectedIndex: 0))
+            try SessionFile.save(redacted.sanitized() ?? PersistedSession(tabs: [], selectedIndex: 0))
         } catch {
             fputs("[glass] session save failed: \(error)\n", stderr)
         }
