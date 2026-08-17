@@ -167,6 +167,7 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
 - `Sources/GlassCore/ComponentUpdate.swift` — version comparison, scheduling, and
   release discovery for both helpers
+- `Sources/Glass/PopOutChrome.swift` — the pop-out's hover controls and rounded frame
 - `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window

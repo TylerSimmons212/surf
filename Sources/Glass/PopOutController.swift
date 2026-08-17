@@ -30,6 +30,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
 
     @ObservationIgnored private var panel: NSPanel?
     @ObservationIgnored private var lensContainer: NSView?
+    @ObservationIgnored private var chromeView: ChromeHostingView?
+    @ObservationIgnored private let chromeModel = PopOutChromeModel()
     /// The web view's size at pop-out time. Its frame is pinned to this so the
     /// page never reflows inside the panel and the measured rect stays valid.
     @ObservationIgnored private var pageSize: CGSize = .zero
@@ -76,25 +78,35 @@ final class PopOutController: NSObject, NSWindowDelegate {
 
     private func presentPanel(for tab: Tab, videoFrame: CGRect) {
         let contentSize = panelSize(for: videoFrame.size)
-        let panel = NSPanel(
+
+        // Borderless: a titled panel reads as a mini window, and the whole point
+        // is that this should read as a piece of floating video.
+        let panel = PopOutPanel(
             contentRect: NSRect(origin: .zero, size: contentSize),
-            styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel],
+            styleMask: [.borderless, .resizable, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        panel.title = tab.displayTitle
         // Stays above ordinary windows and follows you between Spaces, which is
         // the entire point of a pop-out.
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.contentAspectRatio = videoFrame.size
         panel.contentMinSize = NSSize(width: 240, height: 135)
         panel.delegate = self
+        // Transparent so the rounded corners aren't filled in by the window's
+        // own background, and shadowed so it lifts off whatever is behind it.
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
 
-        let container = NSView(frame: NSRect(origin: .zero, size: contentSize))
+        let root = PopOutRootView(frame: NSRect(origin: .zero, size: contentSize))
+        root.autoresizingMask = [.width, .height]
+
+        let container = NSView(frame: root.bounds)
+        container.autoresizingMask = [.width, .height]
         container.clipsToBounds = true
 
         // The web view keeps the size it had in the main window — the page
@@ -102,14 +114,39 @@ final class PopOutController: NSObject, NSWindowDelegate {
         tab.webView.autoresizingMask = []
         tab.webView.frame = NSRect(origin: .zero, size: pageSize)
         container.addSubview(tab.webView)
+        root.addSubview(container)
 
-        panel.contentView = container
+        chromeModel.title = tab.displayTitle
+        chromeModel.onClose = { [weak self] in self?.closeFromChrome() }
+        chromeModel.onRestore = { [weak self] in self?.restore() }
+
+        let chrome = ChromeHostingView(rootView: PopOutChrome(model: chromeModel))
+        chrome.frame = root.bounds
+        chrome.autoresizingMask = [.width, .height]
+        root.addSubview(chrome)
+        chromeView = chrome
+
+        root.onHoverChange = { [weak self] hovering in
+            MainActor.assumeIsolated {
+                self?.chromeModel.isHovering = hovering
+                // Only claim clicks while the bar is actually on screen.
+                self?.chromeView?.interactiveTopHeight = hovering ? PopOutChrome.barHeight : 0
+            }
+        }
+
+        panel.contentView = root
         lensContainer = container
         applyLens(videoFrame)
 
         positionInBottomTrailingCorner(panel, size: contentSize)
         panel.orderFront(nil)
         self.panel = panel
+    }
+
+    /// The chrome's close button dismisses the pop-out entirely, folding the
+    /// tab back into the main window rather than leaving it orphaned.
+    private func closeFromChrome() {
+        restore()
     }
 
     /// The heart of the lens: point the container's bounds at the video.
@@ -184,6 +221,7 @@ final class PopOutController: NSObject, NSWindowDelegate {
         tab.setPageScrollLocked(false)
 
         lensContainer = nil
+        chromeView = nil
         panel?.delegate = nil
         panel?.close()
         panel = nil
