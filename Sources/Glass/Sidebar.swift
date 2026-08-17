@@ -157,6 +157,10 @@ struct Sidebar: View {
         // The controls sit on top of the end of the title, so the text is faded
         // out beneath them rather than left to collide with them.
         .mask { titleFade(clearingActions: showsActions) }
+        // Selection belongs to the title area, and is attached *before* the
+        // controls are overlaid so they sit above it and take their own clicks.
+        .contentShape(Rectangle())
+        .onTapGesture { session.select(tab) }
         // Overlaid rather than laid out, so the title gets the full width of
         // the row until the controls are actually wanted. Reserving their space
         // permanently made every tab name truncate early for the sake of two
@@ -204,10 +208,6 @@ struct Sidebar: View {
                 .animation(.easeOut(duration: 0.16), value: isHovered)
                 .animation(.easeOut(duration: 0.2), value: isSelected)
         }
-        // Excludes the strip the hover controls sit in, so selecting the tab
-        // and pressing its buttons are never competing for the same click.
-        .contentShape(RowTapArea(trailingInset: showsActions ? Sidebar.actionsWidth + 9 : 0))
-        .onTapGesture { session.select(tab) }
         .onHover { hovering in
             hoveredTab = hovering ? tab.id : (hoveredTab == tab.id ? nil : hoveredTab)
         }
@@ -306,21 +306,4 @@ struct Sidebar: View {
         }
     }
 
-}
-
-/// A row's clickable area, minus the trailing strip its controls occupy while
-/// they're on screen.
-private struct RowTapArea: Shape {
-    var trailingInset: CGFloat
-
-    func path(in rect: CGRect) -> Path {
-        Path(
-            CGRect(
-                x: rect.minX,
-                y: rect.minY,
-                width: max(0, rect.width - trailingInset),
-                height: rect.height
-            )
-        )
-    }
 }

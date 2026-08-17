@@ -173,7 +173,12 @@ struct MediaRow: View {
             .background(.regularMaterial, in: cardShape)
             .clipShape(cardShape)
             .overlay {
-                cardShape.fill(Color.primary.opacity(isHovering ? 0.07 : 0))
+                // Decoration only. A filled shape takes hits like any other
+                // view, and this one covers the whole card — it was sitting on
+                // top of every control and eating their clicks.
+                cardShape
+                    .fill(Color.primary.opacity(isHovering ? 0.07 : 0))
+                    .allowsHitTesting(false)
             }
             .shadow(color: .black.opacity(0.16), radius: 6, y: 2)
             .padding(.horizontal, 8)
