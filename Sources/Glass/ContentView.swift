@@ -124,6 +124,9 @@ struct ContentView: View {
         TabContent(
             tab: session.selectedTab,
             session: session,
+            // The floating panel plus its leading inset — the exact strip of
+            // page the chrome is sitting on top of.
+            chromeInset: (!isPinned && isRevealed) ? Sidebar.width + 8 : 0,
             onOpenAddressBar: { session.requestAddressFocus() }
         )
             // Identity tied to the tab, so switching rebuilds the subtree and
@@ -184,6 +187,7 @@ struct ContentView: View {
 private struct TabContent: View {
     let tab: Tab
     let session: BrowserSession
+    let chromeInset: CGFloat
     let onOpenAddressBar: () -> Void
 
     var body: some View {
@@ -198,7 +202,7 @@ private struct TabContent: View {
                         // can only be in one hierarchy at a time.
                         PoppedOutPlaceholder(tab: tab)
                     } else {
-                        WebView(webView: tab.webView)
+                        WebView(webView: tab.webView, chromeInset: chromeInset)
                     }
                     if let error = tab.lastError {
                         ErrorOverlay(message: error) { tab.reload() }

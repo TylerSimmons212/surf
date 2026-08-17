@@ -317,3 +317,4 @@ struct MediaRow: View {
         }
     }
 }
+
