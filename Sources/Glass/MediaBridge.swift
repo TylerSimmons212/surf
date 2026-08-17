@@ -150,12 +150,18 @@ enum MediaBridge {
     if (!document.getElementById('__glass_lens')) {
       const s = document.createElement('style');
       s.id = '__glass_lens';
-      s.textContent = 'html, body { overflow: hidden !important; }';
+      // `pointer-events` is inherited, but sites set it explicitly on their
+      // own overlays, so the universal selector and !important are both doing
+      // work here. This is what actually keeps the pointer off the page:
+      // covering a view with another one doesn't stop it, because tracking
+      // areas fire on geometry and know nothing about what's drawn on top.
+      s.textContent = 'html, body { overflow: hidden !important; }' +
+        'html, html * { pointer-events: none !important; }';
       document.documentElement.appendChild(s);
     }
     // Native controls don't auto-hide reliably when the pointer never arrives,
-    // so switch them off outright. Custom players are handled by the panel
-    // swallowing mouse events, which lets their own idle timer hide them.
+    // so switch them off outright. Custom players hide themselves once the
+    // page stops seeing hover at all.
     const el = window.__glassMedia;
     if (el) {
       el.dataset.glassControls = el.controls ? '1' : '0';

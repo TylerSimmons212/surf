@@ -114,51 +114,36 @@ struct MediaRow: View {
         if let media {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    // Only this part selects the tab. The card used to carry
-                    // the tap itself, which put one gesture over the whole
-                    // surface and left every control arguing with it for the
-                    // same click — the card won, so the buttons did nothing but
-                    // switch tabs. Two regions that don't overlap can't argue.
-                    HStack(spacing: 10) {
-                        artwork(media)
+                    artwork(media)
 
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(media.title.isEmpty ? tab.displayTitle : media.title)
-                                .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
-                                .lineLimit(1)
-                            Text(media.artist)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 0)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(media.title.isEmpty ? tab.displayTitle : media.title)
+                            .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
+                            .lineLimit(1)
+                        Text(media.artist)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { session.select(tab) }
-                    .help("Go to \(tab.displayTitle)")
 
+                    Spacer(minLength: 0)
+
+                    // The chip and the controls trade places: hovering fans the
+                    // stack open, which is what the chip was pointing at, so it
+                    // has nothing left to say once the controls arrive.
                     if stackedCount > 0 {
                         stackChip
+                            .opacity(isHovering ? 0 : 1)
                     }
-
-                    if isPrimary {
-                        downloadControl(media)
-                        popOutControl(media)
-                    }
-
-                    IconButton(
-                        systemName: media.isPlaying ? "pause.fill" : "play.fill",
-                        size: 12,
-                        width: 26,
-                        height: 26,
-                        cornerRadius: 13,
-                        help: media.isPlaying ? "Pause" : "Play"
-                    ) {
-                        tab.toggleMediaPlayback()
-                    }
-                    .animation(.easeOut(duration: 0.15), value: media.isPlaying)
                 }
+                // Same arrangement as a tab row: the title runs the full width
+                // and the controls fade in over its tail, so nothing is
+                // truncated to hold space for buttons that aren't there yet.
+                .mask { controlFade(clearing: isHovering) }
+                .contentShape(Rectangle())
+                .onTapGesture { session.select(tab) }
+                .help("Go to \(tab.displayTitle)")
+                .overlay(alignment: .trailing) { controls(media) }
                 .padding(.horizontal, 9)
                 .padding(.vertical, 9)
 
@@ -182,7 +167,67 @@ struct MediaRow: View {
             }
             .shadow(color: .black.opacity(0.16), radius: 6, y: 2)
             .padding(.horizontal, 8)
-            .onHover { isHovering = $0 }
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.16)) { isHovering = hovering }
+            }
+        }
+    }
+
+    /// Overlaid rather than laid out, so at rest the title has the whole card.
+    private func controls(_ media: MediaState) -> some View {
+        HStack(spacing: controlSpacing) {
+            if isPrimary {
+                downloadControl(media)
+                popOutControl(media)
+            }
+
+            IconButton(
+                systemName: media.isPlaying ? "pause.fill" : "play.fill",
+                size: 12,
+                width: controlDiameter,
+                height: controlDiameter,
+                cornerRadius: controlDiameter / 2,
+                help: media.isPlaying ? "Pause" : "Play"
+            ) {
+                tab.toggleMediaPlayback()
+            }
+            .animation(.easeOut(duration: 0.15), value: media.isPlaying)
+        }
+        .opacity(isHovering ? 1 : 0)
+        .scaleEffect(isHovering ? 1 : 0.7, anchor: .trailing)
+        .allowsHitTesting(isHovering)
+        .animation(.spring(response: 0.26, dampingFraction: 0.7), value: isHovering)
+    }
+
+    private let controlDiameter: CGFloat = 26
+    private let controlSpacing: CGFloat = 4
+
+    /// How much room the controls need, so the fade clears exactly that much
+    /// and no more.
+    private var controlsWidth: CGFloat {
+        var count = 1
+        if isPrimary {
+            if downloadControlIsShown { count += 1 }
+            if tab.media?.hasVideo == true { count += 1 }
+        }
+        return CGFloat(count) * controlDiameter + CGFloat(count - 1) * controlSpacing
+    }
+
+    private var downloadControlIsShown: Bool {
+        guard let media = tab.media else { return false }
+        return DownloadManager.shared.activeItem(for: tab) != nil
+            || media.isDownloadable
+            || media.needsExtraction
+    }
+
+    /// Dissolves the tail of the title into the space the controls occupy.
+    private func controlFade(clearing: Bool) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: clearing ? 16 : 0)
+            Color.clear
+                .frame(width: clearing ? controlsWidth : 0)
         }
     }
 
