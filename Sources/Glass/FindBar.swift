@@ -23,7 +23,9 @@ struct FindBar: View {
 
             TextField("Find in page", text: $query)
                 .textFieldStyle(.plain)
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+                .tint(Color.accentColor)
                 .frame(width: 180)
                 .focused($focused)
                 .onSubmit { step(forward: true) }

@@ -56,18 +56,21 @@ struct URLPalette: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(createsTab ? Color.accentColor : Color.secondary)
 
+            // The placeholder comes from the title, *not* from `prompt:` with a
+            // styled Text. Styling the prompt swaps the two: the placeholder
+            // takes the field's colour and what you type is left with the
+            // prompt's. Measured on this exact surface — with a styled prompt
+            // the typed text renders lighter than the placeholder, which is
+            // precisely backwards.
             TextField(
-                "",
-                text: $text,
-                prompt: Text(createsTab ? "Search or enter address — opens a new tab"
-                                        : "Search or enter address")
-                    .foregroundStyle(.secondary)
+                createsTab ? "Search or enter address — opens a new tab"
+                           : "Search or enter address",
+                text: $text
             )
                 .textFieldStyle(.plain)
-                // What you type is the content; the placeholder is a label.
-                // Semibold at full contrast separates the two without needing
-                // a second colour, and holds up over a busy page showing
-                // through the glass.
+                // What you type is content; the placeholder is a label. Weight
+                // and contrast separate them, which survives a busy page
+                // showing through the glass.
                 .font(.system(size: 19, weight: .semibold))
                 .foregroundStyle(.primary)
                 .tint(Color.accentColor)
