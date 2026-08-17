@@ -204,7 +204,9 @@ struct Sidebar: View {
                 .animation(.easeOut(duration: 0.16), value: isHovered)
                 .animation(.easeOut(duration: 0.2), value: isSelected)
         }
-        .contentShape(Rectangle())
+        // Excludes the strip the hover controls sit in, so selecting the tab
+        // and pressing its buttons are never competing for the same click.
+        .contentShape(RowTapArea(trailingInset: showsActions ? Sidebar.actionsWidth + 9 : 0))
         .onTapGesture { session.select(tab) }
         .onHover { hovering in
             hoveredTab = hovering ? tab.id : (hoveredTab == tab.id ? nil : hoveredTab)
@@ -304,4 +306,21 @@ struct Sidebar: View {
         }
     }
 
+}
+
+/// A row's clickable area, minus the trailing strip its controls occupy while
+/// they're on screen.
+private struct RowTapArea: Shape {
+    var trailingInset: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        Path(
+            CGRect(
+                x: rect.minX,
+                y: rect.minY,
+                width: max(0, rect.width - trailingInset),
+                height: rect.height
+            )
+        )
+    }
 }

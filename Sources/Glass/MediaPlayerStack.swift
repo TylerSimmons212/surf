@@ -114,19 +114,29 @@ struct MediaRow: View {
         if let media {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    artwork(media)
+                    // Only this part selects the tab. The card used to carry
+                    // the tap itself, which put one gesture over the whole
+                    // surface and left every control arguing with it for the
+                    // same click — the card won, so the buttons did nothing but
+                    // switch tabs. Two regions that don't overlap can't argue.
+                    HStack(spacing: 10) {
+                        artwork(media)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(media.title.isEmpty ? tab.displayTitle : media.title)
-                            .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
-                            .lineLimit(1)
-                        Text(media.artist)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(media.title.isEmpty ? tab.displayTitle : media.title)
+                                .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
+                                .lineLimit(1)
+                            Text(media.artist)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer(minLength: 0)
                     }
-
-                    Spacer(minLength: 0)
+                    .contentShape(Rectangle())
+                    .onTapGesture { session.select(tab) }
+                    .help("Go to \(tab.displayTitle)")
 
                     if stackedCount > 0 {
                         stackChip
@@ -167,10 +177,7 @@ struct MediaRow: View {
             }
             .shadow(color: .black.opacity(0.16), radius: 6, y: 2)
             .padding(.horizontal, 8)
-            .contentShape(Rectangle())
-            .onTapGesture { session.select(tab) }
             .onHover { isHovering = $0 }
-            .help("Go to \(tab.displayTitle)")
         }
     }
 
