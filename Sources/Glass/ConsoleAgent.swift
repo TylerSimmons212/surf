@@ -508,27 +508,66 @@ enum ConsoleAgent {
       /// Sending this eagerly with every log would be ruinous — a single DOM
       /// node has hundreds of properties — which is the whole reason values
       /// travel as handles rather than as trees.
-      function __glassProperties(objectId) {
+      /// How a property's *value* is described.
+      ///
+      /// Deliberately not the same as a logged value. Building a full preview
+      /// for every property means describing five sub-values each, three
+      /// hundred times over — and `innerHTML`, `outerHTML` and `textContent`
+      /// each materialise the whole document as a string before it can even be
+      /// truncated. On a real page that is the difference between instant and
+      /// "Reading…" for several seconds.
+      ///
+      /// So: no preview, and a short cap. Opening the property shows the rest.
+      function describeProperty(value) {
+        if (typeof value === 'string') {
+          const capped = value.length > 180 ? value.slice(0, 180) + '…' : value;
+          return { type: 'string', description: capped };
+        }
+        const described = describe(value, true);
+        // Shallow suppresses the objectId too, but a property still has to be
+        // openable — so mint one here for the things worth opening.
+        if (described.type === 'object' || described.type === 'function') {
+          if (described.subtype !== 'null' && value !== null && value !== undefined) {
+            described.objectId = retain(value);
+          }
+        }
+        return described;
+      }
+
+      function __glassProperties(objectId, offset, limit) {
+        // Returned as `{ items, total }` rather than an array carrying a stray
+        // property: `JSON.stringify` serialises an array as an array and drops
+        // anything hung off it, so the real count silently became the page
+        // size and the "show more" affordance never appeared.
         const target = objects.get(objectId);
-        if (target === undefined) { return []; }
+        if (target === undefined) { return { items: [], total: 0 }; }
+        const start = offset || 0;
+        const max = limit || 100;
+        let totalNames = 0;
 
         const out = [];
         try {
           if (typeof Map !== 'undefined' && target instanceof Map) {
             let index = 0;
             for (const pair of target) {
-              out.push({ name: String(describe(pair[0], true).description), value: describe(pair[1], false) });
-              if (++index >= 1000) { break; }
+              if (index++ < start) { continue; }
+              out.push({
+                name: String(describe(pair[0], true).description),
+                value: describeProperty(pair[1])
+              });
+              if (out.length >= max) { break; }
             }
-            return out;
+            return { items: out, total: target.size };
           }
           if (typeof Set !== 'undefined' && target instanceof Set) {
             let index = 0;
             for (const item of target) {
-              out.push({ name: String(index), value: describe(item, false) });
-              if (++index >= 1000) { break; }
+              const at = index++;
+              if (at < start) { continue; }
+              out.push({ name: String(at), value: describeProperty(item) });
+              if (out.length >= max) { break; }
             }
-            return out;
+            return { items: out, total: target.size };
           }
 
           // Own properties first, then inherited ones.
@@ -537,10 +576,14 @@ enum ConsoleAgent {
           // properties — `id`, `className`, `children` and the rest all live on
           // `HTMLElement.prototype` — so stopping at own properties makes
           // expanding a node show nothing at all.
+          // Names are collected first and *then* sliced, so paging is stable
+          // and the expensive part — reading values — only happens for the
+          // page actually being shown.
           const seen = new Set();
+          const names = [];
           let level = target;
           let depth = 0;
-          while (level && depth < 4 && out.length < 500) {
+          while (level && depth < 4) {
             // Stop at the universal bases. `toString`, `valueOf` and
             // `hasOwnProperty` are on every object in the language and tell you
             // nothing about *this* one — listing them buries the two keys you
@@ -549,17 +592,29 @@ enum ConsoleAgent {
                 || level === Array.prototype
                 || level === Function.prototype) { break; }
             const inherited = depth > 0;
-            let names = [];
-            try { names = Object.getOwnPropertyNames(level); } catch (e) {}
+            let own = [];
+            try { own = Object.getOwnPropertyNames(level); } catch (e) {}
 
-            for (let i = 0; i < names.length && out.length < 500; i++) {
-              const name = names[i];
+            for (let i = 0; i < own.length; i++) {
+              const name = own[i];
               if (seen.has(name)) { continue; }
               seen.add(name);
               // An array's `length` is noise next to its elements, and
               // `constructor` is on everything and tells you nothing.
               if (Array.isArray(target) && name === 'length') { continue; }
               if (inherited && name === 'constructor') { continue; }
+              names.push({ name: name, level: level, inherited: inherited });
+            }
+
+            try { level = Object.getPrototypeOf(level); } catch (e) { level = null; }
+            depth++;
+          }
+
+          for (let n = start; n < names.length && out.length < max; n++) {
+            {
+              const name = names[n].name;
+              const level = names[n].level;
+              const inherited = names[n].inherited;
 
               let descriptor;
               try { descriptor = Object.getOwnPropertyDescriptor(level, name); } catch (e) {}
@@ -591,7 +646,7 @@ enum ConsoleAgent {
                   });
                   continue;
                 }
-                out.push({ name: name, isEnumerable: !inherited, value: describe(got, false) });
+                out.push({ name: name, isEnumerable: !inherited, value: describeProperty(got) });
                 continue;
               }
 
@@ -608,15 +663,54 @@ enum ConsoleAgent {
                 // Inherited members are dimmed: real, but not what you came
                 // to look at.
                 isEnumerable: inherited ? false : (descriptor ? !!descriptor.enumerable : true),
-                value: describe(raw, false)
+                value: describeProperty(raw)
               });
             }
-
-            try { level = Object.getPrototypeOf(level); } catch (e) { level = null; }
-            depth++;
           }
+          totalNames = names.length;
         } catch (e) {}
-        return out;
+        return { items: out, total: Math.max(totalNames, out.length) };
+      }
+
+      /// Property names for the completion list.
+      ///
+      /// The base arrives already restricted to a plain dotted path, so
+      /// resolving it cannot call anything. Names only — no values are read,
+      /// so no getter runs either.
+      function __glassCompletions(params) {
+        const base = (params && params.base) || '';
+        let target;
+        try {
+          target = base ? (0, eval)(base) : globalThis;
+        } catch (e) {
+          return [];
+        }
+        if (target === null || target === undefined) { return []; }
+
+        const names = [];
+        const seen = new Set();
+        let level = target;
+        // A primitive has no own properties worth listing, but its prototype
+        // does — `'abc'.` should still offer `slice`.
+        if (typeof level !== 'object' && typeof level !== 'function') {
+          try { level = Object.getPrototypeOf(level); } catch (e) { level = null; }
+        }
+        let depth = 0;
+        while (level && depth < 6 && names.length < 500) {
+          let own = [];
+          try { own = Object.getOwnPropertyNames(level); } catch (e) {}
+          for (let i = 0; i < own.length; i++) {
+            const name = own[i];
+            if (seen.has(name)) { continue; }
+            seen.add(name);
+            // Only names that can actually be typed after a dot.
+            if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) { continue; }
+            names.push(name);
+          }
+          try { level = Object.getPrototypeOf(level); } catch (e) { level = null; }
+          depth++;
+        }
+        return names;
       }
 
       globalThis.__glassConsole = {
@@ -643,7 +737,20 @@ enum ConsoleAgent {
                 return __glassEvaluate(params);
               }
               case 'Runtime.getProperties': {
-                return JSON.stringify({ properties: __glassProperties(params && params.objectId) });
+                const offset = (params && params.offset) || 0;
+                const limit = (params && params.limit) || 100;
+                const reply = __glassProperties(params && params.objectId, offset, limit);
+                // The real size travels with the page, so the panel can say how
+                // much it is not showing rather than implying the object is
+                // smaller than it is.
+                return JSON.stringify({
+                  properties: reply.items,
+                  offset: offset,
+                  total: Math.max(reply.total, offset + reply.items.length)
+                });
+              }
+              case 'Runtime.completions': {
+                return JSON.stringify({ names: __glassCompletions(params) });
               }
               case 'Runtime.releaseObject': {
                 const ids = (params && params.objectIds) || [];

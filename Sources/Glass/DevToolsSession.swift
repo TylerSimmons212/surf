@@ -59,16 +59,36 @@ final class DevToolsSession: Identifiable {
 
     private(set) var console = ConsoleBuffer()
 
-    var consoleLevels: Set<ConsoleLevel> = Set(ConsoleLevel.allCases)
-    var consoleQuery = ""
+    var consoleLevels: Set<ConsoleLevel> = Set(ConsoleLevel.allCases) {
+        didSet { if consoleLevels != oldValue { refreshConsoleView() } }
+    }
+    var consoleQuery = "" {
+        didSet { if consoleQuery != oldValue { refreshConsoleView() } }
+    }
     /// Off by default, like every browser: yesterday's output is usually noise.
     var preservesLogOnNavigation = false
 
-    var visibleConsoleEntries: [ConsoleEntry] {
-        console.filtered(levels: consoleLevels, query: consoleQuery)
+    /// Cached rather than computed on demand.
+    ///
+    /// SwiftUI reads these several times per render pass, and filtering or
+    /// counting walks the whole buffer — up to five thousand entries. As
+    /// computed properties they turned every mouse move over the pane into
+    /// tens of thousands of comparisons. They are recomputed when the data or
+    /// the filter actually changes, which is the only time they can differ.
+    private(set) var visibleConsoleEntries: [ConsoleEntry] = []
+    private(set) var consoleCounts: [ConsoleLevel: Int] = [:]
+
+    /// The only way anything reaches the buffer. Centralised so a future call
+    /// site cannot forget to refresh the cache and leave the pane stale.
+    private func record(_ entry: ConsoleEntry) {
+        console.append(entry)
+        refreshConsoleView()
     }
 
-    var consoleCounts: [ConsoleLevel: Int] { console.counts() }
+    private func refreshConsoleView() {
+        visibleConsoleEntries = console.filtered(levels: consoleLevels, query: consoleQuery)
+        consoleCounts = console.counts()
+    }
 
     /// True when a filter is hiding output, so the pane can say so rather than
     /// letting someone conclude their page went quiet.
@@ -79,6 +99,7 @@ final class DevToolsSession: Identifiable {
 
     func clearConsole() {
         console.clear()
+        refreshConsoleView()
         releaseEvictedObjects()
     }
 
@@ -98,7 +119,7 @@ final class DevToolsSession: Identifiable {
         if inputHistory.last != trimmed { inputHistory.append(trimmed) }
         if inputHistory.count > Self.historyDepth { inputHistory.removeFirst() }
 
-        console.append(ConsoleEntry(
+        record(ConsoleEntry(
             id: 0,
             kind: .input,
             arguments: [RemoteObject(type: .string, description: trimmed)]
@@ -115,7 +136,7 @@ final class DevToolsSession: Identifiable {
             guard issued == generation else { return }
             guard let result = ConsoleWire.decodeEvaluation(reply) else { return }
 
-            console.append(ConsoleEntry(
+            record(ConsoleEntry(
                 id: 0,
                 kind: .result,
                 // A thrown value is an error however it was produced, and
@@ -125,7 +146,7 @@ final class DevToolsSession: Identifiable {
             ))
         } catch {
             guard issued == generation else { return }
-            console.append(ConsoleEntry(
+            record(ConsoleEntry(
                 id: 0,
                 kind: .result,
                 level: .error,
@@ -135,12 +156,94 @@ final class DevToolsSession: Identifiable {
         releaseEvictedObjects()
     }
 
+    // MARK: - Completion
+
+    private(set) var completions: [String] = []
+    private(set) var highlightedCompletion = 0
+    @ObservationIgnored private var completionQuery: ConsoleCompletion.Query?
+    @ObservationIgnored private var completionTask: Task<Void, Never>?
+
+    var isShowingCompletions: Bool { !completions.isEmpty }
+
+    /// Recomputed as the prompt changes.
+    ///
+    /// Debounced, because each request crosses into the page and lists a
+    /// prototype chain — cheap, but not cheap enough to do on every keystroke
+    /// of a fast typist.
+    func updateCompletions(for input: String) {
+        completionTask?.cancel()
+
+        guard let query = ConsoleCompletion.query(for: input) else {
+            dismissCompletions()
+            return
+        }
+        completionQuery = query
+
+        completionTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            guard !Task.isCancelled else { return }
+
+            let issued = generation
+            guard let reply = try? await bridge.call(
+                .runtimeCompletions, ["base": query.base]
+            ), !Task.isCancelled, issued == generation else { return }
+
+            let names = (reply["names"] as? [String]) ?? []
+            let ranked = ConsoleCompletion.rank(names, matching: query.prefix)
+            // An exact and only match is already typed; offering it is noise.
+            completions = (ranked == [query.prefix]) ? [] : Array(ranked.prefix(40))
+            highlightedCompletion = 0
+        }
+    }
+
+    func highlightCompletion(_ index: Int) {
+        guard completions.indices.contains(index) else { return }
+        highlightedCompletion = index
+    }
+
+    func moveCompletionHighlight(by offset: Int) {
+        guard isShowingCompletions else { return }
+        let count = completions.count
+        highlightedCompletion = ((highlightedCompletion + offset) % count + count) % count
+    }
+
+    /// The input with the highlighted name accepted, or nil if there is none.
+    func acceptingCompletion(_ input: String) -> String? {
+        guard isShowingCompletions,
+              let query = completionQuery,
+              completions.indices.contains(highlightedCompletion)
+        else { return nil }
+        let applied = ConsoleCompletion.apply(
+            completions[highlightedCompletion], to: input, query: query
+        )
+        dismissCompletions()
+        return applied
+    }
+
+    func dismissCompletions() {
+        completionTask?.cancel()
+        completions = []
+        completionQuery = nil
+        highlightedCompletion = 0
+    }
+
     /// One level of an object, fetched only when someone opens it.
-    func properties(of objectId: String) async -> [ObjectProperty] {
+    /// One page of an object's properties.
+    ///
+    /// Paged at the source, not just in the view. Reading a value is the
+    /// expensive part — `innerHTML` on a real page materialises the whole
+    /// document before it can even be truncated — so the agent must never be
+    /// asked for more than is about to be shown.
+    func properties(
+        of objectId: String,
+        offset: Int = 0,
+        limit: Int = 100
+    ) async -> (properties: [ObjectProperty], total: Int) {
         let issued = generation
-        guard let reply = try? await bridge.call(.runtimeGetProperties, ["objectId": objectId]),
-              issued == generation
-        else { return [] }
+        guard let reply = try? await bridge.call(.runtimeGetProperties, [
+            "objectId": objectId, "offset": offset, "limit": limit,
+        ]), issued == generation
+        else { return ([], 0) }
         return ConsoleWire.decodeProperties(reply)
     }
 
@@ -205,6 +308,7 @@ final class DevToolsSession: Identifiable {
 
             guard issued == generation else { return }
             for entry in batch.entries { console.append(entry) }
+            refreshConsoleView()
             return
         }
     }
@@ -219,6 +323,7 @@ final class DevToolsSession: Identifiable {
         generation += 1
         status = .connecting
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
+        refreshConsoleView()
         releaseEvictedObjects()
 
         Task { @MainActor in
@@ -248,6 +353,7 @@ final class DevToolsSession: Identifiable {
             // it actually happened rather than at the end of the run.
             if dropped > 0 { noteDroppedOutput(dropped) }
             for entry in entries { console.append(entry) }
+            refreshConsoleView()
             releaseEvictedObjects()
             // Acknowledging is what lets the page keep sending: unacked batches
             // past the window stop the agent emitting, which is the whole
@@ -271,7 +377,7 @@ final class DevToolsSession: Identifiable {
             "\($0.formatted()) messages were dropped — the page logged faster than Glass could read."
         } ?? "Some messages were dropped — the page logged faster than Glass could read."
 
-        console.append(ConsoleEntry(
+        record(ConsoleEntry(
             id: 0,
             level: .warning,
             arguments: [RemoteObject(type: .string, description: text)]

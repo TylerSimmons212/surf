@@ -53,8 +53,8 @@ struct ConsolePane: View {
 
             searchField
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, DevToolsTheme.barVertical)
     }
 
     private var searchField: some View {
@@ -65,8 +65,8 @@ struct ConsolePane: View {
 
             TextField("Filter", text: $session.consoleQuery)
                 .textFieldStyle(.plain)
-                .font(.system(size: 11))
-                .frame(width: 120)
+                .font(DevToolsTheme.chrome)
+                .frame(width: 130)
 
             if !session.consoleQuery.isEmpty {
                 IconButton(
@@ -85,8 +85,8 @@ struct ConsolePane: View {
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
         .background {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.primary.opacity(0.06))
+            RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
+                .fill(DevToolsTheme.inputFill)
         }
     }
 
@@ -166,7 +166,7 @@ private struct LevelChip: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
                     .fill(fill)
             }
         }
@@ -177,7 +177,7 @@ private struct LevelChip: View {
 
     private var fill: Color {
         if isOn { return tint.opacity(level.isProblem ? 0.16 : 0.10) }
-        return isHovering ? Color.primary.opacity(0.06) : .clear
+        return isHovering ? DevToolsTheme.hoverFill : .clear
     }
 
     private var label: String {
@@ -229,8 +229,8 @@ private struct ConsoleRow: View {
                 .truncationMode(.middle)
             Rectangle().fill(Color.secondary.opacity(0.25)).frame(height: 1)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, DevToolsTheme.rowInset)
+        .padding(.vertical, DevToolsTheme.unit * 1.5)
     }
 
     private var message: some View {
@@ -260,7 +260,7 @@ private struct ConsoleRow: View {
             }
 
             arguments
-                .padding(.leading, CGFloat(entry.groupDepth) * 14)
+                .padding(.leading, CGFloat(entry.groupDepth) * DevToolsTheme.indent)
 
             Spacer(minLength: 8)
 
@@ -279,8 +279,8 @@ private struct ConsoleRow: View {
                     .help("\(source.url):\(source.line):\(source.column)")
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
+        .padding(.horizontal, DevToolsTheme.rowInset)
+        .padding(.vertical, DevToolsTheme.rowVertical)
         .background(background)
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
@@ -316,7 +316,7 @@ private struct ConsoleRow: View {
             // Wrapping rather than a horizontal stack: a long log line should
             // read like a paragraph, not scroll sideways.
             Text(rendered)
-                .font(.system(size: 11.5).monospaced())
+                .font(DevToolsTheme.mono)
                 .foregroundStyle(ConsoleStyle.textColor(for: entry.level))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
@@ -341,10 +341,10 @@ private struct ConsoleRow: View {
         Rectangle()
             .fill(
                 entry.kind == .input
-                    ? Color.primary.opacity(0.04)
+                    ? DevToolsTheme.inputFill2
                     : (entry.level.isProblem
                         ? ConsoleStyle.color(for: entry.level).opacity(0.07)
-                        : (isHovering ? Color.primary.opacity(0.04) : .clear))
+                        : (isHovering ? DevToolsTheme.inputFill2 : .clear))
             )
     }
 }
@@ -399,11 +399,16 @@ enum ConsoleStyle {
 
 // MARK: - Prompt
 
-/// The JavaScript prompt.
+/// The JavaScript prompt, with completion.
 ///
 /// Uses `GlassTextField` rather than SwiftUI's, because the field editor eats
-/// Return and the arrow keys before any SwiftUI handler sees them — and those
-/// three keys *are* the interaction: submit, and walk back through history.
+/// Return, Tab and the arrow keys before any SwiftUI handler sees them — and
+/// those keys *are* the interaction.
+///
+/// The key model is deliberately boring: Tab accepts, Return always submits,
+/// Escape backs out one step. Making Return accept a highlighted suggestion
+/// would mean the same keystroke sometimes runs your code and sometimes
+/// doesn't, which is the kind of ambiguity that makes people distrust a prompt.
 private struct ConsolePrompt: View {
     let session: DevToolsSession
 
@@ -414,6 +419,19 @@ private struct ConsolePrompt: View {
     @State private var draft = ""
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if session.isShowingCompletions {
+                CompletionList(session: session) { index in
+                    session.highlightCompletion(index)
+                    accept()
+                }
+                Divider()
+            }
+            field
+        }
+    }
+
+    private var field: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 10, weight: .bold))
@@ -425,13 +443,17 @@ private struct ConsolePrompt: View {
                 font: .monospacedSystemFont(ofSize: 11.5, weight: .regular),
                 selectsAllOnFocus: false,
                 onSubmit: submit,
-                onMove: recall,
-                onCancel: { input = ""; historyOffset = -1 }
+                onMove: move,
+                onCancel: cancel,
+                onTab: accept
             )
             .frame(height: 18)
+            .onChange(of: input) { _, value in
+                session.updateCompletions(for: value)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, DevToolsTheme.unit * 1.75)
     }
 
     private func submit() {
@@ -439,11 +461,39 @@ private struct ConsolePrompt: View {
         input = ""
         historyOffset = -1
         draft = ""
+        session.dismissCompletions()
         Task { @MainActor in await session.evaluate(entry) }
     }
 
-    /// Up walks back through what was typed; down walks forward and finally
-    /// restores the half-written line you left behind.
+    @discardableResult
+    private func accept() -> Bool {
+        guard let completed = session.acceptingCompletion(input) else { return false }
+        input = completed
+        return true
+    }
+
+    /// Up and down mean the suggestion list when it's open, and history when
+    /// it isn't — the list is right under the caret, so that is what the arrows
+    /// obviously address.
+    private func move(_ direction: Int) {
+        if session.isShowingCompletions {
+            session.moveCompletionHighlight(by: direction < 0 ? -1 : 1)
+            return
+        }
+        recall(direction)
+    }
+
+    /// Escape dismisses the suggestions first, then clears the line — one
+    /// undo per press, never both at once.
+    private func cancel() {
+        if session.isShowingCompletions {
+            session.dismissCompletions()
+            return
+        }
+        input = ""
+        historyOffset = -1
+    }
+
     private func recall(_ direction: Int) {
         let history = session.inputHistory
         guard !history.isEmpty else { return }
@@ -454,5 +504,54 @@ private struct ConsolePrompt: View {
         guard next >= -1, next < history.count else { return }
         historyOffset = next
         input = next == -1 ? draft : history[history.count - 1 - next]
+    }
+}
+
+/// The completion list, sitting directly above the caret.
+private struct CompletionList: View {
+    let session: DevToolsSession
+    let onPick: (Int) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(session.completions.enumerated()), id: \.element) { index, name in
+                        row(name, index: index, isHighlighted: index == session.highlightedCompletion)
+                            .id(index)
+                    }
+                }
+            }
+            .frame(maxHeight: 168)
+            .onChange(of: session.highlightedCompletion) { _, value in
+                proxy.scrollTo(value)
+            }
+        }
+    }
+
+    private func row(_ name: String, index: Int, isHighlighted: Bool) -> some View {
+        HStack(spacing: 6) {
+            Text(name)
+                .font(DevToolsTheme.mono)
+                .foregroundStyle(isHighlighted ? Color.white : Color.primary)
+            Spacer(minLength: 0)
+            if isHighlighted {
+                // Says how to take it, rather than leaving Tab to be guessed.
+                Text("tab")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.7))
+            }
+        }
+        .padding(.horizontal, DevToolsTheme.rowInset)
+        .padding(.vertical, DevToolsTheme.unit)
+        .background {
+            if isHighlighted {
+                RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.9))
+                    .padding(.horizontal, DevToolsTheme.unit)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { onPick(index) }
     }
 }

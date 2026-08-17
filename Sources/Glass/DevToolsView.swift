@@ -26,14 +26,12 @@ struct DevToolsView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Picker("", selection: $session.pane) {
-                ForEach(DevToolsSession.Pane.allCases) { pane in
-                    Label(pane.label, systemImage: pane.symbol).tag(pane)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .fixedSize()
+            GlassSegmentedControl(
+                options: DevToolsSession.Pane.allCases,
+                selection: $session.pane,
+                label: \.label,
+                symbol: \.symbol
+            )
 
             Spacer(minLength: 8)
 

@@ -37,13 +37,16 @@ public enum ConsoleWire {
         )
     }
 
-    /// The reply to `Runtime.getProperties`.
-    public static func decodeProperties(_ body: Any) -> [ObjectProperty] {
+    /// The reply to `Runtime.getProperties`, with the object's real size so
+    /// the panel can admit what it is leaving out.
+    public static func decodeProperties(
+        _ body: Any
+    ) -> (properties: [ObjectProperty], total: Int) {
         guard let dict = body as? [String: Any],
               let raw = dict["properties"] as? [[String: Any]]
-        else { return [] }
+        else { return ([], 0) }
 
-        return raw.compactMap { entry in
+        let properties: [ObjectProperty] = raw.compactMap { entry in
             guard let name = entry["name"] as? String else { return nil }
             return ObjectProperty(
                 name: name,
@@ -52,6 +55,7 @@ public enum ConsoleWire {
                 isEnumerable: entry["isEnumerable"] as? Bool ?? true
             )
         }
+        return (properties, max(dict["total"] as? Int ?? 0, properties.count))
     }
 
     /// The reply to `Runtime.evaluate`: a value, and whether it was thrown.

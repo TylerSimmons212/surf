@@ -12,6 +12,7 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case runtimeEvaluate = "Runtime.evaluate"
     case runtimeGetProperties = "Runtime.getProperties"
     case runtimeReleaseObject = "Runtime.releaseObject"
+    case runtimeCompletions = "Runtime.completions"
 
     case consoleDrain = "Console.drain"
     case consoleSetLive = "Console.setLive"
@@ -52,6 +53,7 @@ extension DevToolsMethod {
              .overlaySetInspectMode:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
+             .runtimeCompletions,
              .consoleDrain, .consoleSetLive, .consoleAck:
             .page
         }

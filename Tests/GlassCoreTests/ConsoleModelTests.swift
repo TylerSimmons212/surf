@@ -309,3 +309,43 @@ struct ConsoleWireTests {
         #expect(ConsoleWire.decodeBatch("not a dictionary") == nil)
     }
 }
+
+@Suite("Object property pages")
+struct ObjectPropertyTests {
+
+    /// The count has to survive the wire separately from the page. It used to
+    /// ride on the JS array as an extra property, which `JSON.stringify` drops
+    /// — so a five-thousand-key object reported exactly the page size and the
+    /// "show more" affordance never appeared.
+    @Test("A page reports the object's real size, not the page size")
+    func totalSurvivesTheWire() {
+        let reply = ConsoleWire.decodeProperties([
+            "properties": [["name": "a", "value": ["type": "number", "description": "1"]]],
+            "total": 5000,
+        ])
+        #expect(reply.properties.count == 1)
+        #expect(reply.total == 5000)
+    }
+
+    /// A total smaller than the page in hand is nonsense, and would render as
+    /// a negative "show N more".
+    @Test("A total below the page size is corrected upward")
+    func totalNeverUnderstatesThePage() {
+        let reply = ConsoleWire.decodeProperties([
+            "properties": [
+                ["name": "a", "value": [:]],
+                ["name": "b", "value": [:]],
+            ],
+            "total": 0,
+        ])
+        #expect(reply.total == 2)
+    }
+
+    @Test("A getter is marked so it can be shown unevaluated")
+    func accessorsAreMarked() {
+        let reply = ConsoleWire.decodeProperties([
+            "properties": [["name": "x", "isAccessor": true, "value": ["description": "(…)"]]],
+        ])
+        #expect(reply.properties.first?.isAccessor == true)
+    }
+}
