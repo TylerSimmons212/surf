@@ -55,6 +55,44 @@ final class DevToolsSession: Identifiable {
     /// new page with the old page's answers.
     private(set) var generation = 0
 
+    // MARK: - Console
+
+    private(set) var console = ConsoleBuffer()
+
+    var consoleLevels: Set<ConsoleLevel> = Set(ConsoleLevel.allCases)
+    var consoleQuery = ""
+    /// Off by default, like every browser: yesterday's output is usually noise.
+    var preservesLogOnNavigation = false
+
+    var visibleConsoleEntries: [ConsoleEntry] {
+        console.filtered(levels: consoleLevels, query: consoleQuery)
+    }
+
+    var consoleCounts: [ConsoleLevel: Int] { console.counts() }
+
+    /// True when a filter is hiding output, so the pane can say so rather than
+    /// letting someone conclude their page went quiet.
+    var isConsoleFiltered: Bool {
+        consoleLevels.count != ConsoleLevel.allCases.count
+            || !consoleQuery.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    func clearConsole() {
+        console.clear()
+        releaseEvictedObjects()
+    }
+
+    func toggleConsoleLevel(_ level: ConsoleLevel) {
+        if consoleLevels.contains(level) {
+            // Never leave zero levels selected — an empty console that looks
+            // broken is worse than a filter that refuses to hide everything.
+            guard consoleLevels.count > 1 else { return }
+            consoleLevels.remove(level)
+        } else {
+            consoleLevels.insert(level)
+        }
+    }
+
     @ObservationIgnored private let bridge: DevToolsBridge
 
     init(tab: Tab) {
@@ -75,10 +113,37 @@ final class DevToolsSession: Identifiable {
         Task { @MainActor in
             do {
                 try await bridge.attach()
+                await drainConsoleBacklog()
                 await refreshStatus()
             } catch {
                 status = .unavailable(error.localizedDescription)
             }
+        }
+    }
+
+    /// Collects everything the page logged before this window existed, and puts
+    /// the agent into live mode. This is the payoff for capturing always: a
+    /// console that opens already holding the startup errors you opened it for.
+    ///
+    /// Retried, because `didCommit` can land a hair before the document-start
+    /// scripts are reachable. Failing silently there would be the worst kind of
+    /// bug: the agent would stay in buffering mode and the console would simply
+    /// show nothing, for ever, with no error to explain it.
+    private func drainConsoleBacklog() async {
+        let issued = generation
+
+        for attempt in 0..<4 {
+            if attempt > 0 {
+                try? await Task.sleep(for: .milliseconds(80))
+                guard issued == generation else { return }
+            }
+            guard let reply = try? await bridge.call(.consoleDrain),
+                  let batch = ConsoleWire.decodeBatch(reply)
+            else { continue }
+
+            guard issued == generation else { return }
+            for entry in batch.entries { console.append(entry) }
+            return
         }
     }
 
@@ -91,18 +156,72 @@ final class DevToolsSession: Identifiable {
     func documentDidChange() {
         generation += 1
         status = .connecting
-        Task { @MainActor in await refreshStatus() }
+        console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
+        releaseEvictedObjects()
+
+        Task { @MainActor in
+            // The new document's console agent starts buffering rather than
+            // live — it has no idea a window is open — so it has to be told,
+            // and its startup logs collected, exactly as at attach time.
+            await drainConsoleBacklog()
+            await refreshStatus()
+        }
     }
 
     private func handle(_ event: DevToolsEvent) {
         switch event {
         case .bootstrapped:
-            documentDidChange()
+            // Liveness only, deliberately *not* a document reset. `didCommit`
+            // is the single authority for that: this event also fires when
+            // `attach()` injects the agent by hand into a document that's
+            // already on screen, and treating that as a navigation would wipe
+            // the backlog we just went to the trouble of collecting.
+            Task { @MainActor in await refreshStatus() }
+
         case .overflowed:
-            // Resync, never replay — a replay would double-apply mutations that
-            // did land before the agent gave up.
-            documentDidChange()
+            noteDroppedOutput(nil)
+
+        case .consoleBatch(let entries, let sequence, let dropped):
+            // Reported before the batch it preceded, so the gap appears where
+            // it actually happened rather than at the end of the run.
+            if dropped > 0 { noteDroppedOutput(dropped) }
+            for entry in entries { console.append(entry) }
+            releaseEvictedObjects()
+            // Acknowledging is what lets the page keep sending: unacked batches
+            // past the window stop the agent emitting, which is the whole
+            // backpressure mechanism.
+            bridge.send(.consoleAck, ["sequence": sequence])
+
+        case .consoleCleared:
+            // The page called console.clear() itself. Honouring it matches
+            // every other browser, and a page that clears its own console is
+            // usually doing it for a reason worth respecting.
+            clearConsole()
         }
+    }
+
+    /// A gap in the log, said out loud.
+    ///
+    /// A console that silently skips output is worse than one that admits it:
+    /// the whole value of the thing is that what you see is what happened.
+    private func noteDroppedOutput(_ count: Int?) {
+        let text = count.map {
+            "\($0.formatted()) messages were dropped — the page logged faster than Glass could read."
+        } ?? "Some messages were dropped — the page logged faster than Glass could read."
+
+        console.append(ConsoleEntry(
+            id: 0,
+            level: .warning,
+            arguments: [RemoteObject(type: .string, description: text)]
+        ))
+    }
+
+    /// Handles that fell out of the buffer still pin page objects alive, so the
+    /// page has to be told. A no-op until Phase 2 hands out any ids.
+    private func releaseEvictedObjects() {
+        let ids = console.takeEvictedObjectIds()
+        guard !ids.isEmpty else { return }
+        bridge.send(.runtimeReleaseObject, ["objectIds": ids])
     }
 
     private func refreshStatus() async {

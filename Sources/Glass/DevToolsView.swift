@@ -111,19 +111,6 @@ struct ElementsPane: View {
     }
 }
 
-/// Placeholder until Phase 1.
-struct ConsolePane: View {
-    let session: DevToolsSession
-
-    var body: some View {
-        DevToolsPlaceholder(
-            symbol: "terminal",
-            title: "Console",
-            detail: "Page logs and a JavaScript prompt land here."
-        )
-    }
-}
-
 struct DevToolsPlaceholder: View {
     let symbol: String
     let title: String

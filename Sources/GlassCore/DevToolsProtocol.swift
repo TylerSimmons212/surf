@@ -35,6 +35,12 @@ public enum DevToolsEvent: Sendable, Equatable {
     /// The agent gave up keeping pace and dropped work. The only correct
     /// response is a resync — never a replay, which would double-apply.
     case overflowed
+    /// Log output, batched. The sequence is what gets acked, which is how the
+    /// page knows we're keeping up. `dropped` counts messages the agent had to
+    /// discard to stay bounded since the last batch — zero in normal use.
+    case consoleBatch(entries: [ConsoleEntry], sequence: Int, dropped: Int)
+    /// The page called `console.clear()` itself.
+    case consoleCleared
 }
 
 public enum DevToolsProtocol {
@@ -55,6 +61,15 @@ public enum DevToolsProtocol {
             )
         case "overflowed":
             return .overflowed
+        case "console":
+            guard let batch = ConsoleWire.decodeBatch(dict) else { return nil }
+            return .consoleBatch(
+                entries: batch.entries,
+                sequence: batch.sequence,
+                dropped: batch.dropped
+            )
+        case "cleared":
+            return .consoleCleared
         default:
             return nil
         }

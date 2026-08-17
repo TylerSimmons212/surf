@@ -208,6 +208,18 @@ final class Tab: NSObject, Identifiable {
             )
         )
 
+        // Always, on every tab — the whole point is that a log fired before you
+        // opened dev tools is already waiting when you do. Costs one small
+        // in-page ring buffer and zero messages until something attaches.
+        controller.addUserScript(
+            WKUserScript(
+                source: ConsoleAgent.script,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false,
+                in: .page
+            )
+        )
+
         if devToolsBridge?.isAttached == true {
             // Main frame only, so the node id space has exactly one authority.
             // Multi-frame inspection needs a frame id in every message, which
@@ -687,7 +699,7 @@ extension Tab: WKScriptMessageHandler {
                 // Media that never started isn't worth showing in the player.
                 if state.isPlaying || media != nil { media = state }
 
-            case DevToolsAgent.eventHandlerName:
+            case DevToolsAgent.eventHandlerName, ConsoleAgent.eventHandlerName:
                 // Forwarded rather than handled by the bridge directly, so a tab
                 // still registers exactly one script message handler and the
                 // retain-cycle reasoning above holds for every bridge we add.

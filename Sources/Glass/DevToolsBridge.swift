@@ -67,6 +67,18 @@ final class DevToolsBridge {
             name: DevToolsAgent.eventHandlerName
         )
 
+        // The console agent is already resident and has been buffering since
+        // document-start; this is the first moment it has anywhere to post to.
+        controller.removeScriptMessageHandler(
+            forName: ConsoleAgent.eventHandlerName,
+            contentWorld: .page
+        )
+        controller.add(
+            WeakScriptMessageProxy(target: tab),
+            contentWorld: .page,
+            name: ConsoleAgent.eventHandlerName
+        )
+
         // Adds the agent to the document-start set, so it survives navigation.
         tab.reinstallUserScripts()
 
@@ -93,9 +105,26 @@ final class DevToolsBridge {
         isAttached = false
         defer { tab.detachDevTools() }
 
-        tab.webView.configuration.userContentController.removeScriptMessageHandler(
+        // Back to buffering-only: with no handler its `post` throws, which the
+        // agent catches by flipping itself out of live mode.
+        Task { @MainActor [weak tab] in
+            _ = try? await tab?.webView.callAsyncJavaScript(
+                ConsoleAgent.dispatchScript,
+                arguments: ["method": DevToolsMethod.consoleSetLive.rawValue,
+                            "params": ["live": false]],
+                in: nil,
+                contentWorld: .page
+            )
+        }
+
+        let controller = tab.webView.configuration.userContentController
+        controller.removeScriptMessageHandler(
             forName: DevToolsAgent.eventHandlerName,
             contentWorld: DevToolsAgent.world
+        )
+        controller.removeScriptMessageHandler(
+            forName: ConsoleAgent.eventHandlerName,
+            contentWorld: .page
         )
         // Drops the agent from the document-start set. The copy in the *current*
         // document stays resident until navigation, but with its handler gone it
@@ -112,18 +141,25 @@ final class DevToolsBridge {
     /// bookkeeping. That's the single biggest simplification over speaking a
     /// CDP-style socket protocol, and it's why `DevToolsMethod` carries method
     /// names but no envelope.
+    /// `Sendable` values rather than `Any`: parameters cross an await boundary,
+    /// and the compiler is right to insist they be safe to carry.
     @discardableResult
     func call(
         _ method: DevToolsMethod,
-        _ params: [String: Any] = [:]
+        _ params: [String: any Sendable] = [:]
     ) async throws -> [String: Any] {
         guard isAttached, let tab else { throw BridgeError.notAttached }
 
+        // The domain in the method name is also the routing decision: console
+        // commands have to reach the page world, where the patched globals
+        // live, and everything else belongs to the isolated agent.
+        let isConsole = method.rawValue.hasPrefix("Console.")
+
         let raw = try await tab.webView.callAsyncJavaScript(
-            DevToolsAgent.dispatchScript,
+            isConsole ? ConsoleAgent.dispatchScript : DevToolsAgent.dispatchScript,
             arguments: ["method": method.rawValue, "params": params],
             in: nil,
-            contentWorld: DevToolsAgent.world
+            contentWorld: isConsole ? .page : DevToolsAgent.world
         )
 
         // Null means the agent isn't present — an `about:blank`, a PDF view, or
@@ -137,13 +173,24 @@ final class DevToolsBridge {
         return dict
     }
 
+    /// Fire and forget, for commands whose reply carries nothing — acks and
+    /// object releases. Keeping the untyped reply inside the bridge means it
+    /// never has to cross a task boundary at the call site.
+    func send(_ method: DevToolsMethod, _ params: [String: any Sendable] = [:]) {
+        Task { @MainActor in
+            _ = try? await call(method, params)
+        }
+    }
+
     // MARK: - Events
 
     /// Called by `Tab`'s dispatcher. The bridge never registers itself as the
     /// handler, so a tab still has exactly one `WKScriptMessageHandler` and the
     /// existing retain-cycle reasoning is untouched.
     func receive(name: String, body: Any) {
-        guard name == DevToolsAgent.eventHandlerName else { return }
+        guard name == DevToolsAgent.eventHandlerName
+                || name == ConsoleAgent.eventHandlerName
+        else { return }
         guard let event = DevToolsProtocol.decodeEvent(body) else { return }
         onEvent?(event)
     }
