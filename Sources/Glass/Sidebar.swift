@@ -18,7 +18,9 @@ struct Sidebar: View {
     @State private var isHoveringNewTab = false
     @State private var copiedTab: Tab.ID?
 
-    static let width: CGFloat = 240
+    /// Wide enough that the roomier rows don't buy their height back out of
+    /// the title: taller rows with the same width would just truncate sooner.
+    static let width: CGFloat = 264
 
     var body: some View {
         VStack(spacing: 0) {
@@ -121,7 +123,7 @@ struct Sidebar: View {
 
     private var tabList: some View {
         ScrollView {
-            LazyVStack(spacing: 2) {
+            LazyVStack(spacing: 4) {
                 ForEach(session.tabs) { tab in
                     row(for: tab)
                 }
@@ -137,13 +139,13 @@ struct Sidebar: View {
         let isHovered = hoveredTab == tab.id
         let showsActions = isHovered || copiedTab == tab.id
 
-        return HStack(spacing: 7) {
+        return HStack(spacing: 10) {
             statusIcon(for: tab)
                 .scaleEffect(isHovered ? 1.12 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.65), value: isHovered)
 
             Text(tab.displayTitle)
-                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
+                .font(.system(size: 13, weight: isSelected ? .medium : .regular))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .opacity(tab.isAwaitingRestore ? 0.55 : 1)
@@ -153,16 +155,16 @@ struct Sidebar: View {
             // Always laid out, faded in on hover. Inserting them on hover
             // instead would resize the title and make rows twitch as the
             // pointer moves down the list.
-            HStack(spacing: 1) {
+            HStack(spacing: 2) {
                 // Momentary checkmark: copying is invisible otherwise, and a
                 // silent copy leaves you unsure it worked.
                 IconButton(
                     systemName: copiedTab == tab.id ? "checkmark" : "link",
-                    size: 9,
+                    size: 10,
                     weight: .bold,
-                    width: 17,
-                    height: 17,
-                    cornerRadius: 5,
+                    width: 21,
+                    height: 21,
+                    cornerRadius: 6,
                     tint: copiedTab == tab.id ? .green : nil,
                     help: "Copy Link"
                 ) {
@@ -172,11 +174,11 @@ struct Sidebar: View {
 
                 IconButton(
                     systemName: "xmark",
-                    size: 9,
+                    size: 10,
                     weight: .bold,
-                    width: 17,
-                    height: 17,
-                    cornerRadius: 5,
+                    width: 21,
+                    height: 21,
+                    cornerRadius: 6,
                     help: "Close Tab (⌘W)"
                 ) {
                     session.close(tab)
@@ -187,10 +189,10 @@ struct Sidebar: View {
             .allowsHitTesting(showsActions)
             .animation(.spring(response: 0.26, dampingFraction: 0.7), value: showsActions)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 9)
         .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(isSelected ? 0.14 : (isHovered ? 0.07 : 0)))
                 .animation(.easeOut(duration: 0.16), value: isHovered)
                 .animation(.easeOut(duration: 0.2), value: isSelected)
@@ -209,24 +211,24 @@ struct Sidebar: View {
             // rather than presenting a screen that asks the same thing.
             session.openNewTabAndPrompt()
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 10) {
                 Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 13, height: 13)
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 16, height: 16)
                     .rotationEffect(.degrees(isHoveringNewTab ? 90 : 0))
                     .scaleEffect(isHoveringNewTab ? 1.15 : 1)
                 Text("New Tab")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 9)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .background {
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(isHoveringNewTab ? 0.07 : 0))
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.65), value: isHoveringNewTab)
@@ -259,19 +261,19 @@ struct Sidebar: View {
         if tab.isLoading {
             ProgressView()
                 .controlSize(.small)
-                .scaleEffect(0.5)
-                .frame(width: 13, height: 13)
+                .scaleEffect(0.55)
+                .frame(width: 16, height: 16)
         } else if let favicon = tab.favicon {
             Image(nsImage: favicon)
                 .resizable()
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 13, height: 13)
+                .frame(width: 16, height: 16)
         } else {
             Image(systemName: tab.mode == .home ? "magnifyingglass" : "globe")
-                .font(.system(size: 10))
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .frame(width: 13, height: 13)
+                .frame(width: 16, height: 16)
         }
     }
 

@@ -92,7 +92,8 @@ struct MediaPlayerStack: View {
 ///
 /// The front row carries the full set; stacked rows carry play/pause only.
 /// Clicking any row selects that tab, which promotes it to the front — so the
-/// full controls are always one click away rather than crammed into 240 points.
+/// full controls are always one click away rather than crammed into a column
+/// that's only a few hundred points wide.
 struct MediaRow: View {
     let tab: Tab
     let session: BrowserSession
