@@ -78,6 +78,22 @@ struct Sidebar: View {
 
             Spacer()
 
+            // Zoom has no other visible home, and a page stuck at 125% with
+            // nothing saying so reads as a rendering bug.
+            if tab.isZoomed {
+                Button { tab.resetZoom() } label: {
+                    Text(tab.zoomLabel)
+                        .font(.system(size: 10, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background { Capsule().fill(Color.primary.opacity(0.09)) }
+                }
+                .buttonStyle(.plain)
+                .help("Reset zoom (⌘0)")
+                .transition(.scale(scale: 0.7).combined(with: .opacity))
+            }
+
             DownloadsButton(session: session, hold: hold)
 
             IconButton(
@@ -99,6 +115,7 @@ struct Sidebar: View {
         .padding(.horizontal, 8)
         .padding(.top, 8)
         .padding(.bottom, 6)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
     }
 
     /// Load progress drawn around the reload button, so the control *is* the

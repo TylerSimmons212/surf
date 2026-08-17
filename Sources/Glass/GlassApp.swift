@@ -43,6 +43,30 @@ struct GlassApp: App {
 
             Button("Close Tab") { session.closeSelectedTab() }
                 .keyboardShortcut("w", modifiers: .command)
+
+            Button("Reopen Closed Tab") { session.reopenClosedTab() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!session.canReopenClosedTab)
+
+            // ⌘W belongs to the tab in a browser, so the window moves up one.
+            Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+        }
+
+        // Replaces the stock Edit-menu find items, which act on text fields and
+        // know nothing about the page.
+        CommandGroup(replacing: .textEditing) {
+            Button("Find…") { session.requestFind() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(session.selectedTab.mode != .browsing)
+
+            Button("Find Next") { session.stepFind(forward: true) }
+                .keyboardShortcut("g", modifiers: .command)
+                .disabled(session.selectedTab.mode != .browsing)
+
+            Button("Find Previous") { session.stepFind(forward: false) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .disabled(session.selectedTab.mode != .browsing)
         }
 
         CommandGroup(after: .toolbar) {
@@ -80,6 +104,26 @@ struct GlassApp: App {
 
             Button("Reload") { session.selectedTab.reload() }
                 .keyboardShortcut("r", modifiers: .command)
+
+            Button("Reload Ignoring Cache") { session.selectedTab.reloadIgnoringCache() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+            Button("Stop") { session.selectedTab.stop() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(!session.selectedTab.isLoading)
+
+            Divider()
+
+            // Zoom is per-tab, so these read against whatever is on screen.
+            Button("Zoom In") { session.selectedTab.zoomIn() }
+                .keyboardShortcut("+", modifiers: .command)
+
+            Button("Zoom Out") { session.selectedTab.zoomOut() }
+                .keyboardShortcut("-", modifiers: .command)
+
+            Button("Actual Size") { session.selectedTab.resetZoom() }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(!session.selectedTab.isZoomed)
 
             Divider()
 

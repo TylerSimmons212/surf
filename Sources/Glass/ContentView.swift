@@ -14,6 +14,9 @@ struct ContentView: View {
     /// changed again by the time it's submitted.
     @State private var paletteCreatesTab = false
     @State private var sidebarHold = SidebarHold()
+    @State private var isFindBarOpen = false
+    @State private var findBarFocusToken = 0
+    @State private var tabKeyMonitor: Any?
 
     /// Width of the invisible strip along the window's left edge that triggers
     /// the reveal.
@@ -70,6 +73,18 @@ struct ContentView: View {
                 }
             }
 
+            if isFindBarOpen {
+                FindBar(tab: session.selectedTab, isPresented: $isFindBarOpen)
+                    // Identity includes the focus token so a repeat ⌘F rebuilds
+                    // the bar focused, rather than opening a second one.
+                    .id(findBarFocusToken)
+                    .padding(.top, titleBarHeight + 10)
+                    .padding(.trailing, 14)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(18)
+            }
+
             // Above the page and the sidebar, below the palette: it's a
             // property of the window, not of anything inside it.
             LoadingBorder(tab: session.selectedTab)
@@ -103,11 +118,38 @@ struct ContentView: View {
         }
         // ⌘L routes through the session so the menu command reaches whichever
         // window is frontmost.
+        .onChange(of: session.findToken) { _, _ in
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.85)) {
+                isFindBarOpen = true
+            }
+            findBarFocusToken += 1
+        }
+        .onChange(of: session.findStepToken) { _, _ in
+            // ⌘G with no bar open is still a find request.
+            guard isFindBarOpen else {
+                session.requestFind()
+                return
+            }
+            NotificationCenter.default.post(
+                name: .glassFindStep,
+                object: session.findStepsForward
+            )
+        }
+        // A find is about one page; carrying the bar to another tab would
+        // search something you never asked it to.
+        .onChange(of: session.selectedTabID) { _, _ in
+            isFindBarOpen = false
+        }
         .onChange(of: session.focusAddressToken) { _, _ in
             paletteCreatesTab = session.addressFocusCreatesTab
             openAddressBar()
         }
         .onAppear(perform: applyLaunchEnvironment)
+        .onAppear(perform: installTabCycleMonitor)
+        .onDisappear {
+            if let tabKeyMonitor { NSEvent.removeMonitor(tabKeyMonitor) }
+            tabKeyMonitor = nil
+        }
     }
 
     private func sidebar(isFloating: Bool) -> some View {
@@ -147,6 +189,38 @@ struct ContentView: View {
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointerInSidebar = $0 }
             .zIndex(1)
+    }
+
+    /// ⌃⇥ and ⌃⇧⇥ cycle tabs, as they do in every browser.
+    ///
+    /// A local monitor rather than a menu item: Tab is a focus key, so AppKit
+    /// routes it through the responder chain before menus ever see it, and a
+    /// menu entry for it would sit in the menu bar reading like nonsense.
+    private func installTabCycleMonitor() {
+        guard tabKeyMonitor == nil else { return }
+        tabKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let flags = event.modifierFlags
+
+            if flags.contains(.control), event.keyCode == 48 {  // ⇥
+                MainActor.assumeIsolated {
+                    flags.contains(.shift)
+                        ? session.selectPreviousTab()
+                        : session.selectNextTab()
+                }
+                return nil
+            }
+
+            // ⌘= as well as ⌘+. The menu can only advertise one, and every
+            // browser takes both — the plus is the shifted equals key, so on a
+            // US layout they're the same physical press either way.
+            if flags.contains(.command), !flags.contains(.control),
+               event.keyCode == 24 {  // =
+                MainActor.assumeIsolated { session.selectedTab.zoomIn() }
+                return nil
+            }
+
+            return event
+        }
     }
 
     private func openAddressBar() {

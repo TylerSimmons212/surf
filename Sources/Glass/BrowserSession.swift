@@ -15,9 +15,27 @@ final class BrowserSession {
     private(set) var tabs: [Tab] = []
     private(set) var selectedTabID: Tab.ID
 
+    /// Recently closed tabs, newest first, so ⌘⇧T can undo a misclick.
+    ///
+    /// Memory only, and never written to the session file: this is an undo
+    /// buffer for the current run, not a history. Quitting loses it, which is
+    /// the point.
+    @ObservationIgnored private var recentlyClosed: [PersistedTab] = []
+    /// Deep enough to cover a run of accidental closes, shallow enough that it
+    /// isn't quietly accumulating everywhere you've been.
+    private static let closedTabMemory = 12
+
+    var canReopenClosedTab: Bool { !recentlyClosed.isEmpty }
+
     /// Incremented to ask the focused view to open the address bar (⌘L).
     /// A token rather than a Bool, so repeat presses each register.
     private(set) var focusAddressToken: Int = 0
+
+    /// Same token idiom for the find bar: ⌘F opens or re-focuses it, and ⌘G
+    /// steps through matches without the menu needing a handle on the view.
+    private(set) var findToken: Int = 0
+    private(set) var findStepToken: Int = 0
+    private(set) var findStepsForward = true
 
     /// Whether the pending address-bar request should land in a *new* tab.
     /// The tab isn't created until something is submitted, so backing out of
@@ -149,6 +167,8 @@ final class BrowserSession {
             PopOutController.shared.restore()
         }
 
+        rememberClosedTab(tab)
+
         // Explicit teardown, not just dropping the reference: a web view with
         // audio playing keeps its content process alive, so a closed tab would
         // otherwise keep playing.
@@ -179,6 +199,19 @@ final class BrowserSession {
 
     func closeSelectedTab() { close(selectedTab) }
 
+    /// Puts back the most recently closed tab, with its history if it had any.
+    func reopenClosedTab() {
+        guard !recentlyClosed.isEmpty else { return }
+        let persisted = recentlyClosed.removeFirst()
+        let tab = Tab()
+        tab.session = self
+        tab.prepareRestore(from: persisted)
+        let insertAt = (tabs.firstIndex { $0.id == selectedTabID }).map { $0 + 1 } ?? tabs.count
+        tabs.insert(tab, at: insertAt)
+        setSelection(to: tab.id)
+        scheduleSave()
+    }
+
     // MARK: - Selection
 
     func select(_ tab: Tab) {
@@ -208,6 +241,23 @@ final class BrowserSession {
         scheduleSave()
     }
 
+    /// Keeps enough to restore the tab, run through the same redaction the
+    /// session file gets — with history off, the back/forward blob is stripped
+    /// and reopening returns the page, not the trail that led to it.
+    private func rememberClosedTab(_ tab: Tab) {
+        let snapshot = tab.snapshot()
+        guard snapshot.isRestorable else { return }
+        let redacted = PrivacyPolicy.redact(
+            PersistedSession(tabs: [snapshot], selectedIndex: 0),
+            for: .current
+        )
+        guard let kept = redacted.tabs.first else { return }
+        recentlyClosed.insert(kept, at: 0)
+        if recentlyClosed.count > Self.closedTabMemory {
+            recentlyClosed.removeLast(recentlyClosed.count - Self.closedTabMemory)
+        }
+    }
+
     private func shouldAutoPopOut(_ tab: Tab) -> Bool {
         guard MediaPreferences.autoPopOut else { return false }
         // A tab being closed is already torn down — nothing to pop out.
@@ -233,6 +283,13 @@ final class BrowserSession {
     func selectTab(atOneBasedIndex index: Int) {
         guard let target = TabSelection.index(forOneBased: index, count: tabs.count) else { return }
         setSelection(to: tabs[target].id)
+    }
+
+    func requestFind() { findToken += 1 }
+
+    func stepFind(forward: Bool) {
+        findStepsForward = forward
+        findStepToken += 1
     }
 
     func requestAddressFocus(creatingTab: Bool = false) {

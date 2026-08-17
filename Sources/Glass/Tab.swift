@@ -448,7 +448,89 @@ final class Tab: NSObject, Identifiable {
         webView.reload()
     }
 
+    /// Ignores the cache, for when a page is wrong rather than merely old.
+    func reloadIgnoringCache() {
+        lastError = nil
+        webView.reloadFromOrigin()
+    }
+
     func stop() { webView.stopLoading() }
+
+    // MARK: - Zoom
+
+    /// Per-tab, deliberately: zoom belongs to the page you're reading, not to
+    /// the browser. Not persisted — a restored session shouldn't surprise you
+    /// with yesterday's magnification.
+    ///
+    /// Stored here rather than read back from `webView.pageZoom`, which is not
+    /// observable: a computed property over it never publishes a change, so
+    /// everything that depends on the zoom — the reset menu item's enabled
+    /// state, the sidebar's indicator — silently keeps whatever it saw first.
+    private(set) var zoomLevel: Double = ZoomSteps.standard {
+        didSet { webView.pageZoom = zoomLevel }
+    }
+
+    var isZoomed: Bool { !ZoomSteps.isStandard(zoomLevel) }
+    var zoomLabel: String { ZoomSteps.label(for: zoomLevel) }
+
+    func zoomIn() { zoomLevel = ZoomSteps.zoomingIn(from: zoomLevel) }
+    func zoomOut() { zoomLevel = ZoomSteps.zoomingOut(from: zoomLevel) }
+    func resetZoom() { zoomLevel = ZoomSteps.standard }
+
+    // MARK: - Find
+
+    /// Highlights and scrolls to the next match, using WebKit's own find rather
+    /// than anything injected: it handles text spanning elements, shadow DOM,
+    /// and wrapping, none of which a script would get right.
+    @discardableResult
+    func findInPage(_ query: String, forward: Bool = true) async -> Bool {
+        guard !query.isEmpty else { return false }
+        let configuration = WKFindConfiguration()
+        configuration.backwards = !forward
+        configuration.caseSensitive = false
+        configuration.wraps = true
+        let result = try? await webView.find(query, configuration: configuration)
+        return result?.matchFound ?? false
+    }
+
+    /// How many times the query appears in the page's *rendered* text.
+    ///
+    /// `innerText` rather than the DOM: it already excludes hidden elements and
+    /// flattens across element boundaries, so a phrase split by markup still
+    /// counts once. WebKit's find API reports only whether it landed on
+    /// something, so the tally has to come from somewhere.
+    func countMatches(of query: String) async -> Int {
+        guard !query.isEmpty else { return 0 }
+        let count = try? await webView.callAsyncJavaScript(
+            """
+            const needle = query.toLowerCase();
+            const text = (document.body?.innerText ?? '').toLowerCase();
+            if (!needle) { return 0; }
+            let total = 0;
+            let index = text.indexOf(needle);
+            while (index !== -1) {
+                total += 1;
+                index = text.indexOf(needle, index + needle.length);
+            }
+            return total;
+            """,
+            arguments: ["query": query],
+            contentWorld: .page
+        )
+        return (count as? Int) ?? 0
+    }
+
+    /// Drops the highlight when the find bar closes, so a stale selection isn't
+    /// left sitting on the page.
+    func clearFindSelection() {
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                "window.getSelection()?.removeAllRanges(); return true;",
+                arguments: [:],
+                contentWorld: .page
+            )
+        }
+    }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
 
