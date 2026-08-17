@@ -12,6 +12,8 @@ struct Sidebar: View {
     /// glass. Kept only for that styling difference — the traffic lights are
     /// handled by the title strip above, so both use the same insets.
     let isFloating: Bool
+    /// Lets the sidebar's own transient UI keep it on screen.
+    let hold: SidebarHold
     @State private var hoveredTab: Tab.ID?
     @State private var isHoveringNewTab = false
     @State private var copiedTab: Tab.ID?
@@ -72,7 +74,7 @@ struct Sidebar: View {
 
             Spacer()
 
-            DownloadsButton(session: session)
+            DownloadsButton(session: session, hold: hold)
 
             IconButton(
                 systemName: "magnifyingglass",

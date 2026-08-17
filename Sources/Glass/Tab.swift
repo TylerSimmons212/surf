@@ -113,11 +113,6 @@ final class Tab: NSObject, Identifiable {
 
     var isAwaitingRestore: Bool { pendingRestore != nil }
 
-    /// Never navigated anywhere: safe to discard without losing anything.
-    var isBlank: Bool {
-        mode == .home && webView.url == nil && pendingRestore == nil
-    }
-
     /// Set once the user (or code) navigates deliberately. A pending restore
     /// must never overwrite that — restoring a tab you've already typed into
     /// would silently throw the new page away.

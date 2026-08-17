@@ -6,10 +6,12 @@ import SwiftUI
 /// Replaces the persistent toolbar. Nothing occupies the window until it's
 /// asked for, which is the point — the page gets the whole surface.
 struct URLPalette: View {
+    let session: BrowserSession
     let tab: Tab
+    /// Whether submitting opens a new tab rather than navigating this one. The
+    /// tab is created on submit, so dismissing costs nothing.
+    let createsTab: Bool
     @Binding var isPresented: Bool
-    /// Called when dismissed *without* navigating — escape or a click outside.
-    let onCancel: () -> Void
 
     @State private var text: String = ""
     @State private var completions = SuggestionController()
@@ -20,7 +22,7 @@ struct URLPalette: View {
             // Dimmed backdrop; clicking anywhere outside dismisses.
             Color.black.opacity(0.28)
                 .ignoresSafeArea()
-                .onTapGesture { cancel() }
+                .onTapGesture { dismiss() }
 
             VStack(spacing: 8) {
                 field
@@ -39,18 +41,23 @@ struct URLPalette: View {
             .padding(.top, 140)
         }
         .onAppear {
-            text = tab.mode == .home ? "" : tab.addressText
+            // A new tab starts empty; editing an existing one starts from where
+            // it already is.
+            text = (createsTab || tab.mode == .home) ? "" : tab.addressText
             focused = true
         }
     }
 
     private var field: some View {
         HStack(spacing: 12) {
-            Image(systemName: "magnifyingglass")
+            // The glyph says where this is going to land, since the page behind
+            // the palette is the *current* tab either way.
+            Image(systemName: createsTab ? "plus.magnifyingglass" : "magnifyingglass")
                 .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(createsTab ? Color.accentColor : Color.secondary)
 
-            TextField("Search or enter address", text: $text)
+            TextField(createsTab ? "Search or enter address — opens a new tab"
+                                 : "Search or enter address", text: $text)
                 .textFieldStyle(.plain)
                 .font(.system(size: 19))
                 .focused($focused)
@@ -76,7 +83,7 @@ struct URLPalette: View {
                     if completions.isShowing {
                         completions.dismiss()
                     } else {
-                        cancel()
+                        dismiss()
                     }
                     return .handled
                 }
@@ -120,20 +127,16 @@ struct URLPalette: View {
             return
         }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        tab.submit(text)
+        session.submitFromPalette(text, creatingTab: createsTab)
         dismiss()
     }
 
     private func navigate(to entry: HistoryEntry) {
-        tab.submit(entry.url)
+        session.submitFromPalette(entry.url, creatingTab: createsTab)
         dismiss()
     }
 
-    private func cancel() {
-        dismiss()
-        onCancel()
-    }
-
+    /// Dismissing is always harmless now: nothing was created on the way in.
     private func dismiss() {
         completions.dismiss()
         focused = false

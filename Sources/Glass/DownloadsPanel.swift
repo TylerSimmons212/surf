@@ -9,8 +9,14 @@ import UniformTypeIdentifiers
 /// once there's something to show.
 struct DownloadsButton: View {
     let session: BrowserSession
+    /// Keeps the sidebar revealed while the list is up. The popover is its own
+    /// window, so without this, moving the pointer toward Clear collapses the
+    /// sidebar and takes the popover with it.
+    let hold: SidebarHold
 
-    @State private var isShowingList = false
+    private var isShowingList: Binding<Bool> { hold.binding(for: Self.holdReason) }
+
+    private static let holdReason = "downloads"
 
     private var manager: DownloadManager { DownloadManager.shared }
 
@@ -25,7 +31,7 @@ struct DownloadsButton: View {
                         ? "\(manager.activeCount) downloading"
                         : "Downloads"
                 ) {
-                    isShowingList.toggle()
+                    isShowingList.wrappedValue.toggle()
                 }
 
                 // Same idiom as the reload button: the control carries its own
@@ -41,9 +47,13 @@ struct DownloadsButton: View {
                         .allowsHitTesting(false)
                 }
             }
-            .popover(isPresented: $isShowingList, arrowEdge: .bottom) {
+            .popover(isPresented: isShowingList, arrowEdge: .bottom) {
                 DownloadsList(session: session)
             }
+            // Clearing the last item removes this button, and a popover whose
+            // anchor is gone never reports itself dismissed — the hold would be
+            // stuck on and the sidebar stuck open.
+            .onDisappear { hold.set(Self.holdReason, false) }
         }
     }
 }

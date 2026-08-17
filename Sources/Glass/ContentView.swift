@@ -11,8 +11,9 @@ struct ContentView: View {
     @State private var revealTask: Task<Void, Never>?
     @State private var isAddressBarOpen = false
     /// Captured when the palette opens, because the session's flag may have
-    /// changed again by the time it's dismissed.
-    @State private var cancelDiscardsTab = false
+    /// changed again by the time it's submitted.
+    @State private var paletteCreatesTab = false
+    @State private var sidebarHold = SidebarHold()
 
     /// Width of the invisible strip along the window's left edge that triggers
     /// the reveal.
@@ -23,7 +24,12 @@ struct ContentView: View {
     /// leaves before the timer fires.
     private let hotZoneWidth: CGFloat = 28
 
-    private var wantsReveal: Bool { pointerInHotZone || pointerInSidebar }
+    /// The hold keeps the sidebar up while something it opened is still on
+    /// screen — a popover lives in its own window, so reaching into it counts
+    /// as leaving the sidebar.
+    private var wantsReveal: Bool {
+        pointerInHotZone || pointerInSidebar || sidebarHold.isHeld
+    }
 
     /// Just tall enough for the traffic lights — this is macOS's own titlebar
     /// height, so the buttons sit centred with no slack around them.
@@ -69,9 +75,10 @@ struct ContentView: View {
                 // strip too. The traffic lights render above SwiftUI content, so
                 // they stay visible and clickable.
                 URLPalette(
+                    session: session,
                     tab: session.selectedTab,
-                    isPresented: $isAddressBarOpen,
-                    onCancel: handleAddressBarCancelled
+                    createsTab: paletteCreatesTab,
+                    isPresented: $isAddressBarOpen
                 )
                     .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
                     .zIndex(20)
@@ -92,7 +99,7 @@ struct ContentView: View {
         // ⌘L routes through the session so the menu command reaches whichever
         // window is frontmost.
         .onChange(of: session.focusAddressToken) { _, _ in
-            cancelDiscardsTab = session.addressFocusIsForNewTab
+            paletteCreatesTab = session.addressFocusCreatesTab
             openAddressBar()
         }
         .onAppear(perform: applyLaunchEnvironment)
@@ -102,7 +109,8 @@ struct ContentView: View {
         Sidebar(
             session: session,
             isPinned: $isPinned,
-            isFloating: isFloating
+            isFloating: isFloating,
+            hold: sidebarHold
         )
     }
 
@@ -131,13 +139,6 @@ struct ContentView: View {
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointerInSidebar = $0 }
             .zIndex(1)
-    }
-
-    /// Escaping out of a brand-new tab throws it away, so abandoning "new tab"
-    /// leaves no trace. Tabs that already existed are always kept.
-    private func handleAddressBarCancelled() {
-        guard cancelDiscardsTab else { return }
-        session.discardIfBlank(session.selectedTab)
     }
 
     private func openAddressBar() {

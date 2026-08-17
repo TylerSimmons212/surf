@@ -19,10 +19,10 @@ final class BrowserSession {
     /// A token rather than a Bool, so repeat presses each register.
     private(set) var focusAddressToken: Int = 0
 
-    /// Whether the pending address-bar request came from creating a tab. Only
-    /// then does cancelling discard the tab — someone who opens the address bar
-    /// on a tab that already exists and changes their mind should keep it.
-    private(set) var addressFocusIsForNewTab = false
+    /// Whether the pending address-bar request should land in a *new* tab.
+    /// The tab isn't created until something is submitted, so backing out of
+    /// "New Tab" leaves the session exactly as it was.
+    private(set) var addressFocusCreatesTab = false
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
     /// Suppresses saves while restoring, so a half-built session can't
@@ -235,22 +235,27 @@ final class BrowserSession {
         setSelection(to: tabs[target].id)
     }
 
-    func requestAddressFocus(forNewTab: Bool = false) {
-        addressFocusIsForNewTab = forNewTab
+    func requestAddressFocus(creatingTab: Bool = false) {
+        addressFocusCreatesTab = creatingTab
         focusAddressToken += 1
     }
 
-    /// The whole new-tab flow: make the tab, then ask where to go.
+    /// The whole new-tab flow: ask where to go, and only then make the tab.
+    ///
+    /// Creating the tab up front meant a blank tab appearing in the list, the
+    /// page going empty behind the palette, and an abandoned tab to clean up
+    /// afterwards. Asking first makes all three go away — the palette simply
+    /// floats over whatever you were already looking at.
     func openNewTabAndPrompt() {
-        addTab()
-        requestAddressFocus(forNewTab: true)
+        requestAddressFocus(creatingTab: true)
     }
 
-    /// Discards a tab that was created and then abandoned.
-    func discardIfBlank(_ tab: Tab) {
-        // Closing the last tab just recreates an identical empty one, so
-        // there's nothing to gain and a visible flicker to lose.
-        guard tabs.count > 1, tab.isBlank else { return }
-        close(tab)
+    /// Where a palette submission lands: a tab created on the spot, or the one
+    /// already on screen.
+    @discardableResult
+    func submitFromPalette(_ text: String, creatingTab: Bool) -> Tab {
+        let target = creatingTab ? addTab() : selectedTab
+        target.submit(text)
+        return target
     }
 }
