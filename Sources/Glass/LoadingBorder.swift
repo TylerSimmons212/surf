@@ -15,6 +15,9 @@ struct LoadingBorder: View {
 
     @State private var progress = LoadProgress()
     @State private var trickle: Task<Void, Never>?
+    /// Flipped once on appear; both the sweep and the breath hang off it, so a
+    /// single state change starts every repeating animation.
+    @State private var isSweeping = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -73,87 +76,88 @@ struct LoadingBorder: View {
     // MARK: - Inner glow
 
     /// Light bleeding inward from the traced edge, with a crest that keeps
-    /// travelling along it.
+    /// sweeping along it.
     ///
     /// Clipped to the perimeter so the glow only ever falls *into* the page —
-    /// spilling outward would just be a fatter border. The whole thing is
-    /// driven off a clock rather than SwiftUI animations: the crest's position
-    /// depends on the progress value, which is itself animating, and two
-    /// animation systems driving one number fight each other.
+    /// spilling outward would just be a fatter border.
+    ///
+    /// The motion is a rotation rather than a redraw. Regenerating the crest's
+    /// geometry every frame meant rebuilding paths and re-running four blurs at
+    /// display rate, all on the main thread; rotating one pre-drawn gradient is
+    /// a transform, so Core Animation runs it on the render thread and this
+    /// body is evaluated once per load instead of sixty times a second.
     @ViewBuilder
     private var innerGlow: some View {
-        // No timeline while nothing is drawn — this would otherwise tick at
-        // display rate for the entire life of the window.
+        // Removed outright when nothing is drawn, which also stops the
+        // animations rather than leaving them running against a hidden view.
         if progress.value > 0 {
-            if reduceMotion {
-                wash(intensity: 0.7).clipShape(shape)
-            } else {
-                TimelineView(.animation) { context in
-                    let time = context.date.timeIntervalSinceReferenceDate
-                    ZStack {
-                        wash(intensity: breath(at: time))
-                        crest(at: crestPosition(at: time))
-                    }
-                    .clipShape(shape)
-                }
+            ZStack {
+                wash
+                if !reduceMotion { sweep }
             }
+            .clipShape(shape)
+            .onAppear { isSweeping = true }
         }
     }
 
-    /// A broad, soft band under everything traced so far.
-    private func wash(intensity: Double) -> some View {
+    /// A broad, soft band under everything traced so far. Redrawn only when
+    /// progress actually changes; the breathing is an opacity animation, which
+    /// costs nothing to keep running.
+    private var wash: some View {
         shape
             .trim(from: 0, to: progress.value)
             .stroke(
-                Color.accentColor.opacity(0.42 * intensity),
+                Color.accentColor.opacity(0.42),
                 style: StrokeStyle(lineWidth: glowWidth, lineCap: .round)
             )
             .blur(radius: glowWidth * 0.55)
-    }
-
-    /// The wave itself: three stacked segments of decreasing length and rising
-    /// opacity, which gives the crest a tail that falls off behind it. A real
-    /// gradient along a path isn't available, and three bands are enough once
-    /// they're blurred into each other.
-    private func crest(at head: Double) -> some View {
-        ZStack {
-            crestBand(head: head, length: 0.26, opacity: 0.16, blur: 22)
-            crestBand(head: head, length: 0.15, opacity: 0.22, blur: 16)
-            crestBand(head: head, length: 0.07, opacity: 0.30, blur: 11)
-        }
-    }
-
-    private func crestBand(
-        head: Double,
-        length: Double,
-        opacity: Double,
-        blur: CGFloat
-    ) -> some View {
-        shape
-            .trim(from: max(0, head - length), to: head)
-            .stroke(
-                Color.accentColor.opacity(opacity),
-                style: StrokeStyle(lineWidth: glowWidth * 1.3, lineCap: .round)
+            .opacity(isSweeping && !reduceMotion ? 0.62 : 1)
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeInOut(duration: breathPeriod).repeatForever(autoreverses: true),
+                value: isSweeping
             )
-            .blur(radius: blur)
     }
 
-    /// The crest sweeps the lit portion of the perimeter, so it stays inside
-    /// what's actually been traced and never runs ahead of the progress.
+    /// The wave: a bright wedge in an angular gradient, spun about the window's
+    /// centre and masked to the traced band, so it reads as a crest travelling
+    /// around the edge.
     ///
-    /// Kept off the seam at top centre deliberately: `trim` draws nothing when
-    /// `from` is greater than `to`, so a crest that wrapped past the finish
-    /// line would blink out rather than continue around.
-    private func crestPosition(at time: TimeInterval) -> Double {
-        let phase = (time / wavePeriod).truncatingRemainder(dividingBy: 1)
-        return phase * progress.value
-    }
-
-    /// Slow swell in the wash, so the glow is alive even while the crest is on
-    /// the far side of the window.
-    private func breath(at time: TimeInterval) -> Double {
-        let phase = sin(time * 2 * .pi / breathPeriod)
-        return 0.62 + 0.38 * (phase + 1) / 2
+    /// A rotating wedge crosses the corners a little faster than the middle of
+    /// each side — angle sweeps evenly, perimeter doesn't. At this speed it
+    /// looks like a swell gathering at the corners, which is no worse than
+    /// uniform, and it buys a per-frame cost of nothing.
+    private var sweep: some View {
+        AngularGradient(
+            gradient: Gradient(stops: [
+                .init(color: .clear, location: 0),
+                .init(color: Color.accentColor.opacity(0.75), location: 0.06),
+                .init(color: Color.accentColor.opacity(0.28), location: 0.17),
+                .init(color: .clear, location: 0.34),
+                .init(color: .clear, location: 1),
+            ]),
+            center: .center
+        )
+        // Oversized because a rotated rectangle doesn't cover its own corners:
+        // at 45 degrees the crest would vanish exactly where the mask needs it.
+        .scaleEffect(1.5)
+        .rotationEffect(.degrees(isSweeping ? 360 : 0))
+        .animation(
+            .linear(duration: wavePeriod).repeatForever(autoreverses: false),
+            value: isSweeping
+        )
+        .mask {
+            // Static per progress value, so this renders once and is reused
+            // while the gradient spins underneath it.
+            shape
+                .trim(from: 0, to: progress.value)
+                .stroke(
+                    Color.white,
+                    style: StrokeStyle(lineWidth: glowWidth * 1.4, lineCap: .round)
+                )
+                .blur(radius: glowWidth * 0.5)
+        }
     }
 
     private var shape: some Shape {
@@ -257,3 +261,4 @@ struct WindowPerimeter: Shape {
         return path
     }
 }
+
