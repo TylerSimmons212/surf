@@ -12,7 +12,10 @@ enum PreferenceKeys {
     static let clearTracesOnQuit = "clearTracesOnQuit"
     static let sidebarPinned = "sidebarPinned"
     static let autoPopOutVideo = "autoPopOutVideo"
-    static let ytdlpPath = "ytdlpPath"
+    /// When the helper binaries were last checked for updates. Not a setting —
+    /// there is no UI for it — but it lives here so the key isn't a literal
+    /// buried in `UpdateManager`.
+    static let lastComponentCheck = "lastComponentCheck"
 }
 
 extension PrivacySettings {

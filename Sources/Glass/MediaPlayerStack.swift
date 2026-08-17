@@ -283,17 +283,20 @@ struct MediaRow: View {
                 DownloadManager.shared.downloadMedia(from: tab)
             }
         } else if media.needsExtraction {
-            // Segmented media: no URL to fetch, so yt-dlp reassembles it from
-            // the page. Marked with a different glyph because it's a slower,
-            // best-effort job rather than a straight file copy.
+            // Segmented media has no URL to fetch and is reassembled from the
+            // page instead. A different glyph because it's a slower,
+            // best-effort job rather than a straight file copy — but the
+            // machinery behind it is never named. As far as anyone using Glass
+            // is concerned this is just what downloading a stream looks like.
+            let isReady = MediaExtractor.shared.isAvailable
             IconButton(
                 systemName: "arrow.down.circle.dotted",
                 size: 12, width: 24, height: 24, cornerRadius: 12,
-                isEnabled: MediaExtractor.shared.isAvailable,
-                motion: MediaExtractor.shared.isAvailable ? .bounce : .none,
-                help: MediaExtractor.shared.isAvailable
-                    ? "Download Video — reassembled from the stream with yt-dlp"
-                    : MediaExtractor.shared.unavailableReason
+                isEnabled: isReady,
+                motion: isReady ? .bounce : .none,
+                help: isReady
+                    ? "Download Video — reassembled from the stream"
+                    : "This video is streamed in segments and can't be saved as a file"
             ) {
                 DownloadManager.shared.downloadMedia(from: tab)
             }

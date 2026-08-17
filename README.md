@@ -32,14 +32,9 @@ kept in memory only and is empty again on relaunch.
 A plain media file is saved by WebKit itself, so it inherits the page's session
 and referrer. Video that's streamed in segments — a `blob:` source from Media
 Source Extensions, or an HLS/DASH manifest — has no single file to fetch, and is
-reassembled by [yt-dlp](https://github.com/yt-dlp/yt-dlp) instead. A pinned copy
-of yt-dlp is bundled into `Glass.app` by `scripts/bundle.sh`; a copy on your own
-system wins if you point at it in Settings, and `swift run` builds fall back to
-one on `PATH`. Only the cookies for the site being downloaded from are handed
-over, in a temp file deleted when the run ends. With `ffmpeg` installed
-(`brew install ffmpeg`) separate video and audio streams can be merged, which is
-what full quality usually requires; without it, downloads are capped at the best
-pre-muxed stream a site offers.
+reassembled from the page instead. Only the cookies for the site being
+downloaded from are handed to the reassembler, in a temp file deleted when the
+run ends.
 
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position
@@ -61,6 +56,44 @@ four switches:
 The guarantee is that caches and cookies are independent: clearing where you
 went never signs you out. `PrivacyPolicy` encodes that rule and the tests
 enforce it.
+
+### Helpers
+
+Stream downloads are done by two binaries Glass runs but doesn't build: yt-dlp
+resolves a page to its media, and ffmpeg merges separate video and audio
+streams. Neither is a user-visible feature. Settings shows one number — the
+Glass version — and nothing about what's inside it, because a version the user
+can't act on is noise, and "Glass is current" has to mean everything in it is
+current or the number means nothing.
+
+`UpdateManager` keeps them that way: a weekly check at launch, SHA-256 verified
+against the publisher's own checksums, installed atomically into
+`~/Library/Application Support/Glass/Components`, never prompting and never
+reporting. A failed update leaves the previous copy alone and tries again next
+week. Resolution runs newest-first — managed copy, then the copy bundled in the
+app, then `PATH`, so `swift run` works without a bundle.
+
+The two are handled differently, and the difference is licensing:
+
+| | yt-dlp | ffmpeg |
+|---|---|---|
+| Licence | Unlicense | GPLv3 — every prebuilt static macOS build |
+| Bundled in `Glass.app` | Yes, pinned + checksummed by `bundle.sh` | **No** |
+| Source | GitHub releases + `SHA2-256SUMS` | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) + `.sha256` sidecar |
+| Extra verification | — | Developer ID team pin (`KU3N25YGLU`) |
+
+Bundling an ffmpeg build would put Glass under GPLv3 along with it. Fetching it
+at runtime makes the user the recipient rather than Glass the redistributor,
+which is the same arrangement yt-dlp itself and HandBrake use. If that ever
+needs to change, it means compiling an LGPL ffmpeg (`--disable-gpl
+--disable-version3`, minus the GPL codecs) — which would also cost the
+publisher signature.
+
+ffmpeg's build IDs are timestamped with no "latest" alias, so the current one is
+read off their history page. That scrape is the fragile link, and
+`FFmpegRelease.fallback` holds a hand-verified build ID and hash per
+architecture so a redesign there costs a slightly older ffmpeg rather than the
+feature — and never an unverified download.
 
 ### Shortcuts
 
@@ -126,10 +159,14 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes;
   routes each source to WebKit or to yt-dlp
 - `Sources/Glass/DownloadsPanel.swift` — toolbar button and downloads list
-- `Sources/Glass/MediaExtractor.swift` — finds yt-dlp, exports one site's cookies,
-  and runs the process
+- `Sources/Glass/MediaExtractor.swift` — resolves the helper, exports one site's
+  cookies, and runs the process
+- `Sources/Glass/UpdateManager.swift` — weekly check, checksum + signature
+  verification, atomic install
 - `Sources/GlassCore/MediaSource.swift` — file vs manifest vs `blob:` classification
 - `Sources/GlassCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
+- `Sources/GlassCore/ComponentUpdate.swift` — version comparison, scheduling, and
+  release discovery for both helpers
 - `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
 - `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window

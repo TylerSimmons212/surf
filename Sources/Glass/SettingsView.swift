@@ -13,16 +13,18 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.clearTracesOnQuit) private var clearTracesOnQuit = true
 
     @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
-    @AppStorage(PreferenceKeys.ytdlpPath) private var ytdlpPath = ""
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
 
-    /// Resolved once at launch, so this reports the copy actually in use rather
-    /// than what the path field currently says.
-    private var extractorStatus: String {
-        guard let url = MediaExtractor.shared.executableURL else { return "yt-dlp not found" }
-        return url.path
+    /// One number, and it's Glass's.
+    ///
+    /// Glass runs helper binaries with their own release cadences, and they
+    /// update themselves in the background. None of that is surfaced: a version
+    /// the user can't act on is noise, and "Glass is current" has to mean
+    /// everything inside it is current too, or the number means nothing.
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1"
     }
 
     var body: some View {
@@ -57,28 +59,6 @@ struct SettingsView: View {
                 that stays on top. Returning to the tab puts it back.
                 """)
 
-                Divider()
-
-                LabeledContent("Stream downloads") {
-                    Text(extractorStatus)
-                        .font(.callout)
-                        .foregroundStyle(MediaExtractor.shared.isAvailable ? .green : .secondary)
-                }
-                explain("""
-                Videos streamed in segments have no file to save, so Glass uses \
-                yt-dlp to reassemble them. A copy ships with Glass; set a path \
-                below to use your own, newer one instead.
-                """)
-
-                TextField("yt-dlp path", text: $ytdlpPath, prompt: Text("Bundled copy"))
-                    .textFieldStyle(.roundedBorder)
-                if !MediaExtractor.shared.hasFFmpeg {
-                    explain("""
-                    ffmpeg wasn't found, so downloads are limited to the best \
-                    single stream a site offers — often 720p. Install it with \
-                    `brew install ffmpeg` for full quality.
-                    """, isCaveat: true)
-                }
             } header: {
                 Text("Media")
             }
@@ -120,6 +100,16 @@ struct SettingsView: View {
                 explain("""
                 Erases caches and site storage immediately. Respects the \
                 "Keep me signed in" setting above.
+                """)
+            }
+
+            Section {
+                LabeledContent("Version") {
+                    Text(version).foregroundStyle(.secondary)
+                }
+                explain("""
+                Glass keeps itself current in the background. There is nothing \
+                to install and nothing to check.
                 """)
             }
         }

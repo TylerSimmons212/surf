@@ -26,33 +26,43 @@ final class MediaExtractor {
 
     private init() {}
 
-    /// Bundled copy first, so a downloaded Glass.app works with no setup. A
-    /// system copy is the fallback: `swift run` has no bundle, and a user who
-    /// keeps their own yt-dlp current should get the current one.
-    private(set) lazy var executableURL: URL? = Self.locate(
-        "yt-dlp",
-        override: UserDefaults.standard.string(forKey: PreferenceKeys.ytdlpPath)
-    )
+    /// Resolution is cached because `isAvailable` is read from a view body, and
+    /// invalidated when `UpdateManager` installs something.
+    private var resolved: [Component: URL?] = [:]
 
-    /// Optional. Without it, separate video and audio streams can't be joined,
-    /// so quality is capped at whatever the site serves pre-muxed — usually
-    /// 720p. Not bundled: it is several times the size of everything else here.
-    private(set) lazy var ffmpegURL: URL? = Self.locate("ffmpeg")
+    var executableURL: URL? { url(of: .ytdlp) }
+    var ffmpegURL: URL? { url(of: .ffmpeg) }
 
     var isAvailable: Bool { executableURL != nil }
-
     var hasFFmpeg: Bool { ffmpegURL != nil }
 
-    /// Shown when the button has to explain itself.
-    var unavailableReason: String {
-        "yt-dlp wasn't found. Install it with `brew install yt-dlp`, or set its path in Settings."
+    func invalidateResolution() { resolved.removeAll() }
+
+    private func url(of component: Component) -> URL? {
+        if let cached = resolved[component] { return cached }
+        let found = Self.locate(component)
+        resolved[component] = found
+        return found
     }
 
-    private static func locate(_ name: String, override: String? = nil) -> URL? {
+    /// Newest first:
+    ///
+    /// 1. an explicit override, for debugging — no UI, `defaults write` only
+    /// 2. the managed copy `UpdateManager` keeps current
+    /// 3. the copy bundled into Glass.app, which is why downloads work offline
+    ///    on first launch
+    /// 4. anything on the usual `PATH` locations, which is what makes
+    ///    `swift run` builds work without a bundle
+    private static func locate(_ component: Component) -> URL? {
+        let name = component.executableName
         var candidates: [URL] = []
 
+        let override = UserDefaults.standard.string(forKey: "\(name)Path")
         if let override, !override.isEmpty {
             candidates.append(URL(fileURLWithPath: override))
+        }
+        if let managed = UpdateManager.installedURL(component) {
+            candidates.append(managed)
         }
         if let bundled = Bundle.main.url(forResource: name, withExtension: nil) {
             candidates.append(bundled)
