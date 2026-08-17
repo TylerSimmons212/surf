@@ -56,10 +56,21 @@ struct URLPalette: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(createsTab ? Color.accentColor : Color.secondary)
 
-            TextField(createsTab ? "Search or enter address — opens a new tab"
-                                 : "Search or enter address", text: $text)
+            TextField(
+                "",
+                text: $text,
+                prompt: Text(createsTab ? "Search or enter address — opens a new tab"
+                                        : "Search or enter address")
+                    .foregroundStyle(.secondary)
+            )
                 .textFieldStyle(.plain)
-                .font(.system(size: 19))
+                // What you type is the content; the placeholder is a label.
+                // Semibold at full contrast separates the two without needing
+                // a second colour, and holds up over a busy page showing
+                // through the glass.
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(.primary)
+                .tint(Color.accentColor)
                 .focused($focused)
                 .onSubmit(submit)
                 .onChange(of: text) { _, value in
@@ -117,12 +128,32 @@ struct URLPalette: View {
         // A capsule, matching the bar on the new tab screen: this is meant to
         // read as that bar coming forward, and two different corner radii give
         // the game away.
-        .glassEffect(.regular.interactive(), in: Capsule())
+        //
+        // Faintly accent-tinted once there's something to submit, which is the
+        // only moment the colour carries information.
+        .glassEffect(
+            .regular
+                .tint(text.isEmpty ? nil : Color.accentColor.opacity(0.07))
+                .interactive(),
+            in: Capsule()
+        )
         .overlay {
-            // Thinner than before: glass draws its own edge, so the focus ring
-            // only has to tint it rather than outline the whole shape.
+            // No focus ring. Nothing else on screen can take a keystroke while
+            // this is up — the backdrop is dimmed and the page is behind it —
+            // so an outline announcing "this is focused" is answering a
+            // question nobody asked, and a coloured one fights the glass.
+            //
+            // What replaces it is the edge real glass has: bright along the
+            // top where light catches it, fading down the sides.
             Capsule()
-                .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 1.5)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.38), .white.opacity(0.06)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
                 .allowsHitTesting(false)
         }
         .shadow(color: .black.opacity(0.28), radius: 30, y: 12)
