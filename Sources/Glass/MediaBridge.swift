@@ -110,6 +110,27 @@ enum MediaBridge {
     return true;
     """
 
+    /// Seeks to an absolute position. `time` arrives as a call argument rather
+    /// than interpolated into the source, so page content can never become script.
+    static let seekScript = """
+    const el = window.__glassMedia;
+    if (!el) { return false; }
+    const limit = isFinite(el.duration) ? el.duration : time;
+    el.currentTime = Math.max(0, Math.min(limit, time));
+    return true;
+    """
+
+    /// Jumps relative to the current position, clamped to the media's bounds.
+    static let skipScript = """
+    const el = window.__glassMedia;
+    if (!el) { return false; }
+    const target = el.currentTime + delta;
+    el.currentTime = isFinite(el.duration)
+      ? Math.max(0, Math.min(el.duration, target))
+      : Math.max(0, target);
+    return true;
+    """
+
     /// Where the playing video sits in the viewport, in CSS pixels.
     ///
     /// This is the entire site-specific surface of the lens approach: one

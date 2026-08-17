@@ -121,6 +121,10 @@ final class PopOutController: NSObject, NSWindowDelegate {
         chromeModel.onClose = { [weak self] in self?.closeFromChrome() }
         chromeModel.onRestore = { [weak self] in self?.restore() }
         chromeModel.onTogglePlay = { [weak tab] in tab?.toggleMediaPlayback() }
+        chromeModel.onSeek = { [weak tab] time in tab?.seekMedia(to: time) }
+        chromeModel.onSkip = { [weak tab] delta in tab?.skipMedia(by: delta) }
+        chromeModel.currentTime = tab.media?.currentTime ?? 0
+        chromeModel.duration = tab.media?.duration ?? 0
 
         let chrome = NSHostingView(rootView: PopOutChrome(model: chromeModel))
         chrome.frame = root.bounds
@@ -183,6 +187,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
                 // Keeps the chrome's play/pause glyph honest when playback is
                 // changed from anywhere else — the sidebar, or the page itself.
                 chromeModel.isPlaying = tab.media?.isPlaying ?? false
+                chromeModel.currentTime = tab.media?.currentTime ?? 0
+                chromeModel.duration = tab.media?.duration ?? 0
             }
         }
     }

@@ -10,9 +10,13 @@ final class PopOutChromeModel {
     var isHovering = false
     var isPlaying = false
     var title = ""
+    var currentTime: Double = 0
+    var duration: Double = 0
     var onClose: () -> Void = {}
     var onRestore: () -> Void = {}
     var onTogglePlay: () -> Void = {}
+    var onSeek: (Double) -> Void = { _ in }
+    var onSkip: (Double) -> Void = { _ in }
 }
 
 /// The overlay on top of the video: at rest nothing is drawn, on hover a scrim
@@ -28,6 +32,13 @@ struct PopOutChrome: View {
 
     static let barHeight: CGFloat = 34
     private let gripSize: CGFloat = 20
+    /// Matches the podcast convention, and the SF Symbols that exist for it.
+    private let skipInterval: Double = 15
+
+    /// Local while dragging so incoming time updates can't yank the knob out
+    /// from under the pointer.
+    @State private var isScrubbing = false
+    @State private var scrubFraction: Double = 0
 
     var body: some View {
         ZStack {
@@ -39,8 +50,12 @@ struct PopOutChrome: View {
                     .frame(maxHeight: .infinity, alignment: .top)
                     .transition(.opacity)
 
-                playButton
+                transportControls
                     .transition(.opacity.combined(with: .scale(scale: 0.85)))
+
+                scrubBar
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .transition(.opacity)
 
                 WindowResizeGrip()
                     .frame(width: gripSize, height: gripSize)
@@ -87,22 +102,140 @@ struct PopOutChrome: View {
         .frame(height: PopOutChrome.barHeight + 14)
     }
 
-    /// The page can't be clicked any more, so playback control has to live here.
-    private var playButton: some View {
-        Button {
-            model.onTogglePlay()
-        } label: {
-            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 16, weight: .semibold))
+    /// The page can't be clicked any more, so transport lives here.
+    private var transportControls: some View {
+        HStack(spacing: 18) {
+            circleButton("gobackward.15", size: 15, diameter: 34,
+                         help: "Back 15 Seconds") {
+                model.onSkip(-skipInterval)
+            }
+
+            circleButton(model.isPlaying ? "pause.fill" : "play.fill",
+                         size: 16, diameter: 44,
+                         help: model.isPlaying ? "Pause" : "Play") {
+                model.onTogglePlay()
+            }
+
+            circleButton("goforward.15", size: 15, diameter: 34,
+                         help: "Forward 15 Seconds") {
+                model.onSkip(skipInterval)
+            }
+        }
+    }
+
+    /// Elapsed, a draggable track, and remaining — the usual arrangement, kept
+    /// clear of the resize grip in the corner.
+    private var scrubBar: some View {
+        VStack(spacing: 0) {
+            LinearGradient(
+                colors: [.black.opacity(0), .black.opacity(0.65)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 18)
+            .allowsHitTesting(false)
+
+            HStack(spacing: 8) {
+                timeLabel(displayTime)
+                track
+                timeLabel(model.duration)
+            }
+            .padding(.leading, 10)
+            // Room for the grip so the duration doesn't sit underneath it.
+            .padding(.trailing, 28)
+            .padding(.bottom, 8)
+            .background {
+                Color.black.opacity(0.65).allowsHitTesting(false)
+            }
+        }
+    }
+
+    private var displayFraction: Double {
+        if isScrubbing { return scrubFraction }
+        guard model.duration > 0 else { return 0 }
+        return min(max(model.currentTime / model.duration, 0), 1)
+    }
+
+    private var displayTime: Double {
+        isScrubbing ? scrubFraction * model.duration : model.currentTime
+    }
+
+    private var track: some View {
+        GeometryReader { geometry in
+            let width = max(geometry.size.width, 1)
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.28))
+                    .frame(height: 3)
+
+                Capsule()
+                    .fill(.white)
+                    .frame(width: width * displayFraction, height: 3)
+
+                Circle()
+                    .fill(.white)
+                    .frame(width: isScrubbing ? 11 : 9, height: isScrubbing ? 11 : 9)
+                    .offset(x: width * displayFraction - (isScrubbing ? 5.5 : 4.5))
+            }
+            .frame(maxHeight: .infinity)
+            // Generous target: a 3pt line is impossible to grab otherwise.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isScrubbing = true
+                        scrubFraction = min(max(value.location.x / width, 0), 1)
+                    }
+                    .onEnded { value in
+                        let fraction = min(max(value.location.x / width, 0), 1)
+                        // Seek on release only: seeking per-frame while dragging
+                        // makes streamed media rebuffer on every move.
+                        model.onSeek(fraction * model.duration)
+                        scrubFraction = fraction
+                        isScrubbing = false
+                    }
+            )
+            .animation(.easeOut(duration: 0.12), value: isScrubbing)
+        }
+        .frame(height: 16)
+    }
+
+    private func timeLabel(_ seconds: Double) -> some View {
+        Text(Self.formatted(seconds))
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.85))
+            .allowsHitTesting(false)
+    }
+
+    /// h:mm:ss only when there are hours; m:ss otherwise.
+    static func formatted(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds.rounded())
+        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
+        return h > 0
+            ? String(format: "%d:%02d:%02d", h, m, s)
+            : String(format: "%d:%02d", m, s)
+    }
+
+    private func circleButton(
+        _ symbol: String,
+        size: CGFloat,
+        diameter: CGFloat,
+        help: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 44, height: 44)
+                .frame(width: diameter, height: diameter)
                 .background {
                     Circle().fill(.black.opacity(0.42))
                 }
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help(model.isPlaying ? "Pause" : "Play")
+        .help(help)
     }
 
     private func chromeButton(

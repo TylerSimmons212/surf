@@ -204,6 +204,24 @@ final class Tab: NSObject, Identifiable {
         return CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
     }
 
+    func seekMedia(to seconds: Double) {
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                MediaBridge.seekScript, arguments: ["time": seconds],
+                in: nil, contentWorld: .page
+            )
+        }
+    }
+
+    func skipMedia(by seconds: Double) {
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                MediaBridge.skipScript, arguments: ["delta": seconds],
+                in: nil, contentWorld: .page
+            )
+        }
+    }
+
     func toggleMediaPlayback() {
         Task { @MainActor in
             _ = try? await webView.callAsyncJavaScript(
