@@ -12,7 +12,6 @@ struct EmptyTabView: View {
     @State private var isHovering = false
 
     private let barWidth: CGFloat = 560
-    private let cornerRadius: CGFloat = 20
 
     var body: some View {
         VStack(spacing: 22) {
@@ -54,15 +53,17 @@ struct EmptyTabView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 15)
             .frame(width: barWidth)
-            // The tint warms on hover instead of a plate fading in behind it:
-            // glass is the surface, so the surface itself should respond.
+            // A capsule rather than a rounded rectangle, so the ends stay true
+            // semicircles at whatever height the type sets. The tint warms on
+            // hover instead of a plate fading in behind it: glass is the
+            // surface, so the surface itself should respond.
             .glassEffect(
                 .regular
                     .tint(isHovering ? Color.accentColor.opacity(0.10) : nil)
                     .interactive(),
-                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                in: Capsule()
             )
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .shadow(color: .black.opacity(isHovering ? 0.20 : 0.12), radius: isHovering ? 22 : 14, y: 6)

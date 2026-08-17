@@ -182,7 +182,13 @@ struct ContentView: View {
             // Glass exists for. Not `interactive`: that's for controls, and a
             // whole panel reacting to the pointer reads as wobbly rather than
             // responsive.
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .glassEffect(.regular, in: sidebarShape)
+            // Glass alone is thin enough that a busy page reads straight
+            // through the tab titles. The material sits *behind* the glass —
+            // applied after it, so it renders underneath — giving the panel
+            // back its body while the glass keeps the edge and the highlights.
+            // Reach for .thickMaterial here if a page still shows through.
+            .background { sidebarShape.fill(.regularMaterial) }
             .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
             .padding(.top, 4)
             .padding(.bottom, 10)
@@ -222,6 +228,10 @@ struct ContentView: View {
 
             return event
         }
+    }
+
+    private var sidebarShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
     }
 
     private func openAddressBar() {
