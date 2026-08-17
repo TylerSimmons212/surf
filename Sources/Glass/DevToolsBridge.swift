@@ -150,16 +150,13 @@ final class DevToolsBridge {
     ) async throws -> [String: Any] {
         guard isAttached, let tab else { throw BridgeError.notAttached }
 
-        // The domain in the method name is also the routing decision: console
-        // commands have to reach the page world, where the patched globals
-        // live, and everything else belongs to the isolated agent.
-        let isConsole = method.rawValue.hasPrefix("Console.")
+        let isPageWorld = method.target == .page
 
         let raw = try await tab.webView.callAsyncJavaScript(
-            isConsole ? ConsoleAgent.dispatchScript : DevToolsAgent.dispatchScript,
+            isPageWorld ? ConsoleAgent.dispatchScript : DevToolsAgent.dispatchScript,
             arguments: ["method": method.rawValue, "params": params],
             in: nil,
-            contentWorld: isConsole ? .page : DevToolsAgent.world
+            contentWorld: isPageWorld ? .page : DevToolsAgent.world
         )
 
         // Null means the agent isn't present — an `about:blank`, a PDF view, or

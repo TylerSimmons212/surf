@@ -60,6 +60,27 @@ enum ConsoleAgent {
       // Empty for the main frame; an iframe's logs are worth attributing.
       const frame = (window === window.top) ? '' : location.href;
 
+      // Handles for values the panel can ask to expand. Only ever populated
+      // while attached: retaining page objects for a console nobody opened
+      // would be a leak, and would keep alive exactly the objects someone is
+      // trying to watch get collected.
+      const objects = new Map();
+      let nextObjectId = 1;
+      // Bounded so a chatty page can't pin unbounded memory. Eviction is
+      // oldest-first, and Swift releases ids as rows scroll out anyway.
+      const OBJECT_CAP = 5000;
+
+      function retain(value) {
+        if (!live) { return undefined; }
+        const id = 'o' + (nextObjectId++);
+        objects.set(id, value);
+        if (objects.size > OBJECT_CAP) {
+          const oldest = objects.keys().next();
+          if (!oldest.done) { objects.delete(oldest.value); }
+        }
+        return id;
+      }
+
       function post(payload) {
         try {
           window.webkit.messageHandlers[HANDLER].postMessage(payload);
@@ -125,7 +146,10 @@ enum ConsoleAgent {
                 prefix = 'class ';
               }
             } catch (e) {}
-            return { type: 'function', className: 'Function', description: prefix + name };
+            return {
+              type: 'function', className: 'Function', description: prefix + name,
+              objectId: shallow ? undefined : retain(value)
+            };
           }
           return describeObject(value, shallow);
         } catch (e) {
@@ -137,7 +161,8 @@ enum ConsoleAgent {
         if (typeof Node !== 'undefined' && value instanceof Node) {
           return {
             type: 'object', subtype: 'node',
-            className: classNameOf(value), description: nodeDescription(value)
+            className: classNameOf(value), description: nodeDescription(value),
+            objectId: shallow ? undefined : retain(value)
           };
         }
         if (value instanceof Error) {
@@ -175,24 +200,24 @@ enum ConsoleAgent {
         if (typeof Map !== 'undefined' && value instanceof Map) {
           const out = { type: 'object', subtype: 'map', className: 'Map',
                         description: 'Map(' + value.size + ')' };
-          if (!shallow) { out.preview = mapPreview(value); }
+          if (!shallow) { out.preview = mapPreview(value); out.objectId = retain(value); }
           return out;
         }
         if (typeof Set !== 'undefined' && value instanceof Set) {
           const out = { type: 'object', subtype: 'set', className: 'Set',
                         description: 'Set(' + value.size + ')' };
-          if (!shallow) { out.preview = setPreview(value); }
+          if (!shallow) { out.preview = setPreview(value); out.objectId = retain(value); }
           return out;
         }
         if (Array.isArray(value)) {
           const out = { type: 'object', subtype: 'array', className: 'Array',
                         description: 'Array(' + value.length + ')' };
-          if (!shallow) { out.preview = arrayPreview(value); }
+          if (!shallow) { out.preview = arrayPreview(value); out.objectId = retain(value); }
           return out;
         }
         const name = classNameOf(value);
         const out = { type: 'object', className: name, description: name };
-        if (!shallow) { out.preview = objectPreview(value); }
+        if (!shallow) { out.preview = objectPreview(value); out.objectId = retain(value); }
         return out;
       }
 
@@ -401,6 +426,7 @@ enum ConsoleAgent {
       console.clear = function __glassLog() {
         backlog = [];
         pending = [];
+        objects.clear();
         try { post({ event: 'cleared' }); } catch (e) {}
         return native.clear.apply(console, arguments);
       };
@@ -445,6 +471,154 @@ enum ConsoleAgent {
         } catch (e) {}
       });
 
+      // ---- Evaluation and expansion ---------------------------------------
+
+      /// Runs what someone typed at the prompt.
+      ///
+      /// An *indirect* eval — `(0, eval)` rather than `eval` — so the code runs
+      /// in global scope rather than in this closure. That is what makes
+      /// `var x = 1` still be there on the next line, and it keeps the agent's
+      /// own locals out of reach of anything typed.
+      function __glassEvaluate(params) {
+        const src = (params && params.source) || '';
+        const shouldAwait = !!(params && params.usesAwait);
+        if (!src) { return JSON.stringify({ value: describe(undefined, false) }); }
+
+        let value;
+        try {
+          value = (0, eval)(src);
+        } catch (e) {
+          return JSON.stringify({ thrown: true, value: describe(e, false) });
+        }
+
+        if (!shouldAwait || !value || typeof value.then !== 'function') {
+          return JSON.stringify({ value: describe(value, false) });
+        }
+        // A promise is returned to Swift as a promise: `callAsyncJavaScript`
+        // awaits it for us, so a rejection still arrives as a value we can
+        // describe rather than as an opaque WebKit error.
+        return value.then(
+          function (resolved) { return JSON.stringify({ value: describe(resolved, false) }); },
+          function (reason) { return JSON.stringify({ thrown: true, value: describe(reason, false) }); }
+        );
+      }
+
+      /// One level of an object, fetched only when someone opens it.
+      ///
+      /// Sending this eagerly with every log would be ruinous — a single DOM
+      /// node has hundreds of properties — which is the whole reason values
+      /// travel as handles rather than as trees.
+      function __glassProperties(objectId) {
+        const target = objects.get(objectId);
+        if (target === undefined) { return []; }
+
+        const out = [];
+        try {
+          if (typeof Map !== 'undefined' && target instanceof Map) {
+            let index = 0;
+            for (const pair of target) {
+              out.push({ name: String(describe(pair[0], true).description), value: describe(pair[1], false) });
+              if (++index >= 1000) { break; }
+            }
+            return out;
+          }
+          if (typeof Set !== 'undefined' && target instanceof Set) {
+            let index = 0;
+            for (const item of target) {
+              out.push({ name: String(index), value: describe(item, false) });
+              if (++index >= 1000) { break; }
+            }
+            return out;
+          }
+
+          // Own properties first, then inherited ones.
+          //
+          // The prototype walk is not optional: a DOM element has almost no own
+          // properties — `id`, `className`, `children` and the rest all live on
+          // `HTMLElement.prototype` — so stopping at own properties makes
+          // expanding a node show nothing at all.
+          const seen = new Set();
+          let level = target;
+          let depth = 0;
+          while (level && depth < 4 && out.length < 500) {
+            // Stop at the universal bases. `toString`, `valueOf` and
+            // `hasOwnProperty` are on every object in the language and tell you
+            // nothing about *this* one — listing them buries the two keys you
+            // actually logged under a dozen you didn't.
+            if (level === Object.prototype
+                || level === Array.prototype
+                || level === Function.prototype) { break; }
+            const inherited = depth > 0;
+            let names = [];
+            try { names = Object.getOwnPropertyNames(level); } catch (e) {}
+
+            for (let i = 0; i < names.length && out.length < 500; i++) {
+              const name = names[i];
+              if (seen.has(name)) { continue; }
+              seen.add(name);
+              // An array's `length` is noise next to its elements, and
+              // `constructor` is on everything and tells you nothing.
+              if (Array.isArray(target) && name === 'length') { continue; }
+              if (inherited && name === 'constructor') { continue; }
+
+              let descriptor;
+              try { descriptor = Object.getOwnPropertyDescriptor(level, name); } catch (e) {}
+
+              if (descriptor && typeof descriptor.get === 'function') {
+                // A *native* accessor — `element.id`, `node.children` — is the
+                // engine reading its own state, with nothing to trigger. An
+                // author-written getter is page code, and running it as a side
+                // effect of looking at an object can change the very state
+                // being inspected, so that one stays unevaluated.
+                let isNative = false;
+                try {
+                  isNative = Function.prototype.toString.call(descriptor.get)
+                    .indexOf('[native code]') !== -1;
+                } catch (e) {}
+
+                if (!isNative) {
+                  out.push({
+                    name: name, isAccessor: true, isEnumerable: !inherited,
+                    value: { type: 'object', description: '(…)' }
+                  });
+                  continue;
+                }
+                let got;
+                try { got = descriptor.get.call(target); } catch (e) {
+                  out.push({
+                    name: name, isEnumerable: false,
+                    value: { type: 'object', description: '<throws>' }
+                  });
+                  continue;
+                }
+                out.push({ name: name, isEnumerable: !inherited, value: describe(got, false) });
+                continue;
+              }
+
+              let raw;
+              try { raw = descriptor ? descriptor.value : level[name]; } catch (e) {
+                out.push({
+                  name: name, isEnumerable: false,
+                  value: { type: 'object', description: '<throws>' }
+                });
+                continue;
+              }
+              out.push({
+                name: name,
+                // Inherited members are dimmed: real, but not what you came
+                // to look at.
+                isEnumerable: inherited ? false : (descriptor ? !!descriptor.enumerable : true),
+                value: describe(raw, false)
+              });
+            }
+
+            try { level = Object.getPrototypeOf(level); } catch (e) { level = null; }
+            depth++;
+          }
+        } catch (e) {}
+        return out;
+      }
+
       globalThis.__glassConsole = {
         dispatch: function (method, params) {
           try {
@@ -457,7 +631,23 @@ enum ConsoleAgent {
               }
               case 'Console.setLive': {
                 live = !!(params && params.live);
-                if (!live) { pending = []; }
+                if (!live) {
+                  pending = [];
+                  // Nothing can expand these any more, and holding them would
+                  // pin page objects alive for the life of the document.
+                  objects.clear();
+                }
+                return JSON.stringify({ ok: true });
+              }
+              case 'Runtime.evaluate': {
+                return __glassEvaluate(params);
+              }
+              case 'Runtime.getProperties': {
+                return JSON.stringify({ properties: __glassProperties(params && params.objectId) });
+              }
+              case 'Runtime.releaseObject': {
+                const ids = (params && params.objectIds) || [];
+                for (let i = 0; i < ids.length; i++) { objects.delete(ids[i]); }
                 return JSON.stringify({ ok: true });
               }
               case 'Console.ack': {

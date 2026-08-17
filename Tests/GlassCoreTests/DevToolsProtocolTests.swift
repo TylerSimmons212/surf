@@ -51,3 +51,43 @@ struct DevToolsProtocolTests {
         }
     }
 }
+
+@Suite("Developer tools routing")
+struct DevToolsRoutingTests {
+
+    /// Evaluation has to run in the page's own globals — the same world that
+    /// holds the object handles it hands back. Routing it to the isolated
+    /// agent made it fail as an "unknown method", which reads like a missing
+    /// feature rather than a misrouted call.
+    @Test("Evaluation and object handles belong to the page world")
+    func evaluationRunsInThePage() {
+        #expect(DevToolsMethod.runtimeEvaluate.target == .page)
+        #expect(DevToolsMethod.runtimeGetProperties.target == .page)
+        #expect(DevToolsMethod.runtimeReleaseObject.target == .page)
+    }
+
+    /// The console patches page globals, so it cannot live anywhere else.
+    @Test("Console commands belong to the page world")
+    func consoleRunsInThePage() {
+        #expect(DevToolsMethod.consoleDrain.target == .page)
+        #expect(DevToolsMethod.consoleAck.target == .page)
+        #expect(DevToolsMethod.consoleSetLive.target == .page)
+    }
+
+    /// Inspection runs isolated so the page can neither detect it nor break it
+    /// by overwriting a prototype the agent relies on.
+    @Test("Inspection belongs to the isolated agent")
+    func inspectionRunsIsolated() {
+        #expect(DevToolsMethod.runtimePing.target == .agent)
+        #expect(DevToolsMethod.domGetDocument.target == .agent)
+        #expect(DevToolsMethod.cssGetMatchedRules.target == .agent)
+        #expect(DevToolsMethod.overlaySetInspectMode.target == .agent)
+    }
+
+    /// The split does not follow the domain prefix — `Runtime` spans both —
+    /// which is exactly why the target is stated per method.
+    @Test("Routing is not inferable from the domain prefix")
+    func routingIsNotPrefixBased() {
+        #expect(DevToolsMethod.runtimePing.target != DevToolsMethod.runtimeEvaluate.target)
+    }
+}

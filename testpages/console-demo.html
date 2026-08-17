@@ -1,0 +1,27 @@
+<!doctype html><html><head><title>Glass Console Demo</title>
+<style>body{font:15px -apple-system;padding:40px;max-width:600px}button{font-size:14px;padding:8px 14px;margin:4px}</style>
+</head><body>
+<h1>Glass console demo</h1>
+<p>These fired on load, before you opened dev tools:</p>
+<img src="/missing-on-purpose.png" alt="">
+<p>
+<button onclick="console.log('clicked at', new Date())">log</button>
+<button onclick="console.warn('a warning')">warn</button>
+<button onclick="console.error(new Error('a real error'))">error</button>
+<button onclick="for(let i=0;i<5;i++)console.log('repeated line')">repeat x5</button>
+<button onclick="console.log({name:'ada',age:36,tags:['x','y'],nested:{deep:true}})">object</button>
+<button onclick="undefinedFunction()">throw</button>
+</p>
+<script>
+console.log('page loaded at', new Date().toISOString());
+console.info('an info line');
+console.warn('a warning from load');
+console.error('an error from load');
+console.log('an object', {name:'ada', age:36, nested:{deep:true}});
+console.log('an array', [1,2,'three',null,5,6,7]);
+console.group('a group');
+console.log('inside the group');
+console.groupEnd();
+Promise.reject(new Error('rejected on purpose'));
+</script>
+</body></html>

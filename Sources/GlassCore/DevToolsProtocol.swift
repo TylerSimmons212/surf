@@ -27,6 +27,37 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case overlaySetInspectMode = "Overlay.setInspectMode"
 }
 
+/// Which injected script answers a command.
+///
+/// Stated per method rather than inferred from the domain name, because the
+/// split doesn't follow the domains: `Runtime.ping` is a liveness check on the
+/// inspection agent, while `Runtime.evaluate` has to run in the page's own
+/// globals — the same world that holds the objects it hands back. Guessing
+/// from a prefix put evaluation in the wrong world and it failed as an
+/// "unknown method", which reads like a missing feature rather than a
+/// misrouted call.
+public enum DevToolsTarget: Sendable, Equatable {
+    /// The isolated world: DOM, styles, overlay.
+    case agent
+    /// The page's own world: console capture, evaluation, object handles.
+    case page
+}
+
+extension DevToolsMethod {
+    public var target: DevToolsTarget {
+        switch self {
+        case .runtimePing,
+             .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
+             .cssGetMatchedRules, .cssGetComputed,
+             .overlaySetInspectMode:
+            .agent
+        case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
+             .consoleDrain, .consoleSetLive, .consoleAck:
+            .page
+        }
+    }
+}
+
 /// What the injected scripts push without being asked.
 public enum DevToolsEvent: Sendable, Equatable {
     /// A fresh document is live. Carries the generation the page reports so a

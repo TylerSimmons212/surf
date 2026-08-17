@@ -82,6 +82,68 @@ final class DevToolsSession: Identifiable {
         releaseEvictedObjects()
     }
 
+    // MARK: - The prompt
+
+    /// What has been typed, newest last. Memory only — a REPL history that
+    /// outlived the window would be a record of what you were debugging.
+    private(set) var inputHistory: [String] = []
+    private static let historyDepth = 100
+
+    /// Runs an entry, echoing both the input and what it answered.
+    func evaluate(_ input: String) async {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // Consecutive duplicates aren't worth a second history slot.
+        if inputHistory.last != trimmed { inputHistory.append(trimmed) }
+        if inputHistory.count > Self.historyDepth { inputHistory.removeFirst() }
+
+        console.append(ConsoleEntry(
+            id: 0,
+            kind: .input,
+            arguments: [RemoteObject(type: .string, description: trimmed)]
+        ))
+
+        let wrapped = ConsoleREPL.wrap(trimmed)
+        let issued = generation
+
+        do {
+            let reply = try await bridge.call(.runtimeEvaluate, [
+                "source": wrapped.source,
+                "usesAwait": wrapped.usesAwait,
+            ])
+            guard issued == generation else { return }
+            guard let result = ConsoleWire.decodeEvaluation(reply) else { return }
+
+            console.append(ConsoleEntry(
+                id: 0,
+                kind: .result,
+                // A thrown value is an error however it was produced, and
+                // colouring it like a result would hide the failure.
+                level: result.thrown ? .error : .log,
+                arguments: [result.value]
+            ))
+        } catch {
+            guard issued == generation else { return }
+            console.append(ConsoleEntry(
+                id: 0,
+                kind: .result,
+                level: .error,
+                arguments: [RemoteObject(type: .string, description: error.localizedDescription)]
+            ))
+        }
+        releaseEvictedObjects()
+    }
+
+    /// One level of an object, fetched only when someone opens it.
+    func properties(of objectId: String) async -> [ObjectProperty] {
+        let issued = generation
+        guard let reply = try? await bridge.call(.runtimeGetProperties, ["objectId": objectId]),
+              issued == generation
+        else { return [] }
+        return ConsoleWire.decodeProperties(reply)
+    }
+
     func toggleConsoleLevel(_ level: ConsoleLevel) {
         if consoleLevels.contains(level) {
             // Never leave zero levels selected — an empty console that looks

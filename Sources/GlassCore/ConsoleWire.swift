@@ -37,6 +37,34 @@ public enum ConsoleWire {
         )
     }
 
+    /// The reply to `Runtime.getProperties`.
+    public static func decodeProperties(_ body: Any) -> [ObjectProperty] {
+        guard let dict = body as? [String: Any],
+              let raw = dict["properties"] as? [[String: Any]]
+        else { return [] }
+
+        return raw.compactMap { entry in
+            guard let name = entry["name"] as? String else { return nil }
+            return ObjectProperty(
+                name: name,
+                value: decodeObject(entry["value"] as? [String: Any] ?? [:]),
+                isAccessor: entry["isAccessor"] as? Bool ?? false,
+                isEnumerable: entry["isEnumerable"] as? Bool ?? true
+            )
+        }
+    }
+
+    /// The reply to `Runtime.evaluate`: a value, and whether it was thrown.
+    public static func decodeEvaluation(
+        _ body: Any
+    ) -> (value: RemoteObject, thrown: Bool)? {
+        guard let dict = body as? [String: Any] else { return nil }
+        return (
+            decodeObject(dict["value"] as? [String: Any] ?? [:]),
+            dict["thrown"] as? Bool ?? false
+        )
+    }
+
     static func decodeSource(_ value: Any?) -> SourceLocation? {
         guard let dict = value as? [String: Any],
               let url = dict["url"] as? String, !url.isEmpty

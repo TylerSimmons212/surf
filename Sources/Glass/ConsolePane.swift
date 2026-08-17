@@ -10,6 +10,8 @@ struct ConsolePane: View {
             filterBar
             Divider()
             log
+            Divider()
+            ConsolePrompt(session: session)
         }
     }
 
@@ -95,7 +97,7 @@ struct ConsolePane: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(session.visibleConsoleEntries) { entry in
-                        ConsoleRow(entry: entry)
+                        ConsoleRow(session: session, entry: entry)
                             .id(entry.id)
                     }
                     // An anchor rather than scrolling to the last row: the last
@@ -192,6 +194,7 @@ private struct LevelChip: View {
 }
 
 private struct ConsoleRow: View {
+    let session: DevToolsSession
     let entry: ConsoleEntry
 
     @State private var isHovering = false
@@ -200,8 +203,19 @@ private struct ConsoleRow: View {
         switch entry.kind {
         case .navigation(let url):
             navigationDivider(url)
-        case .message:
+        case .message, .input, .result:
             message
+        }
+    }
+
+    /// A chevron for what you typed, and one pointing back for the answer, so
+    /// the log reads as a conversation rather than a stream of unattributed
+    /// values.
+    private var promptGlyph: String? {
+        switch entry.kind {
+        case .input: "chevron.right"
+        case .result: "chevron.left"
+        default: nil
         }
     }
 
@@ -227,6 +241,13 @@ private struct ConsoleRow: View {
                 .fill(ConsoleStyle.color(for: entry.level))
                 .frame(width: 2)
                 .opacity(entry.level.isProblem ? 1 : 0)
+
+            if let promptGlyph {
+                Image(systemName: promptGlyph)
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(entry.kind == .input ? Color.secondary : Color.accentColor)
+                    .frame(width: 10)
+            }
 
             if entry.repeatCount > 1 {
                 Text("\(entry.repeatCount)")
@@ -280,15 +301,27 @@ private struct ConsoleRow: View {
         }
     }
 
+    @ViewBuilder
     private var arguments: some View {
-        // Wrapping rather than a horizontal stack: a long log line should read
-        // like a paragraph, not scroll sideways.
-        Text(rendered)
-            .font(.system(size: 11.5).monospaced())
-            .foregroundStyle(ConsoleStyle.textColor(for: entry.level))
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
+        if entry.arguments.contains(where: { $0.objectId != nil }) {
+            // At least one value can be opened, so each gets its own row with
+            // its own disclosure rather than being flattened into a sentence.
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(Array(entry.arguments.enumerated()), id: \.offset) { _, object in
+                    RemoteObjectView(session: session, object: object)
+                }
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            // Wrapping rather than a horizontal stack: a long log line should
+            // read like a paragraph, not scroll sideways.
+            Text(rendered)
+                .font(.system(size: 11.5).monospaced())
+                .foregroundStyle(ConsoleStyle.textColor(for: entry.level))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     /// Top-level strings print bare; everything nested is quoted, so an array
@@ -307,9 +340,11 @@ private struct ConsoleRow: View {
     private var background: some View {
         Rectangle()
             .fill(
-                entry.level.isProblem
-                    ? ConsoleStyle.color(for: entry.level).opacity(0.07)
-                    : (isHovering ? Color.primary.opacity(0.04) : .clear)
+                entry.kind == .input
+                    ? Color.primary.opacity(0.04)
+                    : (entry.level.isProblem
+                        ? ConsoleStyle.color(for: entry.level).opacity(0.07)
+                        : (isHovering ? Color.primary.opacity(0.04) : .clear))
             )
     }
 }
@@ -321,6 +356,20 @@ enum ConsoleStyle {
         case .warning: .orange
         case .info: .blue
         case .log, .debug: .secondary
+        }
+    }
+
+    /// Values are coloured by type, the way every console does it: strings
+    /// read as data, numbers as quantities, and `null`/`undefined` recede.
+    static func valueColor(for object: RemoteObject) -> Color {
+        switch object.type {
+        case .string: .init(red: 0.78, green: 0.28, blue: 0.24)
+        case .number, .bigint: .init(red: 0.15, green: 0.35, blue: 0.75)
+        case .boolean: .init(red: 0.45, green: 0.25, blue: 0.70)
+        case .undefined: .secondary
+        case .function: .init(red: 0.30, green: 0.45, blue: 0.30)
+        case .symbol: .purple
+        case .object: object.subtype == .null ? .secondary : .primary
         }
     }
 
@@ -344,5 +393,66 @@ enum ConsoleStyle {
 
         let tail = preview.overflow ? (body.isEmpty ? "…" : ", …") : ""
         return isList ? "[\(body)\(tail)]" : "{\(body)\(tail)}"
+    }
+}
+
+
+// MARK: - Prompt
+
+/// The JavaScript prompt.
+///
+/// Uses `GlassTextField` rather than SwiftUI's, because the field editor eats
+/// Return and the arrow keys before any SwiftUI handler sees them — and those
+/// three keys *are* the interaction: submit, and walk back through history.
+private struct ConsolePrompt: View {
+    let session: DevToolsSession
+
+    @State private var input = ""
+    /// -1 means "at the prompt". Walking up moves into history; walking back
+    /// down returns to whatever was half-typed.
+    @State private var historyOffset = -1
+    @State private var draft = ""
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.accentColor)
+
+            GlassTextField(
+                text: $input,
+                placeholder: "Run JavaScript on this page",
+                font: .monospacedSystemFont(ofSize: 11.5, weight: .regular),
+                selectsAllOnFocus: false,
+                onSubmit: submit,
+                onMove: recall,
+                onCancel: { input = ""; historyOffset = -1 }
+            )
+            .frame(height: 18)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    private func submit() {
+        let entry = input
+        input = ""
+        historyOffset = -1
+        draft = ""
+        Task { @MainActor in await session.evaluate(entry) }
+    }
+
+    /// Up walks back through what was typed; down walks forward and finally
+    /// restores the half-written line you left behind.
+    private func recall(_ direction: Int) {
+        let history = session.inputHistory
+        guard !history.isEmpty else { return }
+
+        if historyOffset == -1 && direction < 0 { draft = input }
+
+        let next = historyOffset + (direction < 0 ? 1 : -1)
+        guard next >= -1, next < history.count else { return }
+        historyOffset = next
+        input = next == -1 ? draft : history[history.count - 1 - next]
     }
 }

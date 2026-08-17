@@ -111,12 +111,43 @@ public struct SourceLocation: Sendable, Equatable {
     }
 }
 
+/// One property of an expanded object.
+public struct ObjectProperty: Sendable, Equatable, Identifiable {
+    public var name: String
+    public var value: RemoteObject
+    /// A getter, shown unevaluated. Running it would execute page code as a
+    /// side effect of looking at the object, which can change the state being
+    /// inspected — so it's displayed as `(…)` and left alone.
+    public var isAccessor: Bool
+    /// Non-enumerable properties are dimmed, matching every other devtools.
+    public var isEnumerable: Bool
+
+    public var id: String { name }
+
+    public init(
+        name: String,
+        value: RemoteObject,
+        isAccessor: Bool = false,
+        isEnumerable: Bool = true
+    ) {
+        self.name = name
+        self.value = value
+        self.isAccessor = isAccessor
+        self.isEnumerable = isEnumerable
+    }
+}
+
 public enum ConsoleEntryKind: Sendable, Equatable {
     case message
     /// A page load, rendered as a divider. Kept in the same list rather than
     /// clearing it, so "preserve log" is a display decision rather than a
     /// different data path.
     case navigation(url: String)
+    /// What was typed at the prompt, echoed back so the log reads as a
+    /// conversation rather than a stream of unattributed answers.
+    case input
+    /// What an evaluation returned.
+    case result
 }
 
 public struct ConsoleEntry: Sendable, Equatable, Identifiable {
@@ -266,8 +297,16 @@ public struct ConsoleBuffer: Sendable, Equatable {
         let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
 
         return entries.filter { entry in
-            if case .navigation = entry.kind {
+            switch entry.kind {
+            case .navigation:
                 return needle.isEmpty
+            case .input, .result:
+                // Never hidden by a level filter — what you typed, and what it
+                // answered, are the one part of the log you definitely meant
+                // to see. A text search still applies.
+                return needle.isEmpty || entry.text.lowercased().contains(needle)
+            case .message:
+                break
             }
             guard levels.contains(entry.level) else { return false }
             guard !needle.isEmpty else { return true }
