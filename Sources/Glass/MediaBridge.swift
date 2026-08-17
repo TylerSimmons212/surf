@@ -132,11 +132,24 @@ enum MediaBridge {
       s.textContent = 'html, body { overflow: hidden !important; }';
       document.documentElement.appendChild(s);
     }
+    // Native controls don't auto-hide reliably when the pointer never arrives,
+    // so switch them off outright. Custom players are handled by the panel
+    // swallowing mouse events, which lets their own idle timer hide them.
+    const el = window.__glassMedia;
+    if (el) {
+      el.dataset.glassControls = el.controls ? '1' : '0';
+      el.controls = false;
+    }
     return true;
     """
 
     static let unlockScrollScript = """
     document.getElementById('__glass_lens')?.remove();
+    const el = window.__glassMedia;
+    if (el && el.dataset.glassControls !== undefined) {
+      el.controls = el.dataset.glassControls === '1';
+      delete el.dataset.glassControls;
+    }
     return true;
     """
 

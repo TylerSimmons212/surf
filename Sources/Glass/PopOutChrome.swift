@@ -2,34 +2,54 @@ import AppKit
 import Observation
 import SwiftUI
 
-/// Hover state for the pop-out panel's controls, shared between the AppKit
-/// tracking area that detects the pointer and the SwiftUI overlay that draws.
+/// State for the pop-out panel's controls, shared between the AppKit tracking
+/// area that detects the pointer and the SwiftUI overlay that draws.
 @Observable
 @MainActor
 final class PopOutChromeModel {
     var isHovering = false
+    var isPlaying = false
     var title = ""
     var onClose: () -> Void = {}
     var onRestore: () -> Void = {}
+    var onTogglePlay: () -> Void = {}
 }
 
-/// The overlay drawn on top of the video: a scrim and a few controls that only
-/// appear on hover, so at rest the panel is nothing but picture.
+/// The overlay on top of the video: at rest nothing is drawn, on hover a scrim
+/// and a few controls fade in.
+///
+/// The whole surface is an event sink. That's deliberate: the site's own player
+/// controls appear on pointer activity and hide after a few seconds of quiet,
+/// so denying the page any mouse events makes them fade out and stay out —
+/// leaving exactly one set of controls, ours. It's also generic, where hiding
+/// each site's control bar by selector would be an endless per-site chase.
 struct PopOutChrome: View {
     @Bindable var model: PopOutChromeModel
 
     static let barHeight: CGFloat = 34
-    static let gripSize: CGFloat = 18
+    private let gripSize: CGFloat = 20
 
     var body: some View {
-        ZStack(alignment: .top) {
-            // Never intercepts: the page underneath keeps its own controls.
-            Color.clear
+        ZStack {
+            // Fills the panel: swallows page input and drags the window.
+            WindowDragHandle()
 
-            topBar
-                .opacity(model.isHovering ? 1 : 0)
-                .animation(.easeOut(duration: 0.16), value: model.isHovering)
+            if model.isHovering {
+                topBar
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .transition(.opacity)
+
+                playButton
+                    .transition(.opacity.combined(with: .scale(scale: 0.85)))
+
+                WindowResizeGrip()
+                    .frame(width: gripSize, height: gripSize)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(4)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeOut(duration: 0.16), value: model.isHovering)
     }
 
     private var topBar: some View {
@@ -40,21 +60,18 @@ struct PopOutChrome: View {
                 startPoint: .top,
                 endPoint: .bottom
             )
-            .frame(height: PopOutChrome.barHeight + 12)
+            .frame(height: PopOutChrome.barHeight + 14)
             .allowsHitTesting(false)
 
             HStack(spacing: 4) {
-                // Dragging the bar moves the window; the video below stays
-                // clickable because this strip is the only interactive region.
-                WindowDragHandle()
-                    .overlay(alignment: .leading) {
-                        Text(model.title)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(1)
-                            .padding(.leading, 8)
-                            .allowsHitTesting(false)
-                    }
+                Text(model.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .padding(.leading, 8)
+                    .allowsHitTesting(false)
+
+                Spacer(minLength: 8)
 
                 chromeButton("arrow.down.right.and.arrow.up.left", help: "Back to Tab") {
                     model.onRestore()
@@ -65,8 +82,27 @@ struct PopOutChrome: View {
             }
             .padding(.horizontal, 6)
             .frame(height: PopOutChrome.barHeight)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(height: PopOutChrome.barHeight + 12)
+        .frame(height: PopOutChrome.barHeight + 14)
+    }
+
+    /// The page can't be clicked any more, so playback control has to live here.
+    private var playButton: some View {
+        Button {
+            model.onTogglePlay()
+        } label: {
+            Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background {
+                    Circle().fill(.black.opacity(0.42))
+                }
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(model.isPlaying ? "Pause" : "Play")
     }
 
     private func chromeButton(
@@ -89,7 +125,8 @@ struct PopOutChrome: View {
     }
 }
 
-/// Drags the whole window, the way a titlebar would.
+/// Drags the whole window, the way a titlebar would — and, by covering the
+/// panel, keeps mouse events away from the page.
 private struct WindowDragHandle: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView { DragView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
@@ -103,22 +140,65 @@ private final class DragView: NSView {
     }
 }
 
-/// Passes clicks through to the web view except where the chrome actually has
-/// controls.
+/// Bottom-right resize handle.
 ///
-/// A plain `NSHostingView` claims every point in its frame, which would swallow
-/// clicks meant for the page's own player controls. Only the top strip — and
-/// only while it's visible — should take events.
-final class ChromeHostingView: NSHostingView<PopOutChrome> {
-    /// Height of the interactive strip at the top, or zero for fully
-    /// click-through.
-    var interactiveTopHeight: CGFloat = 0
+/// A borderless window has no frame to grab, and `.resizable` alone gives no
+/// visible affordance, so the grip does the resizing itself.
+private struct WindowResizeGrip: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { ResizeGripView() }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
 
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard interactiveTopHeight > 0 else { return nil }
-        // AppKit's origin is bottom-left, so the top strip is the high-y band.
-        guard point.y >= bounds.maxY - interactiveTopHeight else { return nil }
-        return super.hitTest(point)
+private final class ResizeGripView: NSView {
+    private var initialFrame: NSRect = .zero
+    private var initialMouse: NSPoint = .zero
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .frameResize(position: .bottomRight, directions: .all))
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Two short strokes, the usual grip idiom, light enough not to compete
+        // with the video.
+        let path = NSBezierPath()
+        for inset in [CGFloat(4), CGFloat(9)] {
+            path.move(to: NSPoint(x: bounds.maxX - inset, y: bounds.minY + 3))
+            path.line(to: NSPoint(x: bounds.maxX - 3, y: bounds.minY + inset))
+        }
+        path.lineWidth = 1.5
+        path.lineCapStyle = .round
+        NSColor.white.withAlphaComponent(0.75).setStroke()
+        path.stroke()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        initialFrame = window.frame
+        initialMouse = NSEvent.mouseLocation
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let window, initialFrame.height > 0 else { return }
+        let delta = NSEvent.mouseLocation.x - initialMouse.x
+
+        // Width drives the resize and height follows the aspect ratio; letting
+        // both axes track the pointer would fight `contentAspectRatio` and
+        // judder.
+        let aspect = initialFrame.width / initialFrame.height
+        let width = min(max(initialFrame.width + delta, 240), 1600)
+        let height = width / aspect
+
+        // Anchor the top-left so the panel grows down and right, rather than
+        // sliding out from under the pointer.
+        window.setFrame(
+            NSRect(
+                x: initialFrame.minX,
+                y: initialFrame.maxY - height,
+                width: width,
+                height: height
+            ),
+            display: true
+        )
     }
 }
 
@@ -155,8 +235,8 @@ final class PopOutRootView: NSView {
     override func mouseExited(with event: NSEvent) { onHoverChange?(false) }
 }
 
-/// Borderless windows can't become key by default, which would leave the web
-/// view unable to take clicks properly.
+/// Borderless windows can't become key by default, which would leave the panel
+/// unable to take clicks properly.
 final class PopOutPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }

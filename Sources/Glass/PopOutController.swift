@@ -30,7 +30,7 @@ final class PopOutController: NSObject, NSWindowDelegate {
 
     @ObservationIgnored private var panel: NSPanel?
     @ObservationIgnored private var lensContainer: NSView?
-    @ObservationIgnored private var chromeView: ChromeHostingView?
+    @ObservationIgnored private var chromeView: NSHostingView<PopOutChrome>?
     @ObservationIgnored private let chromeModel = PopOutChromeModel()
     /// The web view's size at pop-out time. Its frame is pinned to this so the
     /// page never reflows inside the panel and the measured rect stays valid.
@@ -117,21 +117,19 @@ final class PopOutController: NSObject, NSWindowDelegate {
         root.addSubview(container)
 
         chromeModel.title = tab.displayTitle
+        chromeModel.isPlaying = tab.media?.isPlaying ?? false
         chromeModel.onClose = { [weak self] in self?.closeFromChrome() }
         chromeModel.onRestore = { [weak self] in self?.restore() }
+        chromeModel.onTogglePlay = { [weak tab] in tab?.toggleMediaPlayback() }
 
-        let chrome = ChromeHostingView(rootView: PopOutChrome(model: chromeModel))
+        let chrome = NSHostingView(rootView: PopOutChrome(model: chromeModel))
         chrome.frame = root.bounds
         chrome.autoresizingMask = [.width, .height]
         root.addSubview(chrome)
         chromeView = chrome
 
         root.onHoverChange = { [weak self] hovering in
-            MainActor.assumeIsolated {
-                self?.chromeModel.isHovering = hovering
-                // Only claim clicks while the bar is actually on screen.
-                self?.chromeView?.interactiveTopHeight = hovering ? PopOutChrome.barHeight : 0
-            }
+            MainActor.assumeIsolated { self?.chromeModel.isHovering = hovering }
         }
 
         panel.contentView = root
@@ -182,6 +180,9 @@ final class PopOutController: NSObject, NSWindowDelegate {
                     lastVideoFrame = rect
                     applyLens(rect)
                 }
+                // Keeps the chrome's play/pause glyph honest when playback is
+                // changed from anywhere else — the sidebar, or the page itself.
+                chromeModel.isPlaying = tab.media?.isPlaying ?? false
             }
         }
     }
