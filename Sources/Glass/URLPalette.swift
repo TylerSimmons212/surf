@@ -113,14 +113,15 @@ struct URLPalette: View {
         // Liquid Glass rather than a flat material: this floats over the page,
         // which is exactly what the material is for. `interactive` lets it
         // respond to the pointer instead of sitting there like a printed panel.
-        .glassEffect(
-            .regular.interactive(),
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-        )
+        //
+        // A capsule, matching the bar on the new tab screen: this is meant to
+        // read as that bar coming forward, and two different corner radii give
+        // the game away.
+        .glassEffect(.regular.interactive(), in: Capsule())
         .overlay {
             // Thinner than before: glass draws its own edge, so the focus ring
             // only has to tint it rather than outline the whole shape.
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            Capsule()
                 .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 1.5)
                 .allowsHitTesting(false)
         }

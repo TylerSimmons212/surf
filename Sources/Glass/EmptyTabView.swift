@@ -11,7 +11,9 @@ struct EmptyTabView: View {
 
     @State private var isHovering = false
 
-    private let barWidth: CGFloat = 560
+    /// Matches the palette's width exactly — the click is supposed to look
+    /// like this bar coming forward, not like a second control appearing.
+    private let barWidth: CGFloat = 620
 
     var body: some View {
         VStack(spacing: 22) {
