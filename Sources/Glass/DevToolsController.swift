@@ -103,11 +103,18 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         sessions.removeValue(forKey: tabID)?.stop()
         inspectedTabIDs.remove(tabID)
 
-        if let panel = panels.removeValue(forKey: tabID) {
-            panel.delegate = nil
-            panel.contentView = nil
-            panel.close()
-        }
+        guard let panel = panels.removeValue(forKey: tabID) else { return }
+        // Dropped first, so the `close()` below can't come back through
+        // `windowWillClose` and re-enter this method.
+        panel.delegate = nil
+        // Only if it isn't already on its way out: this method is called *from*
+        // `windowWillClose` as well as directly, and calling `close()` on a
+        // window that is already closing re-enters AppKit's teardown.
+        //
+        // The content view is deliberately left alone. Tearing down the
+        // hosting view mid-close pulls SwiftUI's hierarchy out from under a
+        // teardown that is still walking it.
+        if panel.isVisible { panel.close() }
     }
 
     // MARK: - Navigation
