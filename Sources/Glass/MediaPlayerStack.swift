@@ -13,8 +13,8 @@ struct MediaPlayerStack: View {
     /// Fixed rather than measured: rows are positioned by offset, and reading
     /// back a dynamic height needs a geometry round-trip that lands a frame
     /// late and makes the fan-out jitter.
-    private let rowHeight: CGFloat = 42
-    private let rowSpacing: CGFloat = 2
+    private let rowHeight: CGFloat = 54
+    private let rowSpacing: CGFloat = 4
 
     private var tabs: [Tab] { session.mediaTabs }
 
@@ -23,8 +23,6 @@ struct MediaPlayerStack: View {
             let others = Array(tabs.dropFirst())
 
             VStack(spacing: 0) {
-                Divider().opacity(0.5)
-
                 ZStack(alignment: .bottom) {
                     // Reversed so the nearest card draws last and lands on top.
                     ForEach(Array(others.enumerated()).reversed(), id: \.element.id) { index, tab in
@@ -50,7 +48,7 @@ struct MediaPlayerStack: View {
                 }
                 .frame(height: stackHeight(otherCount: others.count), alignment: .bottom)
             }
-            .background(.quaternary.opacity(0.25))
+            .padding(.bottom, 8)
             .onHover { hovering in
                 guard !others.isEmpty else { return }
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
@@ -106,18 +104,24 @@ struct MediaRow: View {
 
     private var media: MediaState? { tab.media }
 
+    /// Same corner as a tab row, so the player reads as part of the column
+    /// rather than a panel underneath it.
+    private var cardShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+    }
+
     var body: some View {
         if let media {
             VStack(spacing: 0) {
-                HStack(spacing: 9) {
+                HStack(spacing: 10) {
                     artwork(media)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(media.title.isEmpty ? tab.displayTitle : media.title)
-                            .font(.system(size: 11, weight: isPrimary ? .medium : .regular))
+                            .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
                             .lineLimit(1)
                         Text(media.artist)
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -135,18 +139,18 @@ struct MediaRow: View {
 
                     IconButton(
                         systemName: media.isPlaying ? "pause.fill" : "play.fill",
-                        size: 11,
-                        width: 24,
-                        height: 24,
-                        cornerRadius: 12,
+                        size: 12,
+                        width: 26,
+                        height: 26,
+                        cornerRadius: 13,
                         help: media.isPlaying ? "Pause" : "Play"
                     ) {
                         tab.toggleMediaPlayback()
                     }
                     .animation(.easeOut(duration: 0.15), value: media.isPlaying)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 9)
 
                 if isPrimary {
                     progress(media)
@@ -154,21 +158,15 @@ struct MediaRow: View {
                     Spacer(minLength: 0)
                 }
             }
-            .background {
-                // Both get a plate. The front row needs one so the hidden cards
-                // behind it have something solid to sit under; stacked rows get
-                // rounded corners so they read as separate cards.
-                RoundedRectangle(cornerRadius: isPrimary ? 0 : 8, style: .continuous)
-                    .fill(.regularMaterial)
-                    .overlay {
-                        if !isPrimary {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.primary.opacity(isHovering ? 0.07 : 0))
-                        }
-                    }
-                    .shadow(color: .black.opacity(isPrimary ? 0 : 0.16), radius: 6, y: 2)
+            // Clipped, not just backed: the progress bar runs to the card's
+            // bottom edge and would otherwise square off its corners.
+            .background(.regularMaterial, in: cardShape)
+            .clipShape(cardShape)
+            .overlay {
+                cardShape.fill(Color.primary.opacity(isHovering ? 0.07 : 0))
             }
-            .padding(.horizontal, isPrimary ? 0 : 6)
+            .shadow(color: .black.opacity(0.16), radius: 6, y: 2)
+            .padding(.horizontal, 8)
             .contentShape(Rectangle())
             .onTapGesture { session.select(tab) }
             .onHover { isHovering = $0 }
@@ -180,13 +178,13 @@ struct MediaRow: View {
     private var stackChip: some View {
         HStack(spacing: 3) {
             Image(systemName: "square.stack.fill")
-                .font(.system(size: 8))
+                .font(.system(size: 9))
             Text("\(stackedCount + 1)")
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
         }
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
         .background {
             Capsule().fill(Color.primary.opacity(0.09))
         }
@@ -195,19 +193,19 @@ struct MediaRow: View {
 
     private func artwork(_ media: MediaState) -> some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(Color.primary.opacity(0.08))
-                .frame(width: 26, height: 26)
+                .frame(width: 32, height: 32)
 
             if let favicon = tab.favicon {
                 Image(nsImage: favicon)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 15, height: 15)
+                    .frame(width: 18, height: 18)
             } else {
                 Image(systemName: media.hasVideo ? "film" : "music.note")
-                    .font(.system(size: 11))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
         }
@@ -220,10 +218,10 @@ struct MediaRow: View {
                 systemName: PopOutController.shared.isPoppedOut(tab)
                     ? "arrow.down.right.and.arrow.up.left"
                     : "rectangle.on.rectangle",
-                size: 11,
-                width: 24,
-                height: 24,
-                cornerRadius: 12,
+                size: 12,
+                width: 26,
+                height: 26,
+                cornerRadius: 13,
                 help: PopOutController.shared.isPoppedOut(tab) ? "Bring Back" : "Pop Out Video"
             ) {
                 PopOutController.shared.toggle(tab)
@@ -245,19 +243,19 @@ struct MediaRow: View {
                         .stroke(Color.accentColor,
                                 style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                        .frame(width: 19, height: 19)
+                        .frame(width: 21, height: 21)
                         .animation(.easeOut(duration: 0.25), value: item.fraction)
                     Image(systemName: "square.fill")
                         .font(.system(size: 6))
                         .foregroundStyle(.secondary)
                 }
-                .frame(width: 24, height: 24)
+                .frame(width: 26, height: 26)
                 .help("Downloading \(Int(item.fraction * 100))%")
 
             case .finished:
                 IconButton(
                     systemName: "checkmark.circle.fill",
-                    size: 12, width: 24, height: 24, cornerRadius: 12,
+                    size: 13, width: 26, height: 26, cornerRadius: 13,
                     tint: .green,
                     help: "Saved — click to show in Finder"
                 ) {
@@ -267,7 +265,7 @@ struct MediaRow: View {
             case .failed(let message):
                 IconButton(
                     systemName: "exclamationmark.triangle.fill",
-                    size: 11, width: 24, height: 24, cornerRadius: 12,
+                    size: 12, width: 26, height: 26, cornerRadius: 13,
                     tint: .orange,
                     motion: .wiggle,
                     help: "Download failed: \(message)"
@@ -278,7 +276,7 @@ struct MediaRow: View {
         } else if media.isDownloadable {
             IconButton(
                 systemName: "arrow.down.circle",
-                size: 12, width: 24, height: 24, cornerRadius: 12,
+                size: 13, width: 26, height: 26, cornerRadius: 13,
                 help: "Download Video"
             ) {
                 DownloadManager.shared.downloadMedia(from: tab)
@@ -292,7 +290,7 @@ struct MediaRow: View {
             let isReady = MediaExtractor.shared.isAvailable
             IconButton(
                 systemName: "arrow.down.circle.dotted",
-                size: 12, width: 24, height: 24, cornerRadius: 12,
+                size: 13, width: 26, height: 26, cornerRadius: 13,
                 isEnabled: isReady,
                 motion: isReady ? .bounce : .none,
                 help: isReady

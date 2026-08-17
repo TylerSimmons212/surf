@@ -21,6 +21,8 @@ struct Sidebar: View {
     /// Wide enough that the roomier rows don't buy their height back out of
     /// the title: taller rows with the same width would just truncate sooner.
     static let width: CGFloat = 264
+    /// Two 21pt controls and the gap between them.
+    private static let actionsWidth: CGFloat = 44
 
     var body: some View {
         VStack(spacing: 0) {
@@ -151,10 +153,15 @@ struct Sidebar: View {
                 .opacity(tab.isAwaitingRestore ? 0.55 : 1)
 
             Spacer(minLength: 0)
-
-            // Always laid out, faded in on hover. Inserting them on hover
-            // instead would resize the title and make rows twitch as the
-            // pointer moves down the list.
+        }
+        // The controls sit on top of the end of the title, so the text is faded
+        // out beneath them rather than left to collide with them.
+        .mask { titleFade(clearingActions: showsActions) }
+        // Overlaid rather than laid out, so the title gets the full width of
+        // the row until the controls are actually wanted. Reserving their space
+        // permanently made every tab name truncate early for the sake of two
+        // buttons that are hidden most of the time.
+        .overlay(alignment: .trailing) {
             HStack(spacing: 2) {
                 // Momentary checkmark: copying is invisible otherwise, and a
                 // silent copy leaves you unsure it worked.
@@ -203,6 +210,26 @@ struct Sidebar: View {
             hoveredTab = hovering ? tab.id : (hoveredTab == tab.id ? nil : hoveredTab)
         }
         .help(tab.displayTitle)
+    }
+
+    /// Full-width by default; on hover, dissolves the tail of the title into
+    /// the space the controls occupy.
+    ///
+    /// Sized in points rather than as a gradient across the whole row, because
+    /// the clear part has to line up exactly with the buttons over it.
+    private func titleFade(clearingActions: Bool) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+            LinearGradient(
+                colors: [.black, .clear],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: clearingActions ? 18 : 0)
+            Color.clear
+                .frame(width: clearingActions ? Sidebar.actionsWidth : 0)
+        }
+        .animation(.easeOut(duration: 0.2), value: clearingActions)
     }
 
     private var newTabButton: some View {
