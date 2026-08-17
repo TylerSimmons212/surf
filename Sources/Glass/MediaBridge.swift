@@ -31,26 +31,6 @@ struct MediaState: Equatable {
     }
 }
 
-/// Breaks the retain cycle that `add(_:name:)` would otherwise create.
-///
-/// The user content controller retains its handler strongly, and the tab owns
-/// the web view which owns the controller — so handing it the tab directly
-/// would keep every tab alive forever.
-final class WeakScriptMessageProxy: NSObject, WKScriptMessageHandler {
-    weak var target: (any WKScriptMessageHandler)?
-
-    init(target: any WKScriptMessageHandler) {
-        self.target = target
-    }
-
-    func userContentController(
-        _ controller: WKUserContentController,
-        didReceive message: WKScriptMessage
-    ) {
-        target?.userContentController(controller, didReceive: message)
-    }
-}
-
 enum MediaBridge {
     static let handlerName = "glassMedia"
 

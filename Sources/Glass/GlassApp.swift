@@ -136,6 +136,31 @@ struct GlassApp: App {
                     )
             }
         }
+
+        CommandMenu("Develop") {
+            Button(
+                DevToolsController.shared.isOpen(for: session.selectedTab)
+                    ? "Hide Developer Tools"
+                    : "Show Developer Tools"
+            ) {
+                DevToolsController.shared.toggle(session.selectedTab)
+            }
+            .keyboardShortcut("i", modifiers: [.command, .option])
+
+            Button("Show JavaScript Console") {
+                DevToolsController.shared.open(session.selectedTab, pane: .console)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option, .shift])
+
+            Divider()
+
+            // Named for what it is. Glass can't host a JS debugger at all, and
+            // burying that behind a disabled menu item would be worse than
+            // saying so and pointing at the one place it does work.
+            Button("Debug in Safari…") {
+                DevToolsController.shared.handOffToSafari(session.selectedTab)
+            }
+        }
     }
 }
 

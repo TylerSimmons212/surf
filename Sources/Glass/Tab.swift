@@ -88,12 +88,21 @@ final class Tab: NSObject, Identifiable {
         webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
+        // Advertises this web view to Safari's Develop menu. That's the only
+        // route to a JavaScript debugger — page scripts run in the WebContent
+        // process, and the inspector protocol is private — so it stays on
+        // permanently as the escape hatch our own dev tools hand off to.
+        //
+        // Set outside the `configuration == nil` block deliberately: popup and
+        // `target="_blank"` tabs skip that branch, and they need this too.
+        webView.isInspectable = true
 
         super.init()
 
         webView.navigationDelegate = self
         webView.uiDelegate = self
-        installMediaBridge()
+        installBridgeHandlers()
+        reinstallUserScripts()
         observeWebViewState()
     }
 
@@ -162,12 +171,34 @@ final class Tab: NSObject, Identifiable {
 
     // MARK: - Media
 
-    private func installMediaBridge() {
+    private func installBridgeHandlers() {
         let controller = webView.configuration.userContentController
         // Popup tabs inherit WebKit's configuration, which may already carry
         // this handler; adding a duplicate name throws.
         controller.removeScriptMessageHandler(forName: MediaBridge.handlerName)
         controller.add(WeakScriptMessageProxy(target: self), name: MediaBridge.handlerName)
+    }
+
+    // MARK: - User scripts
+
+    /// The dev tools bridge, alive only while a panel is open for this tab.
+    @ObservationIgnored private(set) var devToolsBridge: DevToolsBridge?
+
+    func attachDevTools(_ bridge: DevToolsBridge) { devToolsBridge = bridge }
+    func detachDevTools() { devToolsBridge = nil }
+
+    /// The single owner of this tab's user scripts.
+    ///
+    /// `WKUserContentController` can add a script but cannot remove *one* —
+    /// only `removeAllUserScripts()`. So anything that installs scripts
+    /// piecemeal will eventually delete someone else's: attaching dev tools
+    /// naively would wipe `MediaBridge.script`, and the media player and
+    /// pop-out would die on the next navigation with no error anywhere. Every
+    /// install goes through here instead, and rebuilds the whole set.
+    func reinstallUserScripts() {
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+
         controller.addUserScript(
             WKUserScript(
                 source: MediaBridge.script,
@@ -176,6 +207,20 @@ final class Tab: NSObject, Identifiable {
                 in: .page
             )
         )
+
+        if devToolsBridge?.isAttached == true {
+            // Main frame only, so the node id space has exactly one authority.
+            // Multi-frame inspection needs a frame id in every message, which
+            // the protocol can absorb later without reshaping anything else.
+            controller.addUserScript(
+                WKUserScript(
+                    source: DevToolsAgent.script,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true,
+                    in: DevToolsAgent.world
+                )
+            )
+        }
     }
 
     /// Prevents or restores page scrolling while the lens panel is showing.
@@ -235,6 +280,8 @@ final class Tab: NSObject, Identifiable {
         sampleTask?.cancel()
         observations.forEach { $0.invalidate() }
         observations.removeAll()
+
+        devToolsBridge?.detach()
 
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -547,6 +594,15 @@ final class Tab: NSObject, Identifiable {
 
 extension Tab: WKNavigationDelegate {
 
+    /// A new document is live.
+    ///
+    /// This, not the `\.url` KVO, is the authoritative signal for dev tools:
+    /// the URL also changes on SPA route changes, where the document survives
+    /// and none of the agent's node ids have gone stale.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        DevToolsController.shared.documentDidCommit(for: self)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
         session?.scheduleSave()
@@ -622,12 +678,24 @@ extension Tab: WKScriptMessageHandler {
         _ controller: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        guard message.name == MediaBridge.handlerName else { return }
+        let name = message.name
         let body = message.body
         MainActor.assumeIsolated {
-            guard let state = MediaBridge.decode(body) else { return }
-            // Media that never started isn't worth showing in the player.
-            if state.isPlaying || media != nil { media = state }
+            switch name {
+            case MediaBridge.handlerName:
+                guard let state = MediaBridge.decode(body) else { return }
+                // Media that never started isn't worth showing in the player.
+                if state.isPlaying || media != nil { media = state }
+
+            case DevToolsAgent.eventHandlerName:
+                // Forwarded rather than handled by the bridge directly, so a tab
+                // still registers exactly one script message handler and the
+                // retain-cycle reasoning above holds for every bridge we add.
+                devToolsBridge?.receive(name: name, body: body)
+
+            default:
+                break
+            }
         }
     }
 }

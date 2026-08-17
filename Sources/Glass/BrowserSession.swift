@@ -167,6 +167,9 @@ final class BrowserSession {
             PopOutController.shared.restore()
         }
 
+        // Before teardown, or the panel would be left showing a dead page.
+        DevToolsController.shared.close(for: tab)
+
         rememberClosedTab(tab)
 
         // Explicit teardown, not just dropping the reference: a web view with
