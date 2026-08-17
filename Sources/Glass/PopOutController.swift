@@ -1,4 +1,5 @@
 import AppKit
+import GlassCore
 import Observation
 import SwiftUI
 
@@ -36,6 +37,9 @@ final class PopOutController: NSObject, NSWindowDelegate {
     /// page never reflows inside the panel and the measured rect stays valid.
     @ObservationIgnored private var pageSize: CGSize = .zero
     @ObservationIgnored private var lastVideoFrame: CGRect = .zero
+    /// The size the panel was presented at. Used to tell an untouched panel
+    /// from one the user has sized themselves.
+    @ObservationIgnored private var presentedSize: CGSize?
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
 
     private override init() { super.init() }
@@ -77,7 +81,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
     }
 
     private func presentPanel(for tab: Tab, videoFrame: CGRect) {
-        let contentSize = panelSize(for: videoFrame.size)
+        let contentSize = PopOutSizing.panelSize(forVideo: videoFrame.size)
+        presentedSize = contentSize
 
         // Borderless: a titled panel reads as a mini window, and the whole point
         // is that this should read as a piece of floating video.
@@ -94,7 +99,7 @@ final class PopOutController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.contentAspectRatio = videoFrame.size
-        panel.contentMinSize = NSSize(width: 240, height: 135)
+        panel.contentMinSize = PopOutSizing.minimumSize(forVideo: videoFrame.size)
         panel.delegate = self
         // Transparent so the rounded corners aren't filled in by the window's
         // own background, and shadowed so it lifts off whatever is behind it.
@@ -183,6 +188,7 @@ final class PopOutController: NSObject, NSWindowDelegate {
                 if rect != lastVideoFrame {
                     lastVideoFrame = rect
                     applyLens(rect)
+                    reshapeIfVideoChangedShape(to: rect.size)
                 }
                 // Keeps the chrome's play/pause glyph honest when playback is
                 // changed from anywhere else — the sidebar, or the page itself.
@@ -193,15 +199,24 @@ final class PopOutController: NSObject, NSWindowDelegate {
         }
     }
 
-    /// Scales the video's own aspect ratio to a comfortable size, clamped so a
-    /// tall or enormous video can't produce an unusable panel.
-    private func panelSize(for videoSize: CGSize) -> NSSize {
-        guard videoSize.width > 0, videoSize.height > 0 else {
-            return NSSize(width: 480, height: 270)
-        }
-        let targetWidth: CGFloat = 480
-        let height = targetWidth * (videoSize.height / videoSize.width)
-        return NSSize(width: targetWidth, height: min(max(height, 160), 540))
+    /// Adopts a new shape when the video turns out not to be the shape it first
+    /// measured — dimensions often aren't known until metadata loads, and a
+    /// player can swap clips without the panel closing.
+    ///
+    /// Only re-sizes a panel the user hasn't touched. Once it's been dragged to
+    /// a size, that size is theirs; the aspect ratio still updates so the next
+    /// drag snaps to the right shape.
+    private func reshapeIfVideoChangedShape(to videoSize: CGSize) {
+        guard let panel, videoSize.width > 0, videoSize.height > 0 else { return }
+        guard !PopOutSizing.aspectMatches(panel.contentAspectRatio, videoSize) else { return }
+
+        panel.contentAspectRatio = videoSize
+        panel.contentMinSize = PopOutSizing.minimumSize(forVideo: videoSize)
+
+        guard let presentedSize, panel.frame.size == presentedSize else { return }
+        let fitted = PopOutSizing.panelSize(forVideo: videoSize)
+        panel.setContentSize(fitted)
+        self.presentedSize = panel.frame.size
     }
 
     private func positionInBottomTrailingCorner(_ panel: NSPanel, size: NSSize) {
@@ -229,6 +244,7 @@ final class PopOutController: NSObject, NSWindowDelegate {
 
         lensContainer = nil
         chromeView = nil
+        presentedSize = nil
         panel?.delegate = nil
         panel?.close()
         panel = nil
