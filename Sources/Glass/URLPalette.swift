@@ -110,15 +110,21 @@ struct URLPalette: View {
         // Drives the clear button's scale-in; the text binding itself isn't
         // animated, so the transition needs a scope to run in.
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: text.isEmpty)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(Color.accentColor.opacity(0.55), lineWidth: 2)
-                }
-                .shadow(color: .black.opacity(0.3), radius: 28, y: 10)
+        // Liquid Glass rather than a flat material: this floats over the page,
+        // which is exactly what the material is for. `interactive` lets it
+        // respond to the pointer instead of sitting there like a printed panel.
+        .glassEffect(
+            .regular.interactive(),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            // Thinner than before: glass draws its own edge, so the focus ring
+            // only has to tint it rather than outline the whole shape.
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.accentColor.opacity(0.45), lineWidth: 1.5)
+                .allowsHitTesting(false)
         }
+        .shadow(color: .black.opacity(0.28), radius: 30, y: 12)
     }
 
     private func submit() {

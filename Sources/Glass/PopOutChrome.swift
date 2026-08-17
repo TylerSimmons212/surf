@@ -104,21 +104,25 @@ struct PopOutChrome: View {
 
     /// The page can't be clicked any more, so transport lives here.
     private var transportControls: some View {
-        HStack(spacing: 18) {
-            circleButton("gobackward.15", size: 15, diameter: 34,
-                         help: "Back 15 Seconds") {
-                model.onSkip(-skipInterval)
-            }
+        // A container lets neighbouring glass shapes merge and share one
+        // sampling pass, rather than each button carrying its own slab.
+        GlassEffectContainer(spacing: 18) {
+            HStack(spacing: 18) {
+                circleButton("gobackward.15", size: 15, diameter: 34,
+                             help: "Back 15 Seconds") {
+                    model.onSkip(-skipInterval)
+                }
 
-            circleButton(model.isPlaying ? "pause.fill" : "play.fill",
-                         size: 16, diameter: 44,
-                         help: model.isPlaying ? "Pause" : "Play") {
-                model.onTogglePlay()
-            }
+                circleButton(model.isPlaying ? "pause.fill" : "play.fill",
+                             size: 16, diameter: 44,
+                             help: model.isPlaying ? "Pause" : "Play") {
+                    model.onTogglePlay()
+                }
 
-            circleButton("goforward.15", size: 15, diameter: 34,
-                         help: "Forward 15 Seconds") {
-                model.onSkip(skipInterval)
+                circleButton("goforward.15", size: 15, diameter: 34,
+                             help: "Forward 15 Seconds") {
+                    model.onSkip(skipInterval)
+                }
             }
         }
     }
@@ -229,9 +233,9 @@ struct PopOutChrome: View {
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: diameter, height: diameter)
-                .background {
-                    Circle().fill(.black.opacity(0.42))
-                }
+                // `clear` rather than `regular`: this sits on moving video, and
+                // the frosted variant would fog the picture behind it.
+                .glassEffect(.clear.interactive(), in: Circle())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -248,9 +252,7 @@ struct PopOutChrome: View {
                 .font(.system(size: 10, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 22, height: 22)
-                .background {
-                    Circle().fill(.black.opacity(0.45))
-                }
+                .glassEffect(.clear.interactive(), in: Circle())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

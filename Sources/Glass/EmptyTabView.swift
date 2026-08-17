@@ -11,42 +11,64 @@ struct EmptyTabView: View {
 
     @State private var isHovering = false
 
+    private let barWidth: CGFloat = 560
+    private let cornerRadius: CGFloat = 20
+
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 22) {
             Text("Glass")
                 .font(.system(size: 40, weight: .semibold, design: .rounded))
                 .foregroundStyle(.primary.opacity(0.5))
 
-            Button(action: onOpenAddressBar) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12))
-                    Text("Search or enter address")
-                        .font(.system(size: 13))
-                    Text("⌘L")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background {
-                            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(Color.primary.opacity(0.09))
-                        }
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background {
-                    Capsule()
-                        .fill(Color.primary.opacity(isHovering ? 0.09 : 0.05))
-                }
-                .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .scaleEffect(isHovering ? 1.03 : 1)
-            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: isHovering)
-            .onHover { isHovering = $0 }
+            searchBar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Shaped like the field it opens, at the size the palette will appear —
+    /// so clicking it reads as the same object coming forward rather than one
+    /// control being swapped for another.
+    private var searchBar: some View {
+        Button(action: onOpenAddressBar) {
+            HStack(spacing: 12) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
+
+                Text("Search or enter address")
+                    .font(.system(size: 17))
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 8)
+
+                Text("⌘L")
+                    .font(.system(size: 12, weight: .medium).monospaced())
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity(0.08))
+                    }
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 15)
+            .frame(width: barWidth)
+            // The tint warms on hover instead of a plate fading in behind it:
+            // glass is the surface, so the surface itself should respond.
+            .glassEffect(
+                .regular
+                    .tint(isHovering ? Color.accentColor.opacity(0.10) : nil)
+                    .interactive(),
+                in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(isHovering ? 0.20 : 0.12), radius: isHovering ? 22 : 14, y: 6)
+        .scaleEffect(isHovering ? 1.012 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovering)
+        .onHover { isHovering = $0 }
+        .help("Search or enter address (⌘L)")
     }
 }

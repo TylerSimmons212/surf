@@ -65,16 +65,11 @@ struct FindBar: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.22), radius: 14, y: 5)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.08))
-                .allowsHitTesting(false)
-        }
+        .glassEffect(
+            .regular.interactive(),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 5)
         .onAppear { focused = true }
         .onReceive(NotificationCenter.default.publisher(for: .glassFindStep)) { note in
             step(forward: note.object as? Bool ?? true)

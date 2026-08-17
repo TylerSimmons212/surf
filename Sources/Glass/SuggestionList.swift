@@ -17,11 +17,8 @@ struct SuggestionList: View {
             }
         }
         .padding(4)
-        .background {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.regularMaterial)
-                .shadow(color: .black.opacity(0.22), radius: 14, y: 6)
-        }
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 
     private func row(_ entry: HistoryEntry, isHighlighted: Bool) -> some View {

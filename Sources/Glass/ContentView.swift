@@ -178,11 +178,12 @@ struct ContentView: View {
 
     private var floatingSidebar: some View {
         sidebar(isFloating: true)
-            .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(.regularMaterial)
-                    .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
-            }
+            // The sidebar is chrome floating over the page — the case Liquid
+            // Glass exists for. Not `interactive`: that's for controls, and a
+            // whole panel reacting to the pointer reads as wobbly rather than
+            // responsive.
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
             .padding(.top, 4)
             .padding(.bottom, 10)
             .padding(.leading, 8)
@@ -305,7 +306,7 @@ private struct PoppedOutPlaceholder: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Button("Bring Back") { PopOutController.shared.restore() }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -332,7 +333,7 @@ private struct ErrorOverlay: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 380)
             Button("Try Again", action: retry)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
