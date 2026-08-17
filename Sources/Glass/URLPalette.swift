@@ -15,7 +15,6 @@ struct URLPalette: View {
 
     @State private var text: String = ""
     @State private var completions = SuggestionController()
-    @FocusState private var focused: Bool
 
     var body: some View {
         ZStack {
@@ -44,7 +43,6 @@ struct URLPalette: View {
             // A new tab starts empty; editing an existing one starts from where
             // it already is.
             text = (createsTab || tab.mode == .home) ? "" : tab.addressText
-            focused = true
         }
     }
 
@@ -56,42 +54,17 @@ struct URLPalette: View {
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(createsTab ? Color.accentColor : Color.secondary)
 
-            // The placeholder comes from the title, *not* from `prompt:` with a
-            // styled Text. Styling the prompt swaps the two: the placeholder
-            // takes the field's colour and what you type is left with the
-            // prompt's. Measured on this exact surface — with a styled prompt
-            // the typed text renders lighter than the placeholder, which is
-            // precisely backwards.
-            TextField(
-                createsTab ? "Search or enter address — opens a new tab"
-                           : "Search or enter address",
-                text: $text
-            )
-                .textFieldStyle(.plain)
-                // What you type is content; the placeholder is a label. Weight
-                // and contrast separate them, which survives a busy page
-                // showing through the glass.
-                .font(.system(size: 19, weight: .semibold))
-                .foregroundStyle(.primary)
-                .tint(Color.accentColor)
-                .focused($focused)
-                .onSubmit(submit)
-                .onChange(of: text) { _, value in
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
-                        completions.update(for: value, isFocused: true)
-                    }
-                }
-                .onKeyPress(.downArrow) {
-                    guard completions.isShowing else { return .ignored }
-                    completions.moveHighlight(by: 1)
-                    return .handled
-                }
-                .onKeyPress(.upArrow) {
-                    guard completions.isShowing else { return .ignored }
-                    completions.moveHighlight(by: -1)
-                    return .handled
-                }
-                .onKeyPress(.escape) {
+            GlassTextField(
+                text: $text,
+                placeholder: createsTab ? "Search or enter address — opens a new tab"
+                                        : "Search or enter address",
+                font: .systemFont(ofSize: 19, weight: .semibold),
+                onSubmit: submit,
+                onMove: { direction in
+                    guard completions.isShowing else { return }
+                    completions.moveHighlight(by: direction)
+                },
+                onCancel: {
                     // Escape closes the suggestions first, then the palette —
                     // one dismissal per press, never both at once.
                     if completions.isShowing {
@@ -99,8 +72,14 @@ struct URLPalette: View {
                     } else {
                         dismiss()
                     }
-                    return .handled
                 }
+            )
+            .frame(height: 24)
+            .onChange(of: text) { _, value in
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                    completions.update(for: value, isFocused: true)
+                }
+            }
 
             if !text.isEmpty {
                 IconButton(
@@ -113,7 +92,6 @@ struct URLPalette: View {
                     help: "Clear"
                 ) {
                     text = ""
-                    focused = true
                 }
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
@@ -140,6 +118,9 @@ struct URLPalette: View {
                 .interactive(),
             in: Capsule()
         )
+        // Behind the glass, for the same reason as the sidebar: on its own the
+        // glass is thin enough that a busy page competes with what you type.
+        .background { Capsule().fill(.thickMaterial) }
         .overlay {
             // No focus ring. Nothing else on screen can take a keystroke while
             // this is up — the backdrop is dimmed and the page is behind it —
@@ -180,7 +161,6 @@ struct URLPalette: View {
     /// Dismissing is always harmless now: nothing was created on the way in.
     private func dismiss() {
         completions.dismiss()
-        focused = false
         isPresented = false
     }
 }
