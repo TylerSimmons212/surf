@@ -26,12 +26,27 @@ struct DevToolsView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            GlassSegmentedControl(
-                options: DevToolsSession.Pane.allCases,
-                selection: $session.pane,
-                label: \.label,
-                symbol: \.symbol
-            )
+            // The stock control, deliberately.
+            //
+            // There is no glass picker style and no glass toggle style — the
+            // system control adopts Liquid Glass on its own when built against
+            // the macOS 26 SDK, and supplies the interaction, the metrics, the
+            // shape, and "tab, 1 of 2" for VoiceOver. A hand-rolled version
+            // hit three things Apple names as anti-patterns: a solid fill
+            // behind glass, glass clipped by a shape the container had already
+            // resolved, and glass sampling glass across containers — which
+            // WWDC25 explicitly says produces inconsistent behaviour.
+            //
+            // The macOS HIG sanctions a segmented control for exactly this
+            // case: switching views in an inspector pane.
+            Picker("Pane", selection: $session.pane) {
+                ForEach(DevToolsSession.Pane.allCases) { pane in
+                    Text(pane.label).tag(pane)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
 
             Spacer(minLength: 8)
 
