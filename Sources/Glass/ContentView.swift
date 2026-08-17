@@ -70,6 +70,11 @@ struct ContentView: View {
                 }
             }
 
+            // Above the page and the sidebar, below the palette: it's a
+            // property of the window, not of anything inside it.
+            LoadingBorder(tab: session.selectedTab)
+                .zIndex(15)
+
             if isAddressBarOpen {
                 // Outside the VStack so the dimmed backdrop covers the title
                 // strip too. The traffic lights render above SwiftUI content, so
