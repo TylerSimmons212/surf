@@ -201,6 +201,41 @@ struct ThemePlanTests {
         #expect(plan.replacements["text|#111827"] == nil)
     }
 
+    @Test("A second pass keeps the ground the first one settled on")
+    func incrementalKeepsGround() {
+        // A sweep over an already-themed page sees only what it hasn't touched,
+        // which is panels rather than the page. Re-deriving the ground from
+        // that set repaints the whole document with whatever happens to be
+        // largest — on stripe.com that was a blue panel, and the page went blue.
+        let established = color("#0d0d0d")
+        let panel = ColorObservation(
+            color: color("#635bff"), property: .background, areaFraction: 0.6)
+
+        let second = ThemePlan.build(
+            from: [panel], target: .dark, establishedGround: established)
+        #expect(second.pageBackground == established)
+
+        // Without a ground to honour, the same input really would have moved it.
+        let first = ThemePlan.build(from: [panel], target: .dark)
+        #expect(first.pageBackground != established)
+    }
+
+    @Test("A chromatic page background keeps its hue but not its intensity")
+    func chromaticGroundCalmed() {
+        // Held at full chroma across an entire document, a brand colour stops
+        // being a brand and becomes a glare.
+        let plan = ThemePlan.build(
+            from: [.init(color: color("#635bff"), property: .background, areaFraction: 0.9)],
+            target: .dark
+        )
+        let ground = OKLCH(plan.pageBackground.rgb)
+        let original = OKLCH(color("#635bff").rgb)
+        #expect(abs(ground.h - original.h) < 1.0)
+        #expect(ground.c <= ThemeTransform.brandSurfaceChroma + 1e-9)
+        #expect(ground.c < original.c)
+        #expect(ground.l < 0.5)
+    }
+
     @Test("An empty page yields an empty plan, not a crash")
     func emptyInput() {
         let plan = ThemePlan.build(from: [], target: .dark)
@@ -226,5 +261,68 @@ struct ThemePlanTests {
         #expect(abs(after.h - before.h) < 1.0)   // still blue
         #expect(after.c < before.c)              // but calmer
         #expect(after.l < 0.5)                   // and dark
+    }
+}
+
+@Suite("Scheme decision")
+struct SchemeDecisionTests {
+
+    @Test("A declared, opaque background is used as written")
+    func declaredWins() {
+        let ground = SchemeDecision.decisionGround(
+            declared: "rgb(248, 249, 250)",
+            observations: [.init(color: color("#ff0000"), property: .background, areaFraction: 1)]
+        )
+        #expect(ground?.rgb.hex == "#f8f9fa")
+    }
+
+    @Test("A transparent declaration falls through to what the page paints")
+    func transparentFallsThrough() {
+        // Both bugs this logic caused start here. Read literally, transparent
+        // parses as black and looks dark; assumed white, it looks light. Only
+        // what the page actually painted settles it.
+        let ground = SchemeDecision.decisionGround(
+            declared: "rgba(0, 0, 0, 0)",
+            observations: [
+                .init(color: color("#f6f6ef"), property: .background, areaFraction: 0.8),
+                .init(color: color("#ff6600"), property: .background, areaFraction: 0.05),
+            ]
+        )
+        #expect(ground?.rgb.hex == "#f6f6ef")
+    }
+
+    @Test("A page that has painted nothing gives no answer, rather than a guess")
+    func nothingPaintedYet() {
+        #expect(SchemeDecision.decisionGround(declared: nil, observations: []) == nil)
+        #expect(SchemeDecision.decisionGround(declared: "", observations: []) == nil)
+        #expect(SchemeDecision.decisionGround(declared: "rgba(0, 0, 0, 0)", observations: []) == nil)
+        // Text alone is not a ground — only backgrounds are.
+        #expect(SchemeDecision.decisionGround(
+            declared: "rgba(0, 0, 0, 0)",
+            observations: [.init(color: color("#333333"), property: .text, areaFraction: 0.9)]
+        ) == nil)
+    }
+
+    @Test("A site already in the requested scheme is left alone")
+    func alreadySatisfied() {
+        // GitHub's ground, which was being restyled despite having a perfectly
+        // good dark mode of its own.
+        #expect(SchemeDecision.alreadySatisfies(.dark, ground: color("#0d1117")))
+        #expect(SchemeDecision.alreadySatisfies(.light, ground: color("#ffffff")))
+        // ...and a light page under a dark target is not.
+        #expect(!SchemeDecision.alreadySatisfies(.dark, ground: color("#ffffff")))
+        #expect(!SchemeDecision.alreadySatisfies(.light, ground: color("#0d1117")))
+    }
+
+    @Test("Transparent read as a colour would have said 'already dark'")
+    func theTrapItself() {
+        // Pinning the trap: rgba(0,0,0,0) parses to black, and black satisfies
+        // dark. Anything that lets a transparent declaration reach this
+        // function has already lost.
+        let transparent = CSSColor(css: "rgba(0, 0, 0, 0)")!
+        #expect(SchemeDecision.alreadySatisfies(.dark, ground: transparent))
+        // Which is exactly why decisionGround refuses to return it.
+        #expect(SchemeDecision.decisionGround(
+            declared: "rgba(0, 0, 0, 0)", observations: []) == nil)
     }
 }

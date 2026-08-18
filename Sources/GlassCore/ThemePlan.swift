@@ -24,7 +24,9 @@ public enum ColorProperty: String, CaseIterable, Sendable {
         }
     }
 
-    var isBackground: Bool { self == .background }
+    /// Backgrounds are the ground other colours are judged against, rather
+    /// than something judged itself.
+    public var isBackground: Bool { self == .background }
     var isReadable: Bool { self == .text || self == .fill }
 }
 
@@ -139,21 +141,46 @@ extension ThemePlan {
     /// it appears, or the page comes back subtly striped.
     public static func build(
         from observations: [ColorObservation],
-        target: ColorSchemeTarget
+        target: ColorSchemeTarget,
+        establishedGround: CSSColor? = nil
     ) -> ThemePlan {
-        // The dominant background sets the ground everything else is judged
-        // against. Falling back to the scheme we're leaving is the right guess:
-        // a page with no background declaration is showing the browser's, which
-        // is white on the way to dark.
-        let dominant = observations
-            .filter(\.property.isBackground)
-            .max { $0.areaFraction < $1.areaFraction }?
-            .color
-            ?? CSSColor(rgb: target == .dark ? .white : .black)
+        let surface: OKLCH
+        /// What the page is painted with. Held separately from `surface` so an
+        /// established ground comes back as the same bytes rather than as the
+        /// same colour — a value that drifts by a bit on every sweep is a
+        /// declaration that keeps being rewritten for no reason.
+        let ground: CSSColor
 
-        let surface = ThemeTransform.transform(
-            OKLCH(dominant.rgb), role: .surface, target: target
-        )
+        if let establishedGround {
+            // A second pass over a page already themed sees only what hasn't
+            // been touched yet, so the largest background among them is some
+            // panel rather than the page. Re-deriving the ground from that set
+            // picks a colour at random and repaints the whole document with it
+            // — a blue panel makes the page blue. The ground was settled on the
+            // first pass and must not be reconsidered.
+            surface = OKLCH(establishedGround.rgb)
+            ground = establishedGround
+        } else {
+            // The dominant background sets the ground everything else is judged
+            // against. Falling back to the scheme we're leaving is the right
+            // guess: a page with no background declaration is showing the
+            // browser's, which is white on the way to dark.
+            let dominant = observations
+                .filter(\.property.isBackground)
+                .max { $0.areaFraction < $1.areaFraction }
+
+            let color = dominant?.color ?? CSSColor(rgb: target == .dark ? .white : .black)
+            // A chromatic page background is still a page background. It keeps
+            // its hue and gives up its intensity — held at full chroma across
+            // the whole document it stops being a brand and becomes a glare.
+            let role = dominant.map(RoleClassifier.role(for:)) ?? .surface
+            surface = ThemeTransform.transform(
+                OKLCH(color.rgb),
+                role: role == .surface ? .surface : .brandSurface,
+                target: target
+            )
+            ground = CSSColor(rgb: surface.displayable, alpha: 1)
+        }
 
         var groups: [String: ColorObservation] = [:]
         for observation in observations {
@@ -223,9 +250,57 @@ extension ThemePlan {
             record(key, result, observation)
         }
 
-        return ThemePlan(
-            replacements: replacements,
-            pageBackground: CSSColor(rgb: surface.displayable, alpha: 1)
-        )
+        return ThemePlan(replacements: replacements, pageBackground: ground)
+    }
+}
+
+/// Whether a page needs a theme built for it at all, and what to judge that on.
+///
+/// This lived inline in the tab and produced two separate bugs there, both from
+/// the same root: a page's *declared* background is frequently transparent, and
+/// neither reading of that is safe. Taken as black it satisfies "already dark",
+/// so every site that never set a background is left in light mode forever.
+/// Taken as white it satisfies "needs work", so a site with a genuine dark mode
+/// gets restyled whenever it's caught before its background has painted.
+///
+/// The resolution is to stop asking what the page declared and look at what it
+/// painted — and to treat "nothing painted yet" as a reason to wait rather than
+/// as evidence of anything.
+public enum SchemeDecision {
+
+    /// How close to the target a page has to be already for us to leave it be.
+    ///
+    /// Asymmetric because the two mistakes are not equal. Wrongly restyling a
+    /// site that has its own dark mode replaces a designer's work with an
+    /// approximation, which is worse than wrongly leaving a dim page alone.
+    static let darkEnough = 0.35
+    static let lightEnough = 0.7
+
+    /// The colour a decision should be made on, or nil if the page hasn't
+    /// painted anything to decide from.
+    public static func decisionGround(
+        declared: String?,
+        observations: [ColorObservation]
+    ) -> CSSColor? {
+        if let declared, let color = CSSColor(css: declared), color.alpha > 0.5 {
+            return color
+        }
+        // Nothing declared, so the ground is whatever covers the most of it —
+        // which is what the eye takes for the background regardless of which
+        // element happens to be carrying it.
+        return observations
+            .filter(\.property.isBackground)
+            .max { $0.areaFraction < $1.areaFraction }?
+            .color
+    }
+
+    /// Whether a page on this ground is already in the scheme the user asked
+    /// for, and should be left exactly as its authors drew it.
+    public static func alreadySatisfies(
+        _ target: ColorSchemeTarget,
+        ground: CSSColor
+    ) -> Bool {
+        let lightness = OKLCH(ground.rgb).l
+        return target == .dark ? lightness < darkEnough : lightness > lightEnough
     }
 }

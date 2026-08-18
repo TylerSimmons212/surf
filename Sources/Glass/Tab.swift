@@ -388,6 +388,17 @@ final class Tab: NSObject, Identifiable {
 
     @ObservationIgnored private var themeTask: Task<Void, Never>?
 
+    /// The ground this page settled on, kept so later sweeps don't re-derive it
+    /// from whatever they happen to find still untouched.
+    ///
+    /// Not cleared on a URL change, deliberately. A route change swaps the
+    /// content without replacing the document, so the theme — and its ground —
+    /// are still there; clearing here would let each sweep re-derive a slightly
+    /// lighter ground than the last and walk the page away from where it
+    /// started. A real navigation is covered already: the new document carries
+    /// no theme, reports itself unthemed, and the ground is derived afresh.
+    @ObservationIgnored private var establishedGround: CSSColor?
+
     /// Restyles a page that doesn't offer the scheme the user asked for.
     ///
     /// Debounced, and cancelled on every navigation: a page mid-load reports
@@ -427,33 +438,48 @@ final class Tab: NSObject, Identifiable {
             return
         }
 
-        // A transparent ground is not a dark one.
+        let observations = ThemeBridge.observations(from: survey)
+
+        // What the decision gets made on.
         //
-        // A page that declares no background shows the browser's canvas, which
-        // is white. Read literally, `rgba(0, 0, 0, 0)` parses as black, lands
-        // at lightness zero, and satisfies "already dark" — so every site that
-        // simply never set a background would be judged as having a dark mode
-        // and left in light mode permanently. Treating it as undeclared sends
-        // it down the synthesis path instead, which is what it needs.
-        let declaredGround = CSSColor(css: survey.ground).flatMap {
-            $0.alpha > 0.5 ? $0 : nil
+        // `survey.ground` is the declared background of body or html, and is
+        // very often transparent — plenty of sites never set one and simply
+        // show the browser's canvas. Read literally, `rgba(0, 0, 0, 0)` parses
+        // as black and satisfies "already dark", which would leave every such
+        // site in light mode forever. But treating transparent as *light* is
+        // just as wrong: a page caught mid-load hasn't painted its background
+        // yet, and GitHub — which has a perfectly good dark mode — was being
+        // restyled on the strength of a background that simply hadn't arrived.
+        //
+        // Neither reading of "undeclared" is safe, so the declared value is
+        // abandoned and the largest thing the page actually paints is used
+        // instead. That is what the eye takes for the background, and a page
+        // with nothing painted yet has none — which is the signal to wait
+        // rather than to guess.
+        let decisionGround = SchemeDecision.decisionGround(
+            declared: survey.ground, observations: observations
+        )
+
+        guard let decisionGround else {
+            debugLog("theme: nothing painted yet — waiting")
+            return
         }
 
-        if !survey.themed, let ground = declaredGround {
-            let lightness = OKLCH(ground.rgb).l
-            let alreadyRight = target == .dark ? lightness < 0.35 : lightness > 0.7
-            if alreadyRight {
-                debugLog("theme: site already \(target.rawValue) (L=\(rounded(lightness))) — left alone")
-                _ = try? await webView.callAsyncJavaScript(
-                    ThemeBridge.dismissPreflightScript,
-                    arguments: [:], in: nil, contentWorld: .defaultClient
-                )
-                return
-            }
+        if !survey.themed,
+           SchemeDecision.alreadySatisfies(target, ground: decisionGround) {
+            let lightness = OKLCH(decisionGround.rgb).l
+            debugLog("theme: site already \(target.rawValue) (L=\(rounded(lightness))) — left alone")
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.dismissPreflightScript,
+                arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+            return
         }
 
         var plan = ThemePlan.build(
-            from: ThemeBridge.observations(from: survey), target: target
+            from: observations,
+            target: target,
+            establishedGround: survey.themed ? establishedGround : nil
         )
 
         // Gradients are values rather than single colours, so they take their
@@ -488,6 +514,8 @@ final class Tab: NSObject, Identifiable {
             theme: applied \(plan.replacements.count) substitutions, \
             ground \(plan.pageBackground.css)
             """)
+
+        establishedGround = plan.pageBackground
 
         // Public API, and the fix for the white band that rubber-band scrolling
         // would otherwise reveal under a darkened page.
