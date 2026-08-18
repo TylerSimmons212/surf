@@ -150,6 +150,49 @@ final class DevToolsSession: Identifiable {
         refreshTree()
     }
 
+    /// Right opens a node, or steps into it when it's already open. Left
+    /// closes it, or steps out to its parent when it's already closed — the
+    /// standard outline-view keys, and the fastest way to walk a document.
+    func expandSelection() {
+        guard let id = selectedNode, let node = tree[id] else { return }
+        if node.hasChildren, !tree.isExpanded(id) {
+            toggle(id)
+        } else if let first = node.childIds?.first {
+            select(first)
+        }
+    }
+
+    func collapseSelection() {
+        guard let id = selectedNode else { return }
+        if tree.isExpanded(id) {
+            tree.collapse(id)
+            refreshTree()
+        } else if let parent = tree[id]?.parentId {
+            select(parent)
+        }
+    }
+
+    /// Moves through the rows as drawn, so it follows what's on screen rather
+    /// than the shape of the document.
+    func moveSelection(by offset: Int) {
+        guard let id = selectedNode else {
+            if let first = visibleRows.first { select(first.nodeId) }
+            return
+        }
+        guard let index = visibleRows.firstIndex(where: { $0.nodeId == id && $0.kind != .close })
+        else { return }
+
+        var next = index + offset
+        while visibleRows.indices.contains(next) {
+            // Closing tags are punctuation, not stops.
+            if visibleRows[next].kind != .close {
+                select(visibleRows[next].nodeId)
+                return
+            }
+            next += offset
+        }
+    }
+
     func select(_ id: DOMNodeID) {
         selectedNode = id
         // The page reports this one's geometry from now on, so the highlight

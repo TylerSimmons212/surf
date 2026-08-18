@@ -34,6 +34,10 @@ struct ElementsPane: View {
             session.setPicking(false)
             return .handled
         }
+        .onKeyPress(.rightArrow) { session.expandSelection(); return .handled }
+        .onKeyPress(.leftArrow) { session.collapseSelection(); return .handled }
+        .onKeyPress(.downArrow) { session.moveSelection(by: 1); return .handled }
+        .onKeyPress(.upArrow) { session.moveSelection(by: -1); return .handled }
     }
 
     // MARK: - Toolbar
@@ -204,6 +208,7 @@ private struct DOMRowView: View {
     let row: DOMRow
 
     @State private var isHovering = false
+    @State private var isHoveringDisclosure = false
 
     private var node: DOMNode? { session.tree[row.nodeId] }
     private var isSelected: Bool { session.selectedNode == row.nodeId }
@@ -219,15 +224,23 @@ private struct DOMRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(background)
         .contentShape(Rectangle())
+        // Double-click opens, single-click selects — the same as a file list,
+        // and a much larger target than the triangle for the common case.
+        .onTapGesture(count: 2) { session.toggle(row.nodeId) }
         .onTapGesture { session.select(row.nodeId) }
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Copy Selector") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(
-                    session.tree.selectorPath(to: row.nodeId), forType: .string
-                )
+                copy(session.tree.selectorPath(to: row.nodeId))
             }
+            // Replaces what dragging across the row used to give you.
+            Button("Copy Markup") {
+                copy(String(attributed.characters))
+            }
+            if let node, node.nodeType == .text || node.nodeType == .comment {
+                Button("Copy Text") { copy(node.value) }
+            }
+            Divider()
             Button("Scroll Into View") { session.scrollPageTo(row.nodeId) }
         }
     }
@@ -239,14 +252,24 @@ private struct DOMRowView: View {
         if let node, node.hasChildren, row.kind != .close, !session.tree.isInlineText(node) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isHoveringDisclosure ? Color.primary : Color.secondary)
                 .rotationEffect(.degrees(session.tree.isExpanded(row.nodeId) ? 90 : 0))
-                .frame(width: DevToolsTheme.discloseWidth)
+                // The glyph stays small; the target does not. At the drawn size
+                // this was a 10×8pt hit area, so most attempts to open a node
+                // missed it and selected the row instead — which reads as the
+                // triangle being broken rather than as having been missed.
+                .frame(width: DevToolsTheme.discloseWidth, height: 16)
                 .contentShape(Rectangle())
+                .onHover { isHoveringDisclosure = $0 }
                 .onTapGesture { session.toggle(row.nodeId) }
         } else {
             Color.clear.frame(width: DevToolsTheme.discloseWidth, height: 1)
         }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     /// Indentation stops deepening past a point. A document nested forty
@@ -261,7 +284,12 @@ private struct DOMRowView: View {
             .font(DevToolsTheme.mono)
             .lineLimit(1)
             .truncationMode(.tail)
-            .textSelection(.enabled)
+            // Deliberately *not* selectable text. `textSelection` installs its
+            // own gesture, which swallowed every click that landed on the
+            // glyphs — so selecting a node only worked if you happened to hit
+            // the empty space beside it. No devtools lets you drag-select in
+            // the tree; clicking picks the node, and the context menu covers
+            // copying.
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
