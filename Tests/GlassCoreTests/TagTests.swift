@@ -249,3 +249,54 @@ struct TagValidationTests {
         #expect(findings.isEmpty)
     }
 }
+
+@Suite("Advertiser naming")
+struct AdvertiserNameTests {
+
+    /// The correction that came out of reading a tool which does this for a
+    /// living: it asks its user for brand names rather than deriving them from
+    /// domains, because ad libraries are indexed by advertiser, not by host.
+    /// Searching `shop.example.com` in Meta's library finds nothing.
+    @Test("The site's own name wins when it declares one")
+    func prefersSiteName() {
+        #expect(
+            AdvertiserName.guess(
+                siteName: "Acme Outdoors", title: "Tents | Acme", domain: "shop.acme.com"
+            ) == "Acme Outdoors"
+        )
+    }
+
+    /// A title is usually "page — brand", and the brand is the part worth
+    /// searching for.
+    @Test("A title is split on its separator, taking the brand end")
+    func splitsTitle() {
+        #expect(
+            AdvertiserName.guess(siteName: "", title: "Blue Tent — Acme", domain: "acme.com")
+                == "Acme"
+        )
+        #expect(
+            AdvertiserName.guess(siteName: "", title: "Checkout | Acme Store", domain: "acme.com")
+                == "Acme Store"
+        )
+    }
+
+    /// A whole sentence of SEO title is not an advertiser name.
+    @Test("An over-long title falls through to the domain")
+    func longTitleFallsThrough() {
+        let sprawling = "Buy the best tents online with free shipping and returns in 2026"
+        #expect(AdvertiserName.guess(siteName: "", title: sprawling, domain: "acme.com") == "acme")
+    }
+
+    @Test("The apex label is taken from the host, past any public suffix")
+    func apexExtraction() {
+        #expect(AdvertiserName.apex(of: "www.acme.com") == "acme")
+        #expect(AdvertiserName.apex(of: "shop.acme.co.uk") == "acme")
+        #expect(AdvertiserName.apex(of: "acme.com") == "acme")
+        #expect(AdvertiserName.apex(of: "localhost") == "localhost")
+    }
+
+    @Test("With nothing to go on, the domain is still better than empty")
+    func fallback() {
+        #expect(AdvertiserName.guess(siteName: "", title: "", domain: "store.acme.com") == "acme")
+    }
+}

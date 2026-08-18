@@ -207,6 +207,18 @@ struct TagsPane: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+                // Editable, because these libraries index by advertiser name
+                // and the best Glass can do is guess one from the page.
+                HStack(spacing: 6) {
+                    Text("Search as")
+                        .font(DevToolsTheme.chrome)
+                        .foregroundStyle(.secondary)
+                    TextField("advertiser name", text: $session.advertiserName)
+                        .textFieldStyle(.roundedBorder)
+                        .font(DevToolsTheme.mono)
+                        .frame(width: 200)
+                }
+
                 let libraries = session.adLibraries()
                 if libraries.isEmpty {
                     Text("No advertising tags found on this page, so there's nothing to look up.")

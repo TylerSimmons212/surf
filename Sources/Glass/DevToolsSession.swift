@@ -1191,6 +1191,9 @@ final class DevToolsSession: Identifiable {
     private(set) var detectedTags: [DetectedTag] = []
     private(set) var tagFindings: [TagFinding] = []
     private(set) var consentManagers: [String] = []
+    /// What to search an ad library for. A guess, and editable, because the
+    /// tool that does this for a living just asks a human.
+    var advertiserName = ""
     private(set) var isLoadingTags = false
 
     /// Bodies for the vendors that POST their payload, fetched only for
@@ -1243,6 +1246,11 @@ final class DevToolsSession: Identifiable {
                 evidenceByVendor[id] = entry["evidence"] as? [String] ?? []
             }
             consentManagers = reply["consent"] as? [String] ?? []
+            advertiserName = AdvertiserName.guess(
+                siteName: reply["siteName"] as? String ?? "",
+                title: reply["title"] as? String ?? "",
+                domain: siteDomain
+            )
         }
 
         // A vendor counts as present if it left a global *or* sent traffic —
@@ -1287,9 +1295,10 @@ final class DevToolsSession: Identifiable {
                   let detected = detectedTags.first(where: { $0.vendorId == signature.id })
             else { return nil }
             let account = detected.accountIds.first ?? ""
+            let term = advertiserName.isEmpty ? siteDomain : advertiserName
             return (
                 signature.name, library, account,
-                library.url(id: account, domain: siteDomain)
+                library.url(id: account, domain: term)
             )
         }
     }

@@ -521,9 +521,17 @@ enum NetworkAgent {
                 }
 
                 const generator = document.querySelector('meta[name="generator"]');
+                // What the site calls itself. Ad libraries are indexed by
+                // advertiser name, not by domain, so this is the term that
+                // actually finds anything.
+                const siteName = document.querySelector('meta[property="og:site_name"]');
+                const appName = document.querySelector('meta[name="application-name"]');
                 return JSON.stringify({
                   found: found,
                   consent: consent,
+                  siteName: (siteName && siteName.getAttribute('content'))
+                    || (appName && appName.getAttribute('content')) || '',
+                  title: document.title || '',
                   generator: generator ? generator.getAttribute('content') : '',
                   dataLayerLength: (window.dataLayer && window.dataLayer.length) || 0
                 });

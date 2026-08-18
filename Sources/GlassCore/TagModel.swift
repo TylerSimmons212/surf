@@ -194,3 +194,54 @@ public struct TagFinding: Sendable, Equatable, Identifiable {
         self.vendorName = vendorName
     }
 }
+
+/// The name to search an ad library for.
+///
+/// Not the domain, which is what a first pass reaches for and which those
+/// libraries do not index by — searching `shop.example.com` in Meta's Ad
+/// Library finds nothing. They are indexed by advertiser name, so the best
+/// available guess is what the site calls itself, and it stays editable
+/// because the guess is sometimes wrong and only the person looking knows.
+public enum AdvertiserName {
+
+    public static func guess(
+        siteName: String, title: String, domain: String
+    ) -> String {
+        let trimmedSiteName = siteName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedSiteName.isEmpty { return trimmedSiteName }
+
+        // A title is usually "Product page — Brand" or "Brand | Tagline", and
+        // the brand is the shortest distinctive part rather than the whole.
+        let separators: [Character] = ["|", "—", "–", "·", "»"]
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            for separator in separators where trimmedTitle.contains(separator) {
+                let parts = trimmedTitle.split(separator: separator)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                // The last segment is the brand far more often than the first,
+                // which is usually the page.
+                if let candidate = parts.last, candidate.count <= 40 { return candidate }
+            }
+            if trimmedTitle.count <= 40 { return trimmedTitle }
+        }
+
+        return apex(of: domain)
+    }
+
+    /// `shop.example.co.uk` → `example`.
+    public static func apex(of domain: String) -> String {
+        var host = domain.lowercased()
+        for prefix in ["www.", "shop.", "store.", "m."] where host.hasPrefix(prefix) {
+            host = String(host.dropFirst(prefix.count))
+        }
+        let labels = host.split(separator: ".").map(String.init)
+        guard labels.count > 1 else { return host }
+        // Two-part public suffixes are common enough to be worth handling.
+        let compound: Set<String> = ["co", "com", "org", "net", "gov", "ac"]
+        if labels.count > 2, compound.contains(labels[labels.count - 2]) {
+            return labels[labels.count - 3]
+        }
+        return labels[labels.count - 2]
+    }
+}
