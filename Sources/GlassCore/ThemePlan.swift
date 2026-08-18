@@ -14,6 +14,15 @@ public enum ColorProperty: String, CaseIterable, Sendable {
     case shadow
     case fill
     case stroke
+    /// A `background-color` that is acting as ink rather than as a surface,
+    /// because a `mask-image` is cutting a shape out of it.
+    ///
+    /// This is how icons are drawn now — one sprite masked to shape, coloured
+    /// by the background. Treated as a background it is a dark surface, and the
+    /// rule that keeps dark surfaces dark leaves it invisible on a dark page.
+    /// It is really a glyph, and belongs with text. Wikipedia's whole toolbar
+    /// is drawn this way.
+    case maskedInk
 
     /// What the pair owes once transformed. Borders, outlines, and shadows are
     /// structure rather than prose, and WCAG holds them to the lower bar.
@@ -22,7 +31,7 @@ public enum ColorProperty: String, CaseIterable, Sendable {
         // SVG fill often carries a wordmark, so it is held to the text bar.
         // A stroke is a drawn line and is held to the graphic one.
         case .text, .fill: .normalText
-        case .border, .outline, .shadow, .stroke, .background: .nonText
+        case .border, .outline, .shadow, .stroke, .background, .maskedInk: .nonText
         }
     }
 
@@ -32,7 +41,9 @@ public enum ColorProperty: String, CaseIterable, Sendable {
     /// Prose, and the SVG paint that stands in for it. A neutral icon belongs
     /// with text — it inverts — rather than with surfaces, which would leave it
     /// the same colour as the page it sits on.
-    var isReadable: Bool { self == .text || self == .fill || self == .stroke }
+    var isReadable: Bool {
+        self == .text || self == .fill || self == .stroke || self == .maskedInk
+    }
     /// Lines drawn to separate things, whose job is separation rather than
     /// colour.
     var isSeparator: Bool { self == .border || self == .outline }

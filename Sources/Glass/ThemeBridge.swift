@@ -166,7 +166,15 @@ enum ThemeBridge {
 
       const backdrop = backdropFor(element, style.backgroundColor);
 
-      note(style.backgroundColor, 'background', area, interactive, large, '');
+      // A mask turns a background colour into ink: the sprite is cut to shape
+      // and the background is what you see. Recorded apart from real surfaces
+      // so it is judged as a glyph, and so a colour used both ways on one page
+      // can't collapse into a single answer.
+      const maskImage = style.maskImage || style.webkitMaskImage;
+      const masked = !!maskImage && maskImage !== 'none';
+      note(style.backgroundColor, masked ? 'maskink' : 'background',
+           area, interactive, large, backdrop);
+
       note(style.color, 'text', area, interactive, large, backdrop);
 
       // Only where a border is actually drawn. An element without one still
@@ -315,8 +323,12 @@ enum ThemeBridge {
       eachElement(document, \(elementBudget), function (element) {
         const style = styleOf(element);
 
+        const maskImage = style.maskImage || style.webkitMaskImage;
+        const masked = !!maskImage && maskImage !== 'none';
+        // Same property and the same variable — the ink is delivered through
+        // background-color either way; only the decision differs.
         paint(element, 'data-glass-bg', '--glass-bg',
-              plan['background|' + style.backgroundColor]);
+              plan[(masked ? 'maskink|' : 'background|') + style.backgroundColor]);
         paint(element, 'data-glass-fg', '--glass-fg',
               plan['text|' + style.color]);
         paint(element, 'data-glass-bd', '--glass-bd',
@@ -510,6 +522,7 @@ extension ColorProperty {
         case "outline": self = .outline
         case "fill": self = .fill
         case "stroke": self = .stroke
+        case "maskink": self = .maskedInk
         default: return nil
         }
     }

@@ -326,3 +326,56 @@ struct SchemeDecisionTests {
             declared: "rgba(0, 0, 0, 0)", observations: []) == nil)
     }
 }
+
+@Suite("Masked ink")
+struct MaskedInkTests {
+
+    @Test("A masked background is a glyph, not a surface")
+    func maskedIsInk() {
+        // Wikipedia's toolbar icons: one sprite masked to shape, coloured by
+        // background-color. Judged as a surface, the rule that keeps dark
+        // surfaces dark leaves them invisible on a dark page.
+        let icon = ColorObservation(color: color("#404244"), property: .maskedInk)
+        let panel = ColorObservation(color: color("#404244"), property: .background)
+        #expect(RoleClassifier.role(for: icon) == .text)
+        #expect(RoleClassifier.role(for: panel) == .surface)
+    }
+
+    @Test("A dark icon comes back light, where a dark surface stays dark")
+    func maskedInkInverts() {
+        let observations: [ColorObservation] = [
+            .init(color: color("#ffffff"), property: .background, areaFraction: 0.95),
+            .init(color: color("#404244"), property: .maskedInk,
+                  areaFraction: 0.001, backdrop: color("#ffffff")),
+        ]
+        let plan = ThemePlan.build(from: observations, target: .dark)
+        let key = ColorObservation(color: color("#404244"), property: .maskedInk).key
+        let result = CSSColor(css: plan.replacements[key] ?? "#404244")!
+        #expect(OKLCH(result.rgb).l > 0.6)
+        #expect(Contrast.isLegible(.nonText,
+                                   foreground: result.rgb,
+                                   background: plan.pageBackground.rgb))
+    }
+
+    @Test("The same colour used both ways doesn't collapse into one answer")
+    func inkAndSurfaceStaySeparate() {
+        let shared = color("#404244")
+        let plan = ThemePlan.build(
+            from: [
+                .init(color: color("#ffffff"), property: .background, areaFraction: 0.95),
+                .init(color: shared, property: .background, areaFraction: 0.3),
+                .init(color: shared, property: .maskedInk,
+                      areaFraction: 0.001, backdrop: color("#ffffff")),
+            ],
+            target: .dark
+        )
+        let inkKey = ColorObservation(color: shared, property: .maskedInk).key
+        let surfaceKey = ColorObservation(color: shared, property: .background).key
+        let ink = CSSColor(css: plan.replacements[inkKey] ?? "#404244")!
+        let surface = CSSColor(css: plan.replacements[surfaceKey] ?? "#404244")!
+        // The ink lands well clear of the surface — measured at about 0.28 of
+        // perceptual lightness apart, which is the difference between a visible
+        // icon and one lost against the panel behind it.
+        #expect(OKLCH(ink.rgb).l > OKLCH(surface.rgb).l + 0.2)
+    }
+}
