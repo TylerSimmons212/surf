@@ -250,6 +250,32 @@ to hold together — no title, nothing readable in the body, and several refused
 requests — and only ever on a tab a page opened. A tab you opened stays open
 however empty it is, because you opened it.
 
+Some pages check anyway, and two of the ways they check are worth naming because
+between them they account for a video that starts and then stops.
+
+The first is a bait variable. A page cannot ask whether a request was blocked,
+so it loads a script whose only job is to set a variable and then tests whether
+the variable is there — pausing the video and raising a wall if it isn't. The
+name is random per site, so no list can carry it and no stub can be written for
+it in advance. What is constant is the shape: an identifier tested with `typeof`,
+never assigned anywhere in the page, and named after what it is. So Glass reads
+the check rather than knowing the name, and answers it. Narrowly: only names that
+announce themselves as bait, and only where the page never assigns them, because
+`typeof jQuery === 'undefined'` is how a page decides whether to load jQuery and
+answering that one would leave it calling methods on nothing.
+
+The second is a window opened by the click that plays the video. A player can be
+configured to open one — the destination sits in the page, beside the video's own
+settings — so every defence that reasons about gestures is defeated by design:
+the gesture is real, and it is the one the viewer made. Checking the destination
+doesn't help either, because these land on throwaway affiliate domains no list
+carries. What is constant is the intent. Pressing play is a request to play, not
+to open a window, and no legitimate player has ever needed one — so that is what
+gets refused, which is why it works on a domain nobody has seen before. Scoped as
+tightly as the claim: only while a click on a video or its controls is being
+handled, and only for somewhere other than the site you are on. A share button
+that opens a window still opens it.
+
 A blocked script is invisible to a page that never checks, and a video player is
 not that page. It loads Google's ad SDK, waits for `google.ima` to appear, and
 hands the viewer to it. Refuse the script and the global never arrives, so the
@@ -486,6 +512,8 @@ makes it unit-testable — the UI targets can't be.
   to be true before its space is reclaimed
 - `Sources/GlassCore/Surrogates.swift` — stand-ins for the scripts blocking
   removes, so a player is told there are no ads rather than left waiting
+- `Sources/GlassCore/AntiAdblock.swift` — the bait variable a page checks for,
+  and why pressing play is never a request to open a window
 - `Sources/Glass/BlockBridge.swift` — the page-side account of what was
   requested, and the two passes that close the hole a blocked ad leaves
 - `Sources/Glass/BlockPanel.swift` — the shield and the list behind it

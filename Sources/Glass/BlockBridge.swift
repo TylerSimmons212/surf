@@ -211,6 +211,109 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
+      // Pressing play is not asking for a window.
+      //
+      // A player can be configured to open one when clicked — the config sits
+      // in the page, next to the video's own settings — so the click that plays
+      // the video is the click that opens the tab. Every defence that reasons
+      // about gestures is defeated by design there: the gesture is real, and it
+      // is the one the viewer made. Checking the destination doesn't help
+      // either, because these land on throwaway affiliate domains no list
+      // carries.
+      //
+      // What is constant is the intent. Pressing play is a request to play, not
+      // to open a window, and no legitimate player has ever needed one. That is
+      // what gets refused — which is why it works on a domain nobody has seen
+      // before.
+
+      const PLAYER_PARTS = \(AntiAdblock.playerSelectorsJS);
+      let playerClickUntil = 0;
+
+      document.addEventListener('click', function (event) {
+        const target = event.target;
+        if (!target || !target.closest) { return; }
+        try {
+          if (target.closest(PLAYER_PARTS)) {
+            playerClickUntil = Date.now() + \(Int(AntiAdblock.playerClickWindow * 1000));
+          }
+        } catch (error) { /* a selector this engine dislikes */ }
+      }, true);
+
+      const nativeOpen = window.open;
+      if (typeof nativeOpen === 'function') {
+        window.open = function (url) {
+          let elsewhere = false;
+          try {
+            elsewhere = new URL(String(url), location.href).hostname !== location.hostname;
+          } catch (error) { elsewhere = false; }
+
+          if (Date.now() < playerClickUntil && elsewhere) {
+            note(String(url), 'popup', false);
+            // What a popup blocker returns, and what these scripts already
+            // handle — they have to, because every browser blocks some of them.
+            return null;
+          }
+          return nativeOpen.apply(window, arguments);
+        };
+      }
+
+      // ------------------------------------------------------------------
+      // The variable a page checks for instead of asking.
+      //
+      // A page cannot ask whether a request was blocked, so it loads a script
+      // whose only job is to set a variable and then checks whether the
+      // variable is there. The name is random per site, so no list can carry it
+      // and no stub can be written for it in advance — but the check itself is
+      // in the page, in plain text, and can be read.
+
+      const BAIT_PREFIXES = \(AntiAdblock.baitPrefixesJSArray);
+
+      function namesBait(identifier) {
+        const lowered = identifier.toLowerCase();
+        for (let i = 0; i < BAIT_PREFIXES.length; i++) {
+          const prefix = BAIT_PREFIXES[i];
+          if (lowered.indexOf(prefix) !== 0) { continue; }
+          const tail = lowered.slice(prefix.length);
+          // A word that merely starts with "bait" is a word.
+          if (!tail) { return true; }
+          return tail[0] === '_' || tail[0] === '$' || (tail[0] >= '0' && tail[0] <= '9');
+        }
+        return false;
+      }
+
+      function answerBaitChecks() {
+        let scripts;
+        try { scripts = document.querySelectorAll('script:not([src])'); }
+        catch (error) { return; }
+
+        const patterns = [
+          /\(AntiAdblock.baitCheckPattern)/g,
+          /\(AntiAdblock.baitCheckPatternReversed)/g
+        ];
+
+        for (let i = 0; i < scripts.length; i++) {
+          const source = scripts[i].textContent || '';
+          for (let p = 0; p < patterns.length; p++) {
+            patterns[p].lastIndex = 0;
+            let match;
+            while ((match = patterns[p].exec(source)) !== null) {
+              const name = match[1];
+              if (!namesBait(name) || name in window) { continue; }
+              // Never when the page assigns it itself — then it is a variable
+              // the page owns and the check is about its own state, not ours.
+              if (new RegExp('(var|let|const)\\s+' + name + '\\b|\\b' + name + '\\s*=[^=]')
+                  .test(source)) { continue; }
+              try {
+                Object.defineProperty(window, name, {
+                  value: true, writable: true, configurable: true
+                });
+              } catch (error) { /* the page got there first */ }
+            }
+          }
+        }
+      }
+
+      // ------------------------------------------------------------------
       // The hole the ad leaves behind.
       //
       // Refusing the request doesn't reclaim the space: a slot is a container
@@ -333,11 +436,17 @@ enum BlockBridge {
         sweepTimer = setTimeout(() => { sweepTimer = null; sweepSlots(); }, 400);
       }
 
+      // Before `load`, which is when these checks are wired up, and again after
+      // in case the page wrote more of itself in between.
       document.addEventListener('DOMContentLoaded', function () {
         sweepMarkupScripts();
+        answerBaitChecks();
         scheduleSweep();
       }, true);
-      window.addEventListener('load', scheduleSweep, true);
+      window.addEventListener('load', function () {
+        answerBaitChecks();
+        scheduleSweep();
+      }, true);
       try {
         new MutationObserver(scheduleSweep)
           .observe(document.documentElement, { childList: true, subtree: true });

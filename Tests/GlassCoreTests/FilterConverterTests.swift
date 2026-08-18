@@ -311,3 +311,56 @@ struct SurrogateTests {
         #expect(Surrogate.googleIMA.script.contains("setTimeout"))
     }
 }
+
+@Suite("Anti-adblock")
+struct AntiAdblockTests {
+
+    @Test("A variable that announces itself as bait is answered")
+    func recognisesBait() {
+        // The real one, from a site that pauses its video three seconds after
+        // you press play.
+        #expect(AntiAdblock.namesBait("bait_b3j4hu231"))
+        #expect(AntiAdblock.namesBait("adbait_991"))
+        #expect(AntiAdblock.namesBait("bait2"))
+        #expect(AntiAdblock.namesBait("bait"))
+    }
+
+    @Test("A word that merely begins with one is left alone")
+    func leavesWordsAlone() {
+        // Defining a global a page expects to be missing is a real way to break
+        // a site, so the bar is a name that could only be bait.
+        #expect(!AntiAdblock.namesBait("baiting"))
+        #expect(!AntiAdblock.namesBait("baitShopAPI"))
+        #expect(!AntiAdblock.namesBait("jQuery"))
+        #expect(!AntiAdblock.namesBait("google"))
+        #expect(!AntiAdblock.namesBait(""))
+    }
+
+    @Test("The check is found whichever way round it is written")
+    func findsChecks() throws {
+        let forward = try NSRegularExpression(pattern: AntiAdblock.baitCheckPattern)
+        let reversed = try NSRegularExpression(pattern: AntiAdblock.baitCheckPatternReversed)
+
+        func captures(_ regex: NSRegularExpression, _ source: String) -> String? {
+            let range = NSRange(source.startIndex..., in: source)
+            guard let match = regex.firstMatch(in: source, range: range),
+                  let captured = Range(match.range(at: 1), in: source)
+            else { return nil }
+            return String(source[captured])
+        }
+
+        #expect(captures(forward, "if (typeof bait_b3j4hu231 === 'undefined') {")
+                == "bait_b3j4hu231")
+        #expect(captures(forward, #"if (typeof bait_x99 == "undefined")"#) == "bait_x99")
+        #expect(captures(reversed, "if ('undefined' === typeof bait_zz1) {") == "bait_zz1")
+    }
+
+    @Test("The page tests the same list this file declares")
+    func sharedLists() {
+        // Two lists that have to agree are two lists that eventually don't.
+        for prefix in AntiAdblock.baitPrefixes {
+            #expect(AntiAdblock.baitPrefixesJSArray.contains("'\(prefix)'"))
+        }
+        #expect(AntiAdblock.playerSelectorsJS.contains("video"))
+    }
+}
