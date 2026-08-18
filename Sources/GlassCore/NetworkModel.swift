@@ -116,6 +116,10 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
     /// status and headers. Resource Timing records never do.
     public var isDetailed: Bool
 
+    /// Set when this row is the result of replaying another one, so the two
+    /// can be compared rather than merely sitting next to each other.
+    public var replayOf: String?
+
     /// Whether a body is waiting in the page for this request. The bodies
     /// themselves are fetched one at a time, so this is all the list knows.
     public var hasRequestBody: Bool
@@ -141,7 +145,8 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
         responseHeaders: [String: String] = [:],
         isDetailed: Bool = false,
         hasRequestBody: Bool = false,
-        hasResponseBody: Bool = false
+        hasResponseBody: Bool = false,
+        replayOf: String? = nil
     ) {
         self.id = id
         self.url = url
@@ -163,7 +168,10 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
         self.isDetailed = isDetailed
         self.hasRequestBody = hasRequestBody
         self.hasResponseBody = hasResponseBody
+        self.replayOf = replayOf
     }
+
+    public var isReplay: Bool { replayOf != nil }
 
     public var statusClass: NetworkStatusClass {
         if failure != nil { return .failed }

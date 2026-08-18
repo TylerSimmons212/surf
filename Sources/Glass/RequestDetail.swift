@@ -19,6 +19,9 @@ struct RequestDetail: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 10) {
                     if let request {
+                        if let comparison = session.comparison(for: request) {
+                            ComparisonBanner(comparison: comparison)
+                        }
                         summary(request)
                         if request.isDetailed {
                             bodySection(
@@ -52,6 +55,13 @@ struct RequestDetail: View {
                 .truncationMode(.middle)
 
             Spacer(minLength: 6)
+
+            if let request, request.isDetailed {
+                Button("Replay") { session.beginReplay(request) }
+                    .buttonStyle(.borderless)
+                    .font(DevToolsTheme.chrome)
+                    .help("Send this request again, natively, with this tab's cookies")
+            }
 
             Button {
                 NSPasteboard.general.clearContents()

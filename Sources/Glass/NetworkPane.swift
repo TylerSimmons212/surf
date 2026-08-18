@@ -33,6 +33,20 @@ struct NetworkPane: View {
             Divider()
             footer
         }
+        .sheet(isPresented: Binding(
+            get: { session.replayDraft != nil },
+            set: { if !$0 { session.cancelReplay() } }
+        )) {
+            if session.replayDraft != nil {
+                ReplayEditor(
+                    session: session,
+                    draft: Binding(
+                        get: { session.replayDraft ?? ReplayRequest() },
+                        set: { session.replayDraft = $0 }
+                    )
+                )
+            }
+        }
     }
 
     // MARK: - Toolbar
@@ -254,6 +268,12 @@ private struct RequestRow: View {
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 4) {
+                if request.isReplay {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 8))
+                        .foregroundStyle(Color.accentColor)
+                        .help("Replayed")
+                }
                 Text(request.displayName)
                     .lineLimit(1)
                     .truncationMode(.middle)

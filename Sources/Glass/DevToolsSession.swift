@@ -684,6 +684,67 @@ final class DevToolsSession: Identifiable {
     private(set) var responseBody: NetworkBody?
     private(set) var isLoadingBody = false
 
+    /// Bodies for replayed requests, which the page's agent knows nothing
+    /// about — they never went through the page at all.
+    @ObservationIgnored private var replayBodies: [String: NetworkBody] = [:]
+    private(set) var isReplaying = false
+
+    /// The request being edited before it is sent again, if any.
+    var replayDraft: ReplayRequest?
+    var replayDraftOrigin: NetworkRequest?
+
+    /// Opens the editor for a request, seeded with what was observed.
+    func beginReplay(_ request: NetworkRequest) {
+        replayDraftOrigin = request
+        replayDraft = ReplayRequest(from: request, body: requestBody?.text ?? "")
+    }
+
+    func cancelReplay() {
+        replayDraft = nil
+        replayDraftOrigin = nil
+    }
+
+    /// Sends a request again through `URLSession`, with the tab's real cookies.
+    ///
+    /// Never automatic. Replaying a POST re-runs whatever it did the first
+    /// time, so it happens only when someone asks for it by name.
+    func replay(_ draft: ReplayRequest, of original: NetworkRequest?) async {
+        guard let tab else { return }
+        isReplaying = true
+        defer { isReplaying = false }
+
+        // Placed at the end of the timeline so the waterfall stays readable —
+        // a replay didn't happen during the page load.
+        let offset = network.summary().finishedAt + 20
+        let result = await RequestReplayer.send(
+            draft, replacing: original, in: tab, startingAt: offset
+        )
+
+        network.record(result.request)
+        if let body = result.body { replayBodies[result.request.id] = body }
+        refreshNetworkView()
+        replayDraft = nil
+        replayDraftOrigin = nil
+        selectRequest(result.request.id)
+    }
+
+    /// What changed between a replay and the request it came from.
+    func comparison(for request: NetworkRequest) -> ReplayComparison? {
+        guard let originalId = request.replayOf,
+              let original = network.requests.first(where: { $0.id == originalId })
+        else { return nil }
+        return ReplayComparison(
+            original: original,
+            originalBody: originalBodyText,
+            replayed: request,
+            replayedBody: replayBodies[request.id]?.text
+        )
+    }
+
+    /// Kept so a comparison can be made against what the original actually
+    /// returned rather than against nothing.
+    @ObservationIgnored private var originalBodyText: String?
+
     func selectRequest(_ id: NetworkRequest.ID?) {
         selectedRequest = id
         requestBody = nil
@@ -694,6 +755,14 @@ final class DevToolsSession: Identifiable {
 
     /// Bodies for one request, read only when its row is opened.
     private func loadBodies(for id: NetworkRequest.ID) async {
+        // A replayed request never went through the page, so its body lives
+        // here rather than in the agent.
+        if let body = replayBodies[id] {
+            responseBody = body
+            requestBody = nil
+            return
+        }
+
         isLoadingBody = true
         let issued = generation
         defer { isLoadingBody = false }
@@ -705,6 +774,7 @@ final class DevToolsSession: Identifiable {
         let bodies = NetworkWire.decodeBodies(reply)
         requestBody = bodies.request
         responseBody = bodies.response
+        originalBodyText = bodies.response?.text
     }
 
     var selectedRequestDetail: NetworkRequest? {
@@ -717,6 +787,7 @@ final class DevToolsSession: Identifiable {
         selectedRequest = nil
         requestBody = nil
         responseBody = nil
+        replayBodies.removeAll()
         refreshNetworkView()
         bridge.send(.networkClear)
     }
@@ -1080,6 +1151,9 @@ final class DevToolsSession: Identifiable {
         selectedRequest = nil
         requestBody = nil
         responseBody = nil
+        replayBodies.removeAll()
+        replayDraft = nil
+        replayDraftOrigin = nil
         refreshNetworkView()
         releaseEvictedObjects()
 
