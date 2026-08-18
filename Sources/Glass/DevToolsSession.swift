@@ -60,8 +60,18 @@ final class DevToolsSession: Identifiable {
     private(set) var tree = DOMTree()
     private(set) var selectedNode: DOMNodeID?
     private(set) var selectedBox: BoxModel?
-    /// What the picker is currently over, which is highlighted but not selected.
+    /// What the picker is currently over, which is highlighted but not
+    /// selected. Kept apart from the selection's box on purpose: sharing one
+    /// field meant cancelling the picker left the highlight sitting on
+    /// whatever the pointer happened to be over rather than on the element
+    /// that is actually selected.
     private(set) var hoveredNode: DOMNodeID?
+    private(set) var hoveredBox: BoxModel?
+
+    /// What the overlay draws. While picking, the pointer wins.
+    var highlightBox: BoxModel? {
+        isPicking ? (hoveredBox ?? selectedBox) : selectedBox
+    }
     private(set) var isPicking = false
 
     /// Cached for the same reason the console's list is: SwiftUI reads it
@@ -142,6 +152,9 @@ final class DevToolsSession: Identifiable {
 
     func select(_ id: DOMNodeID) {
         selectedNode = id
+        // The page reports this one's geometry from now on, so the highlight
+        // follows scrolling without anything here asking on a timer.
+        bridge.send(.domWatch, ["nodeId": id])
         Task { @MainActor in await refreshBox() }
     }
 
@@ -150,6 +163,7 @@ final class DevToolsSession: Identifiable {
         let missing = tree.reveal(id)
         refreshTree()
         selectedNode = id
+        bridge.send(.domWatch, ["nodeId": id])
         Task { @MainActor in
             for parent in missing { await fetchChildren(of: parent) }
             await refreshBox()
@@ -165,12 +179,6 @@ final class DevToolsSession: Identifiable {
         selectedBox = DOMWire.decodeBox(reply["box"])
     }
 
-    /// Re-reads the selected element's geometry — after a scroll, a resize, or
-    /// a mutation that might have moved it.
-    func refreshHighlight() {
-        Task { @MainActor in await refreshBox() }
-    }
-
     func scrollPageTo(_ id: DOMNodeID) {
         bridge.send(.domScrollIntoView, ["nodeId": id])
         Task { @MainActor in
@@ -183,8 +191,20 @@ final class DevToolsSession: Identifiable {
 
     func setPicking(_ enabled: Bool) {
         isPicking = enabled
-        if !enabled { hoveredNode = nil }
+        if !enabled {
+            hoveredNode = nil
+            hoveredBox = nil
+        }
         bridge.send(.overlaySetInspectMode, ["enabled": enabled])
+
+        // Bring the page forward when arming.
+        //
+        // Without this the browser window is behind the panel, and the first
+        // click on an inactive window is spent activating it rather than
+        // picking — which reads as the picker ignoring you. Hovering already
+        // worked, because tracking areas fire on geometry regardless of which
+        // window is key; only the click was being eaten.
+        if enabled { tab?.webView.window?.makeKeyAndOrderFront(nil) }
     }
 
     // MARK: - Console
@@ -461,6 +481,7 @@ final class DevToolsSession: Identifiable {
         selectedNode = nil
         selectedBox = nil
         hoveredNode = nil
+        hoveredBox = nil
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
         refreshConsoleView()
         releaseEvictedObjects()
@@ -516,17 +537,25 @@ final class DevToolsSession: Identifiable {
 
         case .inspectHover(let nodeId, let box):
             hoveredNode = nodeId
+            hoveredBox = box
+
+        case .boxChanged(let nodeId, let box):
+            // Ignored unless it's still the element we asked about — a reply
+            // for a node selected two clicks ago would drag the highlight back.
+            guard nodeId == selectedNode else { return }
             selectedBox = box
 
         case .inspectPicked(let nodeId):
             isPicking = false
             hoveredNode = nil
+            hoveredBox = nil
             revealAndSelect(nodeId)
             pane = .elements
 
         case .inspectCancelled:
             isPicking = false
             hoveredNode = nil
+            hoveredBox = nil
 
         case .consoleCleared:
             // The page called console.clear() itself. Honouring it matches

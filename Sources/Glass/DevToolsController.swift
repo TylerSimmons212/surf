@@ -22,7 +22,6 @@ final class DevToolsController: NSObject, NSWindowDelegate {
     @ObservationIgnored private var panels: [Tab.ID: NSPanel] = [:]
     @ObservationIgnored private var sessions: [Tab.ID: DevToolsSession] = [:]
     @ObservationIgnored private var highlights: [Tab.ID: InspectorHighlightView] = [:]
-    @ObservationIgnored private var highlightTasks: [Tab.ID: Task<Void, Never>] = [:]
 
     private override init() { super.init() }
 
@@ -103,7 +102,6 @@ final class DevToolsController: NSObject, NSWindowDelegate {
     }
 
     private func close(tabID: Tab.ID) {
-        highlightTasks.removeValue(forKey: tabID)?.cancel()
         highlights.removeValue(forKey: tabID)?.removeFromSuperview()
         sessions.removeValue(forKey: tabID)?.stop()
         inspectedTabIDs.remove(tabID)
@@ -183,20 +181,27 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         highlight.autoresizingMask = [.width, .height]
         tab.webView.addSubview(highlight)
         highlights[tab.id] = highlight
+        trackHighlight(for: tab, session: session)
+    }
 
-        highlightTasks[tab.id]?.cancel()
-        highlightTasks[tab.id] = Task { @MainActor [weak self, weak session, weak tab] in
-            while !Task.isCancelled {
-                guard let self, let session, let tab, self.highlights[tab.id] != nil else { return }
-                self.applyHighlight(for: tab, session: session)
-                // Polled rather than event-driven, deliberately for now: the
-                // element moves when the page scrolls, when it resizes, and
-                // when the page animates, and re-measuring on a slow beat is
-                // both simpler and cheaper than three separate observers.
-                try? await Task.sleep(for: .milliseconds(250))
-                if session.selectedNode != nil, session.pane == .elements {
-                    session.refreshHighlight()
-                }
+    /// Redraws the moment anything it depends on changes.
+    ///
+    /// This used to run on a 250ms timer, which made the picker feel broken:
+    /// the outline trailed the pointer by up to a quarter second, so it looked
+    /// like it was highlighting whatever you had just moved off. Geometry now
+    /// arrives from the page's own scroll and resize events, and this only has
+    /// to draw what it is handed.
+    private func trackHighlight(for tab: Tab, session: DevToolsSession) {
+        withObservationTracking {
+            applyHighlight(for: tab, session: session)
+        } onChange: { [weak self, weak tab, weak session] in
+            // Deferred a tick: the callback runs *before* the new value is
+            // stored, so re-reading immediately would see the old one.
+            Task { @MainActor in
+                guard let self, let tab, let session,
+                      self.highlights[tab.id] != nil
+                else { return }
+                self.trackHighlight(for: tab, session: session)
             }
         }
     }
@@ -210,7 +215,7 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         let isVisible = !PopOutController.shared.isPoppedOut(tab)
             && (session.pane == .elements || session.isPicking)
 
-        guard isVisible, let box = session.selectedBox else {
+        guard isVisible, let box = session.highlightBox else {
             highlight.clear()
             return
         }

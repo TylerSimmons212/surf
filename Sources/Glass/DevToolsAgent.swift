@@ -244,6 +244,12 @@ enum DevToolsAgent {
 
       let picking = false;
       let lastHovered = -1;
+      // The last event, measured once per frame rather than once per move.
+      // `getComputedStyle` on every mousemove is a lot of work to throw away
+      // milliseconds later, and the pointer generates far more events than the
+      // screen can show.
+      let pendingHover = null;
+      let hoverScheduled = false;
 
       function pickTarget(event) {
         // `composedPath` sees through open shadow roots, so picking works on
@@ -255,14 +261,29 @@ enum DevToolsAgent {
         return event.target;
       }
 
-      function onPickMove(event) {
-        if (!picking) { return; }
-        const target = pickTarget(event);
-        if (!target || target.nodeType !== 1) { return; }
+      function flushHover() {
+        hoverScheduled = false;
+        const target = pendingHover;
+        pendingHover = null;
+        if (!picking || !target || !target.isConnected) { return; }
         const id = idFor(target);
         if (id === lastHovered) { return; }
         lastHovered = id;
         post({ event: 'dom.inspectHover', nodeId: id, box: boxModel(target) });
+      }
+
+      function onPickMove(event) {
+        if (!picking) { return; }
+        const target = pickTarget(event);
+        if (!target || target.nodeType !== 1) { return; }
+        pendingHover = target;
+        if (hoverScheduled) { return; }
+        hoverScheduled = true;
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(flushHover);
+        } else {
+          setTimeout(flushHover, 16);
+        }
       }
 
       function onPickClick(event) {
@@ -302,6 +323,44 @@ enum DevToolsAgent {
         }
       }
 
+      // ---- Following a selected element -----------------------------------
+
+      // Scrolling, resizing and the page's own animations all move an element
+      // without changing it. Reporting from here — where the events actually
+      // are — is both instant and cheaper than the panel asking on a timer and
+      // being wrong in between.
+      let watched = -1;
+      let watchScheduled = false;
+      let lastBoxKey = '';
+
+      function reportWatchedBox() {
+        watchScheduled = false;
+        if (watched < 0) { return; }
+        const node = nodeFor(watched);
+        if (!node) { return; }
+        const box = boxModel(node);
+        if (!box) { return; }
+        // Only when it actually moved: a scroll that doesn't affect this
+        // element should cost nothing.
+        const key = box.x + ',' + box.y + ',' + box.width + ',' + box.height;
+        if (key === lastBoxKey) { return; }
+        lastBoxKey = key;
+        post({ event: 'dom.boxChanged', nodeId: watched, box: box });
+      }
+
+      function scheduleWatch() {
+        if (watchScheduled || watched < 0) { return; }
+        watchScheduled = true;
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(reportWatchedBox);
+        } else {
+          setTimeout(reportWatchedBox, 16);
+        }
+      }
+
+      window.addEventListener('scroll', scheduleWatch, { capture: true, passive: true });
+      window.addEventListener('resize', scheduleWatch, { passive: true });
+
       // ---- Commands -------------------------------------------------------
 
       const agent = {
@@ -338,6 +397,13 @@ enum DevToolsAgent {
                 return JSON.stringify({
                   children: childrenOf(node).map(function (child) { return serialize(child, 0); })
                 });
+              }
+
+              case 'DOM.watch': {
+                watched = (params && params.nodeId) !== undefined ? params.nodeId : -1;
+                lastBoxKey = '';
+                reportWatchedBox();
+                return JSON.stringify({ ok: true });
               }
 
               case 'DOM.getBoxModel': {

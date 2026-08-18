@@ -17,6 +17,13 @@ struct ElementsPane: View {
             if !session.breadcrumb.isEmpty { Divider() }
             breadcrumb
         }
+        // Escape reaches the page's own handler only while the page has focus.
+        // If the panel is what's focused, this is the one that fires.
+        .onKeyPress(.escape) {
+            guard session.isPicking else { return .ignored }
+            session.setPicking(false)
+            return .handled
+        }
     }
 
     // MARK: - Toolbar

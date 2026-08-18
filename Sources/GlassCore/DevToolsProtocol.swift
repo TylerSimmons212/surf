@@ -22,6 +22,7 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domRequestChildNodes = "DOM.requestChildNodes"
     case domGetBoxModel = "DOM.getBoxModel"
     case domScrollIntoView = "DOM.scrollIntoView"
+    case domWatch = "DOM.watch"
     case domAck = "DOM.ack"
 
     case cssGetMatchedRules = "CSS.getMatchedRulesForNode"
@@ -51,7 +52,7 @@ extension DevToolsMethod {
         switch self {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
-             .domScrollIntoView, .domAck,
+             .domScrollIntoView, .domWatch, .domAck,
              .cssGetMatchedRules, .cssGetComputed,
              .overlaySetInspectMode:
             .agent
@@ -83,6 +84,9 @@ public enum DevToolsEvent: Sendable, Equatable {
     case inspectHover(nodeId: DOMNodeID, box: BoxModel?)
     case inspectPicked(nodeId: DOMNodeID)
     case inspectCancelled
+    /// A watched element moved — scrolled, resized, or animated. Reported from
+    /// the page rather than polled, so the highlight tracks without lag.
+    case boxChanged(nodeId: DOMNodeID, box: BoxModel?)
 }
 
 public enum DevToolsProtocol {
@@ -125,6 +129,9 @@ public enum DevToolsProtocol {
             return .inspectPicked(nodeId: nodeId)
         case "dom.inspectCancelled":
             return .inspectCancelled
+        case "dom.boxChanged":
+            guard let nodeId = dict["nodeId"] as? Int else { return nil }
+            return .boxChanged(nodeId: nodeId, box: DOMWire.decodeBox(dict["box"]))
         default:
             return nil
         }
