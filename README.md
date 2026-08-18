@@ -60,6 +60,43 @@ That much is free and exact: a site with a dark mode of its own renders in the
 design its authors drew, not an approximation of it. A site without one is
 currently left alone — Glass doesn't yet invent a dark theme for it.
 
+"Restyle sites that don't offer it" builds one for the rest. It is off by
+default, because restyling a page is a far larger intervention than telling it
+which scheme you want.
+
+The transform works in OKLCH, where lightness is the theme axis and hue and
+chroma are the identity axis. Surfaces and text invert along lightness. A
+site's brand colours keep their hue *exactly* and move only as far as
+legibility demands — a red button becomes a lighter red, never an orange one —
+so a page comes back recognisably itself rather than recognisably processed.
+Scale decides the rest: the same blue is preserved on a badge and calmed on a
+masthead, because a saturated wall is fatiguing at that size and inverting its
+hue would be worse.
+
+Every colour meant to be read is then re-seated against the thing immediately
+behind it, not against the page — a label on a brand-coloured button is judged
+on that button. Both WCAG's ratio and a perceptual floor have to be satisfied;
+the second exists because the ratio flatters equiluminant chromatic pairs, and
+a theme that preserves brand colours produces those on purpose.
+
+Gradients move as one body rather than stop by stop: transforming each stop
+alone reverses the direction the light falls from, which reads as broken rather
+than as dark. Images are never recoloured.
+
+A holding colour is painted at document start, before the page's own styles
+arrive, so there is no flash of the light version on the way to the dark one —
+the flash is a frame the page was always going to draw, and the only cure is to
+have an answer in place before it draws one. It works by removing colour rather
+than imposing it: backgrounds go transparent so everything shows the one dark
+ground beneath, which leaves overlays overlaying instead of turning them into
+opaque blocks.
+
+Which sites need this is measured rather than asked. A page is examined after
+it paints, and one already showing the requested scheme is left alone. Declared
+signals — a meta tag, a `prefers-color-scheme` rule — say what a site claims;
+reading what it painted says what it did, and cross-origin stylesheets can't
+hide it.
+
 ### Privacy
 
 Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
@@ -186,6 +223,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/SettingsView.swift` — the Settings window
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
 - `Sources/Glass/Appearance.swift` — maps the setting onto `NSAppearance`
+- `Sources/Glass/ThemeBridge.swift` — measures a page's colours and writes the
+  plan back onto it
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
@@ -219,5 +258,6 @@ State lives in `~/Library/Application Support/Glass/session.json`.
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
 - Tab reordering by drag, and ⌘⇧T to reopen a closed tab
 - Bookmarks
-- Synthesised dark themes for the sites that don't ship one, keeping each
-  site's own brand colours rather than inverting them
+- Backing dark logos on transparency, which vanish on a dark surface
+- Reaching into shadow DOM and same-origin iframes, which the element walk
+  doesn't cross

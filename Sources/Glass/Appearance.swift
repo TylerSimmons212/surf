@@ -45,6 +45,14 @@ enum AppearanceController {
 
     static func apply(_ mode: AppearanceMode = current) {
         NSApp.appearance = mode.nsAppearance
+        notifyChanged()
+    }
+
+    /// Tells every open tab that the scheme, or the decision to synthesise one,
+    /// has moved. Posted rather than pushed because tabs come and go and the
+    /// session shouldn't have to know which of them care.
+    static func notifyChanged() {
+        NotificationCenter.default.post(name: .glassAppearanceChanged, object: nil)
     }
 
     /// What the *Mac* is set to, regardless of what we've overridden it with.
@@ -63,5 +71,25 @@ enum AppearanceController {
     /// The scheme pages are actually being painted in right now.
     static var resolved: ColorSchemeTarget {
         current.resolved(systemIsDark: systemIsDark)
+    }
+}
+
+extension Notification.Name {
+    static let glassAppearanceChanged = Notification.Name("glassAppearanceChanged")
+}
+
+/// Whether Glass should restyle sites that don't offer the requested scheme.
+enum ThemePreferences {
+    static var isEnabled: Bool {
+        UserDefaults.standard.bool(forKey: PreferenceKeys.synthesizeTheme)
+    }
+}
+
+extension SRGB {
+    /// The AppKit side of the line. `GlassCore` deals in numbers so its
+    /// decisions stay testable; this is the one place they become a colour the
+    /// window server understands.
+    var nsColor: NSColor {
+        NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
     }
 }

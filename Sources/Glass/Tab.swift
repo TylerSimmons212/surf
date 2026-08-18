@@ -95,7 +95,15 @@ final class Tab: NSObject, Identifiable {
         webView.uiDelegate = self
         installMediaBridge()
         observeWebViewState()
+
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: .glassAppearanceChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appearanceSettingsChanged() }
+        }
     }
+
+    @ObservationIgnored private var appearanceObserver: (any NSObjectProtocol)?
 
     /// The label shown on the tab chip, degrading gracefully before a title lands.
     var displayTitle: String {
@@ -168,6 +176,19 @@ final class Tab: NSObject, Identifiable {
         // this handler; adding a duplicate name throws.
         controller.removeScriptMessageHandler(forName: MediaBridge.handlerName)
         controller.add(WeakScriptMessageProxy(target: self), name: MediaBridge.handlerName)
+        installUserScripts()
+    }
+
+    /// Rebuilds the injected scripts.
+    ///
+    /// All of them together, because `WKUserContentController` has no way to
+    /// remove one script — only all of them. The preflight has to be rebuilt
+    /// whenever the scheme changes, so the media bridge gets re-added alongside
+    /// it rather than being quietly dropped.
+    private func installUserScripts() {
+        let controller = webView.configuration.userContentController
+        controller.removeAllUserScripts()
+
         controller.addUserScript(
             WKUserScript(
                 source: MediaBridge.script,
@@ -176,6 +197,46 @@ final class Tab: NSObject, Identifiable {
                 in: .page
             )
         )
+
+        guard ThemePreferences.isEnabled else {
+            webView.underPageBackgroundColor = nil
+            return
+        }
+
+        let target = AppearanceController.resolved
+        controller.addUserScript(
+            WKUserScript(
+                source: ThemeBridge.preflightScript(for: target),
+                injectionTime: .atDocumentStart,
+                // Main frame only: an iframe is a document we don't theme, and
+                // painting a holding colour over one we then leave alone would
+                // be a flash of our own making.
+                forMainFrameOnly: true,
+                in: .defaultClient
+            )
+        )
+        // What shows between pages, before the next document exists at all.
+        webView.underPageBackgroundColor = ThemeBridge.preflightGround(for: target).nsColor
+    }
+
+    /// The scheme, or the decision to synthesise one, has changed.
+    private func appearanceSettingsChanged() {
+        installUserScripts()
+        if ThemePreferences.isEnabled {
+            scheduleThemeSynthesis()
+        } else {
+            revertTheme()
+        }
+    }
+
+    /// Puts the page back exactly as its authors drew it.
+    private func revertTheme() {
+        themeTask?.cancel()
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.revertScript, arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+        }
     }
 
     /// Prevents or restores page scrolling while the lens panel is showing.
@@ -233,6 +294,11 @@ final class Tab: NSObject, Identifiable {
     /// long after it's gone from the sidebar.
     func teardown() {
         sampleTask?.cancel()
+        themeTask?.cancel()
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+        }
+        appearanceObserver = nil
         observations.forEach { $0.invalidate() }
         observations.removeAll()
 
@@ -316,6 +382,87 @@ final class Tab: NSObject, Identifiable {
             blue: rgb[2] / 255,
             alpha: 1
         )
+    }
+
+    // MARK: - Theme synthesis
+
+    @ObservationIgnored private var themeTask: Task<Void, Never>?
+
+    /// Restyles a page that doesn't offer the scheme the user asked for.
+    ///
+    /// Debounced, and cancelled on every navigation: a page mid-load reports
+    /// half a palette, and theming that would mean re-theming a moment later.
+    private func scheduleThemeSynthesis() {
+        themeTask?.cancel()
+        guard ThemePreferences.isEnabled else { return }
+        themeTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            await synthesizeTheme()
+        }
+    }
+
+    private func synthesizeTheme() async {
+        let target = AppearanceController.resolved
+
+        guard let json = try? await webView.callAsyncJavaScript(
+            ThemeBridge.collectScript, arguments: [:], in: nil, contentWorld: .defaultClient
+        ) as? String,
+            let survey = try? JSONDecoder().decode(
+                ThemeBridge.Survey.self, from: Data(json.utf8))
+        else { return }
+
+        // Measured, not asked. A site that already paints in the scheme the
+        // user wants needs nothing from us, and restyling it would swap its
+        // designers' work for an approximation of it. Declared signals —
+        // a meta tag, a media query — say what a site claims; this says what it
+        // did, and cross-origin stylesheets can't hide it.
+        if !survey.themed, let ground = CSSColor(css: survey.ground) {
+            let lightness = OKLCH(ground.rgb).l
+            let alreadyRight = target == .dark ? lightness < 0.35 : lightness > 0.7
+            if alreadyRight {
+                _ = try? await webView.callAsyncJavaScript(
+                    ThemeBridge.dismissPreflightScript,
+                    arguments: [:], in: nil, contentWorld: .defaultClient
+                )
+                return
+            }
+        }
+
+        var plan = ThemePlan.build(
+            from: ThemeBridge.observations(from: survey), target: target
+        )
+
+        // Gradients are values rather than single colours, so they take their
+        // own path — stops move together, or the light comes from the wrong
+        // side afterwards.
+        for reading in survey.colors where reading.property == "gradient" {
+            let transformed = CSSGradient.transformValue(reading.value, to: target)
+            guard transformed != reading.value else { continue }
+            plan.replacements["gradient|" + reading.value] = transformed
+        }
+
+        guard !plan.isEmpty else {
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.dismissPreflightScript,
+                arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+            return
+        }
+
+        _ = try? await webView.callAsyncJavaScript(
+            ThemeBridge.applyScript,
+            arguments: [
+                "plan": plan.replacements,
+                "ground": plan.pageBackground.css,
+                "scheme": target.rawValue,
+            ],
+            in: nil, contentWorld: .defaultClient
+        )
+
+        // Public API, and the fix for the white band that rubber-band scrolling
+        // would otherwise reveal under a darkened page.
+        webView.underPageBackgroundColor = plan.pageBackground.rgb.nsColor
     }
 
     // MARK: - Favicon
@@ -414,6 +561,9 @@ final class Tab: NSObject, Identifiable {
                     // Clear first so a stale colour doesn't linger on the new page.
                     self.sampledTopColor = nil
                     self.scheduleTopColorSampling()
+                    // A route change replaces the content without a load, so
+                    // the new markup needs sweeping too.
+                    self.scheduleThemeSynthesis()
                     // The old page's media is gone the moment we navigate.
                     self.media = nil
                     // A popup tab starts in .home but is loaded by WebKit
@@ -552,6 +702,7 @@ extension Tab: WKNavigationDelegate {
         session?.scheduleSave()
         Task { await refreshFavicon() }
         scheduleTopColorSampling()
+        scheduleThemeSynthesis()
         if let url = webView.url {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }

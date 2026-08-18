@@ -14,6 +14,7 @@ struct SettingsView: View {
 
     @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
     @AppStorage(PreferenceKeys.appearanceMode) private var appearanceMode = AppearanceMode.default
+    @AppStorage(PreferenceKeys.synthesizeTheme) private var synthesizeTheme = false
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
@@ -46,10 +47,28 @@ struct SettingsView: View {
                 """)
                 explain("""
                 This tells sites which scheme you want. Sites that have a dark \
-                mode of their own will use it — the site's own design, not an \
-                approximation of it. Sites that don't have one are left as they \
-                are: Glass doesn't invent one for them yet.
+                mode of their own will use it — the site's own design, rather \
+                than an approximation of it.
                 """)
+
+                Toggle("Restyle sites that don't offer it", isOn: $synthesizeTheme)
+                    .onChange(of: synthesizeTheme) { _, _ in
+                        // Takes effect on the pages already open, not just the
+                        // next one — a setting that needs a reload to be
+                        // believed reads as broken.
+                        AppearanceController.notifyChanged()
+                    }
+                explain("""
+                For the sites that have no dark mode, Glass builds one. Each \
+                site's own colours are kept: backgrounds and text are moved \
+                between light and dark, while brand colours hold their hue and \
+                shift only as far as legibility needs. Images are never recoloured.
+                """)
+                explain("""
+                This is a real change to how a page looks, and some sites will \
+                come out wrong. Turn it off and they go back to exactly as \
+                their authors drew them.
+                """, isCaveat: true)
             } header: {
                 Text("Appearance")
             }
