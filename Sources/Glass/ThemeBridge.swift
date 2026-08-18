@@ -482,6 +482,40 @@ enum ThemeBridge {
     return true;
     """
 
+    /// Stops the page reporting mutations, for a tab that has gone off screen.
+    ///
+    /// Disconnecting rather than ignoring the reports on our side: the point is
+    /// to stop the page doing the work and stop the messages crossing the
+    /// bridge, not to throw the answers away after paying for them. Any pending
+    /// coalescing timer goes too, so a report can't land after the disconnect.
+    static let pauseObserverScript = """
+    window.__glassObserver?.disconnect();
+    if (window.__glassPending) {
+      clearTimeout(window.__glassPending);
+      window.__glassPending = null;
+    }
+    // Remembered so resuming knows whether it was ever watching to begin with.
+    window.__glassObserverPaused = true;
+    return true;
+    """
+
+    /// Puts the observer back when the tab is looked at again.
+    ///
+    /// A no-op if the page was never themed — there is nothing to watch for
+    /// yet, and `applyScript` will start the observer itself when it runs.
+    static let resumeObserverScript = """
+    if (window.__glassObserver && window.__glassObserverPaused) {
+      window.__glassObserverPaused = false;
+      window.__glassObserver.observe(document.documentElement, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style']
+      });
+    }
+    return true;
+    """
+
     // MARK: - Preflight
 
     /// The ground colour painted before a page has said anything about itself.

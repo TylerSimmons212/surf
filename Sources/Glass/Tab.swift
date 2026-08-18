@@ -245,7 +245,11 @@ final class Tab: NSObject, Identifiable {
     private func appearanceSettingsChanged() {
         installUserScripts()
         if ThemePreferences.isEnabled {
-            scheduleThemeSynthesis()
+            // Every tab hears this at once. Sweeping them all together is what
+            // made flipping the scheme stall — the tab you're looking at had to
+            // queue behind every one you weren't. The rest catch up as you
+            // reach them.
+            scheduleThemeSynthesisIfVisible()
         } else {
             revertTheme()
         }
@@ -262,7 +266,7 @@ final class Tab: NSObject, Identifiable {
             }
             return
         }
-        scheduleThemeSynthesis()
+        scheduleThemeSynthesisIfVisible()
     }
 
     /// Puts the page back exactly as its authors drew it.
@@ -396,9 +400,85 @@ final class Tab: NSObject, Identifiable {
     })();
     """
 
+    // MARK: - Visibility
+
+    /// Whether this is the tab currently on screen.
+    ///
+    /// Not observable: nothing renders from it, and publishing it would invite
+    /// a re-render on every switch for a fact the views already know from the
+    /// selection. `BrowserSession.adoptSelection` is its only writer.
+    @ObservationIgnored private(set) var isVisible = false
+
+    /// Work deferred because the tab wasn't being looked at when it came up.
+    @ObservationIgnored private var needsThemeSweep = false
+    @ObservationIgnored private var needsTopColorSample = false
+
+    func didBecomeVisible() {
+        guard !isVisible else { return }
+        isVisible = true
+
+        // A page that changed while backgrounded has been left alone until
+        // now; catch it up before it's seen rather than after.
+        resumeThemeObserver()
+        if needsTopColorSample {
+            needsTopColorSample = false
+            scheduleTopColorSampling()
+        }
+        if needsThemeSweep {
+            needsThemeSweep = false
+            scheduleThemeSynthesis()
+        }
+    }
+
+    func didResignVisible() {
+        guard isVisible else { return }
+        isVisible = false
+
+        // Nothing off screen is worth restyling or measuring, and both are
+        // expensive enough to be worth stopping mid-flight.
+        sampleTask?.cancel()
+        themeTask?.cancel()
+        pauseThemeObserver()
+    }
+
+    /// Stops the page reporting its own mutations while nobody is watching.
+    ///
+    /// The observer is subtree-wide and attribute-level, so a page that
+    /// animates class names — a carousel, a sticky header, an SPA router —
+    /// posts to native every 250ms forever, and each post costs a full theme
+    /// sweep. In a background tab that is pure waste.
+    private func pauseThemeObserver() {
+        guard ThemePreferences.isEnabled else { return }
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.pauseObserverScript, arguments: [:],
+                in: nil, contentWorld: .defaultClient
+            )
+        }
+    }
+
+    private func resumeThemeObserver() {
+        guard ThemePreferences.isEnabled else { return }
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.resumeObserverScript, arguments: [:],
+                in: nil, contentWorld: .defaultClient
+            )
+        }
+    }
+
+    // MARK: - Top colour sampling (continued)
+
     /// SPAs repaint well after `didFinish`, so sampling is retried on a short
     /// ladder rather than once.
     private func scheduleTopColorSampling() {
+        // Only the selected tab's colour is ever read — `topColor` tints the
+        // title strip above the page you're looking at. Sampling a background
+        // tab runs a DOM walk to produce a value nothing will ask for.
+        guard isVisible else {
+            needsTopColorSample = true
+            return
+        }
         sampleTask?.cancel()
         sampleTask = Task { @MainActor in
             for delay in [0, 400, 1200] {
@@ -456,6 +536,27 @@ final class Tab: NSObject, Identifiable {
     ///
     /// Debounced, and cancelled on every navigation: a page mid-load reports
     /// half a palette, and theming that would mean re-theming a moment later.
+    /// A re-sweep prompted by the page changing under us, rather than by a
+    /// navigation.
+    ///
+    /// These are the ones worth deferring while a tab is off screen. A sweep is
+    /// two walks of up to 4000 elements, each calling `getComputedStyle` and
+    /// `getBoundingClientRect` — a forced style and layout flush per element —
+    /// and a page that animates class names re-arms it every few hundred
+    /// milliseconds for as long as it's open. Paid for a tab nobody is looking
+    /// at, that is the most expensive thing a background tab can do.
+    ///
+    /// The *first* sweep of a page is deliberately not deferred: it's one per
+    /// navigation, and skipping it would leave the tab showing the preflight
+    /// holding colour until you arrived, turning a switch into a wait.
+    private func scheduleThemeSynthesisIfVisible() {
+        guard isVisible else {
+            needsThemeSweep = true
+            return
+        }
+        scheduleThemeSynthesis()
+    }
+
     private func scheduleThemeSynthesis() {
         themeTask?.cancel()
         guard ThemePreferences.isEnabled else { return }
@@ -743,8 +844,10 @@ final class Tab: NSObject, Identifiable {
                     self.sampledTopColor = nil
                     self.scheduleTopColorSampling()
                     // A route change replaces the content without a load, so
-                    // the new markup needs sweeping too.
-                    self.scheduleThemeSynthesis()
+                    // the new markup needs sweeping too — when it's on screen.
+                    // A single-page app left in a background tab can route on a
+                    // timer, and each route would otherwise buy a full sweep.
+                    self.scheduleThemeSynthesisIfVisible()
                     // The old page's media is gone the moment we navigate.
                     self.media = nil
                     // A popup tab starts in .home but is loaded by WebKit

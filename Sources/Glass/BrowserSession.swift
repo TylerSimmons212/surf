@@ -61,12 +61,16 @@ final class BrowserSession {
             self.selectedTabID = selected.id
             tabs.forEach { $0.session = self }
             isRestoring = false
+            // The one selection that doesn't go through `adoptSelection`, so
+            // the starting tab is told it's on screen by hand.
+            selected.didBecomeVisible()
         } else {
             let first = Tab()
             self.tabs = [first]
             self.selectedTab = first
             self.selectedTabID = first.id
             first.session = self
+            first.didBecomeVisible()
         }
 
         // Quitting doesn't give the debounced save time to fire, so flush.
@@ -178,9 +182,17 @@ final class BrowserSession {
 
     /// Restores the invariant after a mutation, and is the only writer of the
     /// selection pair — the two must never disagree.
+    ///
+    /// Also the one place tabs are told whether they're being looked at. A tab
+    /// that isn't on screen has no business restyling itself or sampling its
+    /// own colours, and telling it here means the rule can't be forgotten at a
+    /// call site.
     private func adoptSelection(_ tab: Tab) {
+        let outgoing = selectedTab
         selectedTab = tab
         selectedTabID = tab.id
+        if outgoing !== tab { outgoing.didResignVisible() }
+        tab.didBecomeVisible()
     }
 
     // MARK: - Lifecycle
