@@ -248,6 +248,32 @@ public struct CSSColor: Sendable, Equatable {
         let base = String(format: "#%02x%02x%02x", red, green, blue)
         return isOpaque ? base : base + String(format: "%02x", alpha)
     }
+
+    /// `rgb(0, 170, 255)`, or `rgba(...)` when it carries alpha.
+    public var functional: String {
+        guard !isOpaque else { return "rgb(\(red), \(green), \(blue))" }
+        let fraction = (Double(alpha) / 255 * 100).rounded() / 100
+        return "rgba(\(red), \(green), \(blue), \(Self.trim(fraction)))"
+    }
+
+    /// The colour written the way the value it's replacing was written.
+    ///
+    /// Picking a colour shouldn't quietly rewrite `rgb(0, 170, 255)` as
+    /// `#00aaff`. The diff you take back to your editor is meant to read as a
+    /// change of colour, not a change of notation on top of it.
+    ///
+    /// Modern syntax is the exception: there is no honest way to keep
+    /// `oklch()` or `color-mix()` once a value has been picked out of an sRGB
+    /// panel, so those become hex rather than pretending to still be computed.
+    public func css(matching original: String) -> String {
+        original.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("rgb")
+            ? functional
+            : hex
+    }
+
+    private static func trim(_ value: Double) -> String {
+        value == value.rounded() ? String(Int(value)) : String(value)
+    }
 }
 
 /// One run of a declaration's value, so a colour can be drawn beside the text

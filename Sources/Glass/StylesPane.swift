@@ -589,8 +589,13 @@ private struct DeclarationRow: View {
                         .strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 0.5)
                 }
         } else {
-            ColoredValue(declaration: declaration, color: valueColor, isStruck: isStruck)
-                .onTapGesture { beginEditing() }
+            ColoredValue(
+                declaration: declaration,
+                color: valueColor,
+                isStruck: isStruck,
+                onPick: colorPicker,
+                onEditText: beginEditing
+            )
         }
     }
 
@@ -638,6 +643,31 @@ private struct DeclarationRow: View {
             Spacer(minLength: 4)
         }
         .padding(.leading, 14)
+    }
+
+    /// Absent for a rule that isn't applying or a declaration switched off —
+    /// picking a colour you can't see the effect of is a trap, not a feature.
+    private var colorPicker: ((Int, CSSColor) -> Void)? {
+        guard rule.isActive, !isOff else { return nil }
+        return { segment, current in pickColor(segment, current) }
+    }
+
+    /// Opens the system picker on one colour in this value, and follows it.
+    ///
+    /// Written to the page as the wheel is dragged rather than on dismissal,
+    /// because the whole point of picking against a live page is seeing it —
+    /// and a colour you have to commit before you can look at is just a text
+    /// field with extra steps.
+    private func pickColor(_ segment: Int, _ current: CSSColor) {
+        ColorPanelController.shared.present(startingAt: current) { picked in
+            Task { @MainActor in
+                await session.setColor(
+                    picked, segment: segment, of: declaration, in: rule, live: true
+                )
+            }
+        } onFinish: {
+            session.commitLiveEdit()
+        }
     }
 
     private func beginEditing() {

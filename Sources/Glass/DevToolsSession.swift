@@ -438,6 +438,41 @@ final class DevToolsSession: Identifiable {
         await apply(edited, replacing: declaration, in: rule)
     }
 
+    /// Replaces one colour inside a value, leaving the rest of it alone.
+    ///
+    /// A swatch belongs to a token, not to the declaration: picking on the red
+    /// in `2px solid red` must not turn the whole value into a colour, and
+    /// picking on the second stop of a gradient must leave the first standing.
+    func setColor(
+        _ color: CSSColor,
+        segment index: Int,
+        of declaration: CSSDeclaration,
+        in rule: MatchedRule,
+        live: Bool = false
+    ) async {
+        let segments = declaration.valueSegments
+        guard segments.indices.contains(index) else { return }
+
+        // The notation to write back in, pinned to what the page shipped.
+        //
+        // CSSOM reserializes every colour it is handed: write `#ff0000` and the
+        // rule reads back `rgb(255, 0, 0)`. Matching the *current* text would
+        // therefore turn hex into rgb() after a single pick and never back —
+        // so the first thing seen at this spot is what the notation stays.
+        let key = "\(rule.id).\(declaration.index).\(index)"
+        let notation = pickedNotation[key] ?? segments[index].text
+        pickedNotation[key] = notation
+
+        var edited = declaration
+        edited.value = segments
+            .map { $0.index == index ? color.css(matching: notation) : $0.text }
+            .joined()
+        await apply(edited, replacing: declaration, in: rule, live: live)
+    }
+
+    /// How each picked colour was written before anyone touched it.
+    @ObservationIgnored private var pickedNotation: [String: String] = [:]
+
     func setImportant(_ important: Bool, of declaration: CSSDeclaration, in rule: MatchedRule) async {
         var edited = declaration
         edited.isImportant = important
@@ -464,7 +499,12 @@ final class DevToolsSession: Identifiable {
         _ edited: CSSDeclaration,
         replacing original: CSSDeclaration,
         in rule: MatchedRule,
-        enabled: Bool = true
+        enabled: Bool = true,
+        /// A step in a gesture rather than the end of one. The page is written
+        /// to, but the pane is not rebuilt — dragging in the colour wheel would
+        /// otherwise tear down and rebuild the row being dragged from, sixty
+        /// times a second.
+        live: Bool = false
     ) async {
         let ref = DeclarationRef(ruleId: rule.id, index: original.index)
         rejectedEdit = nil
@@ -514,6 +554,11 @@ final class DevToolsSession: Identifiable {
             ))
             editedRuleIds.insert(rule.id)
         }
+        if !live { loadStyles() }
+    }
+
+    /// Settles up after a live gesture: one read, once.
+    func commitLiveEdit() {
         loadStyles()
     }
 
@@ -532,6 +577,7 @@ final class DevToolsSession: Identifiable {
 
         disabled = disabled.filter { $0.key.ruleId != ruleId }
         disabledRules.removeValue(forKey: ruleId)
+        pickedNotation = pickedNotation.filter { !$0.key.hasPrefix("\(ruleId).") }
         changeset.clear(ruleId: ruleId)
         editedRuleIds.remove(ruleId)
         loadStyles()
@@ -545,6 +591,7 @@ final class DevToolsSession: Identifiable {
         }
         disabled.removeAll()
         disabledRules.removeAll()
+        pickedNotation.removeAll()
         changeset.clear()
         editedRuleIds.removeAll()
         loadStyles()
@@ -879,6 +926,7 @@ final class DevToolsSession: Identifiable {
         // that no longer exists.
         disabled.removeAll()
         disabledRules.removeAll()
+        pickedNotation.removeAll()
         changeset.clear()
         editedRuleIds.removeAll()
         rejectedEdit = nil
