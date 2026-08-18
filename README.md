@@ -203,6 +203,14 @@ literals are refused outright: WebKit's engine is a subset of the one they were
 written for, and a rule it rejects fails the entire list's compile, taking every
 other rule with it.
 
+`$subdocument` is where the asymmetry is easiest to see. It means a nested
+document — an iframe — and WebKit has no type for one; its only near-neighbour
+also covers the page the user typed the address of. So a *block* rule carrying
+it is dropped, at the cost of an ad iframe getting through, while an *exception*
+carrying it is kept and widened, because a broader exception un-blocks more than
+the list asked for where a dropped one would leave a request refused that the
+list said to allow.
+
 The shield in the sidebar carries the count for the page and opens the list
 behind it, in two parts. **Blocked** is what was refused, grouped by site with
 what each was doing and which rule caught it. **Also contacted** is every other

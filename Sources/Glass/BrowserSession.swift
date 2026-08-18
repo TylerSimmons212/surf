@@ -208,7 +208,15 @@ final class BrowserSession {
     /// The decision itself is `TabHibernation`, which is pure and tested; this
     /// only gathers the facts and carries out the verdict. What counts as
     /// untouchable is decided here because only the session knows it: the tab
-    /// on screen, anything playing, and anything popped out.
+    /// on screen, anything playing, anything popped out, and anything being
+    /// inspected.
+    ///
+    /// Dev tools has to be on that list precisely because its panels are
+    /// per-tab: inspecting one page while looking at another is the normal way
+    /// to use them, so an inspected tab is in use even when it isn't visible.
+    /// Reclaiming it takes the web view out from under the panel, and every
+    /// injected agent with it — the console stops, the tree freezes, and
+    /// nothing says why.
     private func reclaimIdleTabs() {
         let now = Date()
         let candidates = tabs.map { tab in
@@ -219,6 +227,7 @@ final class BrowserSession {
                 isProtected: tab.id == selectedTabID
                     || tab.media?.isPlaying == true
                     || PopOutController.shared.isPoppedOut(tab)
+                    || DevToolsController.shared.isOpen(for: tab)
             )
         }
 
@@ -265,6 +274,9 @@ final class BrowserSession {
         if PopOutController.shared.isPoppedOut(tab) {
             PopOutController.shared.restore()
         }
+
+        // Before teardown, or the panel would be left showing a dead page.
+        DevToolsController.shared.close(for: tab)
 
         rememberClosedTab(tab)
 

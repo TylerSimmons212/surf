@@ -1,4 +1,5 @@
 import AppKit
+import GlassCore
 import SwiftUI
 
 /// The vertical tab list plus the navigation controls.
@@ -18,8 +19,9 @@ struct Sidebar: View {
     let session: BrowserSession
     @Binding var isPinned: Bool
     /// Floating mode draws its own material panel; pinned sits on the window's
-    /// glass. Kept only for that styling difference — the traffic lights are
-    /// handled by the title strip above, so both use the same insets.
+    /// glass. Also shifts the top inset: with the title strip gone, the sidebar
+    /// is what has to keep clear of the traffic lights, and the floating panel
+    /// starts lower down to begin with.
     let isFloating: Bool
     /// Lets the sidebar's own transient UI keep it on screen.
     let hold: SidebarHold
@@ -32,12 +34,27 @@ struct Sidebar: View {
     /// Two 21pt controls and the gap between them.
     static let actionsWidth: CGFloat = 44
 
+    /// How far the floating panel is held off the top of the window.
+    static let floatingTopPadding: CGFloat = 4
+
+    /// Reserves the traffic lights' row inside the sidebar — and *only* inside
+    /// it, which is the whole point of removing the title strip: the page runs
+    /// full height, while the one surface the lights can actually collide with
+    /// steps out of their way.
+    ///
+    /// Measured from the window's top edge, so the floating panel subtracts the
+    /// gap it's already sitting below.
+    private var topInset: CGFloat {
+        ChromeReveal.lightsRowHeight - (isFloating ? Sidebar.floatingTopPadding : 0)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             SidebarNavigationBar(session: session, isPinned: $isPinned, hold: hold)
             tabList
             SidebarMediaSection(session: session)
         }
+        .padding(.top, topInset)
         .frame(width: Sidebar.width)
     }
 

@@ -25,6 +25,10 @@ struct GlassTextField: NSViewRepresentable {
     /// -1 for up, +1 for down: the suggestion list's keyboard.
     var onMove: (Int) -> Void = { _ in }
     var onCancel: () -> Void = {}
+    /// Tab. Returns true when it was handled — otherwise the key falls through
+    /// to AppKit and moves focus to the next view, which is what Tab normally
+    /// does and exactly wrong inside a completing prompt.
+    var onTab: () -> Bool = { false }
 
     func makeNSView(context: Context) -> NSTextField {
         let field = FirstResponderTextField(string: text)
@@ -92,6 +96,10 @@ struct GlassTextField: NSViewRepresentable {
                 parent.onMove(-1)
             case #selector(NSResponder.moveDown(_:)):
                 parent.onMove(1)
+            case #selector(NSResponder.insertTab(_:)):
+                // Only swallowed when something was completed; otherwise Tab
+                // keeps its normal meaning and moves focus on.
+                return parent.onTab()
             case #selector(NSResponder.cancelOperation(_:)):
                 parent.onCancel()
             default:

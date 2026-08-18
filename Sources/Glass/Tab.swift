@@ -146,6 +146,14 @@ final class Tab: NSObject, Identifiable {
         created.allowsMagnification = true
         created.navigationDelegate = self
         created.uiDelegate = self
+        // Advertises this web view to Safari's Develop menu. That's the only
+        // route to a JavaScript debugger — page scripts run in the WebContent
+        // process, and the inspector protocol is private — so it stays on
+        // permanently as the escape hatch our own dev tools hand off to.
+        //
+        // Set outside the `configuration == nil` block deliberately: popup and
+        // `target="_blank"` tabs skip that branch, and they need this too.
+        created.isInspectable = true
 
         liveWebView = created
 
@@ -154,7 +162,8 @@ final class Tab: NSObject, Identifiable {
         // requests through, which is the wave the ads are in.
         ContentBlocker.shared.apply(to: config)
 
-        installMediaBridge()
+        installBridgeHandlers()
+        reinstallUserScripts()
         observeWebViewState()
 
         // Zoom is per-tab and outlives a sleep, so a woken tab comes back at
@@ -250,7 +259,7 @@ final class Tab: NSObject, Identifiable {
 
     // MARK: - Media
 
-    private func installMediaBridge() {
+    private func installBridgeHandlers() {
         let controller = webView.configuration.userContentController
         // Popup tabs inherit WebKit's configuration, which may already carry
         // this handler; adding a duplicate name throws.
@@ -271,17 +280,39 @@ final class Tab: NSObject, Identifiable {
 
         controller.removeScriptMessageHandler(forName: BlockBridge.handlerName)
         controller.add(WeakScriptMessageProxy(target: self), name: BlockBridge.handlerName)
-
-        installUserScripts()
     }
 
-    /// Rebuilds the injected scripts.
+    // MARK: - User scripts
+
+    /// The dev tools bridge, alive only while a panel is open for this tab.
+    @ObservationIgnored private(set) var devToolsBridge: DevToolsBridge?
+
+    /// The main document's real response.
     ///
-    /// All of them together, because `WKUserContentController` has no way to
-    /// remove one script — only all of them. The preflight has to be rebuilt
-    /// whenever the scheme changes, so the media bridge gets re-added alongside
-    /// it rather than being quietly dropped.
-    private func installUserScripts() {
+    /// Kept whether or not dev tools is open, because otherwise opening the
+    /// panel on a page that has already loaded shows no document row at all —
+    /// the list would start at the first subresource, missing the one request
+    /// that explains the rest.
+    struct DocumentResponse: Sendable {
+        var url: String
+        var status: Int
+        var headers: [String: String]
+        var mime: String
+    }
+    @ObservationIgnored private(set) var lastDocumentResponse: DocumentResponse?
+
+    func attachDevTools(_ bridge: DevToolsBridge) { devToolsBridge = bridge }
+    func detachDevTools() { devToolsBridge = nil }
+
+    /// The single owner of this tab's user scripts.
+    ///
+    /// `WKUserContentController` can add a script but cannot remove *one* —
+    /// only `removeAllUserScripts()`. So anything that installs scripts
+    /// piecemeal will eventually delete someone else's: attaching dev tools
+    /// naively would wipe `MediaBridge.script`, and the media player and
+    /// pop-out would die on the next navigation with no error anywhere. Every
+    /// install goes through here instead, and rebuilds the whole set.
+    func reinstallUserScripts() {
         let controller = webView.configuration.userContentController
         controller.removeAllUserScripts()
 
@@ -308,8 +339,51 @@ final class Tab: NSObject, Identifiable {
             )
         }
 
+        // Always, on every tab — the whole point is that a log fired before you
+        // opened dev tools is already waiting when you do. Costs one small
+        // in-page ring buffer and zero messages until something attaches.
+        controller.addUserScript(
+            WKUserScript(
+                source: ConsoleAgent.script,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false,
+                in: .page
+            )
+        )
+
+        // Always, for the same reason as the console: the request you want to
+        // look at is nearly always the one that already failed, and a network
+        // pane that only starts recording when you open it would miss it.
+        // Zero messages cross the process boundary until a panel attaches.
+        controller.addUserScript(
+            WKUserScript(
+                source: NetworkAgent.script,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false,
+                in: .page
+            )
+        )
+
+        if devToolsBridge?.isAttached == true {
+            // Main frame only, so the node id space has exactly one authority.
+            // Multi-frame inspection needs a frame id in every message, which
+            // the protocol can absorb later without reshaping anything else.
+            controller.addUserScript(
+                WKUserScript(
+                    source: DevToolsAgent.script,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true,
+                    in: DevToolsAgent.world
+                )
+            )
+        }
+
+        // The theme's preflight, last — and deliberately not behind an early
+        // return. Returning here when theming is off would skip every dev tools
+        // script above it, which is precisely the silent, one-owner failure the
+        // whole function exists to prevent.
         guard ThemePreferences.isEnabled else {
-            webView.underPageBackgroundColor = nil
+            liveWebView?.underPageBackgroundColor = nil
             return
         }
 
@@ -326,7 +400,7 @@ final class Tab: NSObject, Identifiable {
             )
         )
         // What shows between pages, before the next document exists at all.
-        webView.underPageBackgroundColor = ThemeBridge.preflightGround(for: target).nsColor
+        liveWebView?.underPageBackgroundColor = ThemeBridge.preflightGround(for: target).nsColor
     }
 
     /// The scheme, or the decision to synthesise one, has changed.
@@ -336,7 +410,7 @@ final class Tab: NSObject, Identifiable {
         // would wake the entire session on a single flip of the scheme. It
         // picks up the new setting when it's next built.
         guard isLive else { return }
-        installUserScripts()
+        reinstallUserScripts()
         if ThemePreferences.isEnabled {
             // Every tab hears this at once. Sweeping them all together is what
             // made flipping the scheme stall — the tab you're looking at had to
@@ -381,7 +455,7 @@ final class Tab: NSObject, Identifiable {
     private func blockingRulesChanged() {
         guard isLive else { return }
         ContentBlocker.shared.apply(to: webView.configuration)
-        installUserScripts()
+        reinstallUserScripts()
     }
 
     /// The page has changed under us — content revealed on scroll, a lazily
@@ -480,6 +554,11 @@ final class Tab: NSObject, Identifiable {
         themeTask?.cancel()
         observations.forEach { $0.invalidate() }
         observations.removeAll()
+
+        // Before the view goes: the bridge holds handlers on this controller
+        // and a panel that kept talking to a released view would sit there
+        // showing a document that no longer exists.
+        devToolsBridge?.detach()
 
         guard let live = liveWebView else { return }
         liveWebView = nil
@@ -1188,10 +1267,17 @@ final class Tab: NSObject, Identifiable {
 
 extension Tab: WKNavigationDelegate {
 
-    /// The new document is in place and its first requests are about to run.
+    /// A new document is live.
+    ///
+    /// This, not the `\.url` KVO, is the authoritative signal for both the
+    /// callers below: the URL also changes on SPA route changes, where the
+    /// document survives, none of the agent's node ids have gone stale, and the
+    /// requests already counted are still this page's.
+    ///
     /// Main frame only, so a third-party iframe committing mid-page doesn't
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        DevToolsController.shared.documentDidCommit(for: self)
         if !blockLog.isEmpty { blockLog = BlockLog() }
     }
 
@@ -1247,7 +1333,25 @@ extension Tab: WKNavigationDelegate {
         _ webView: WKWebView,
         decidePolicyFor navigationResponse: WKNavigationResponse
     ) async -> WKNavigationResponsePolicy {
-        navigationResponse.canShowMIMEType ? .allow : .download
+        // The document's real status and headers, which the page itself cannot
+        // read for a cross-origin redirect and which no JS-based inspector can
+        // therefore report. Taken natively so the top row of the network list
+        // is the one thing in it that is never a guess.
+        if navigationResponse.isForMainFrame,
+           let http = navigationResponse.response as? HTTPURLResponse,
+           let url = http.url?.absoluteString {
+            var headers: [String: String] = [:]
+            for (key, value) in http.allHeaderFields {
+                headers["\(key)"] = "\(value)"
+            }
+            let response = DocumentResponse(
+                url: url, status: http.statusCode,
+                headers: headers, mime: http.mimeType ?? ""
+            )
+            lastDocumentResponse = response
+            DevToolsController.shared.session(for: self)?.recordDocument(response)
+        }
+        return navigationResponse.canShowMIMEType ? .allow : .download
     }
 
     private func report(_ error: Error) {
@@ -1284,8 +1388,17 @@ extension Tab: WKScriptMessageHandler {
                 if state.isPlaying || media != nil { media = state }
             case BlockBridge.handlerName:
                 recordRequests(BlockBridge.decode(body))
+
             case ThemeBridge.handlerName:
                 pageDidMutate()
+
+            case DevToolsAgent.eventHandlerName, ConsoleAgent.eventHandlerName,
+                 NetworkAgent.eventHandlerName:
+                // Forwarded rather than handled by the bridge directly, so a tab
+                // still registers exactly one script message handler and the
+                // retain-cycle reasoning above holds for every bridge we add.
+                devToolsBridge?.receive(name: name, body: body)
+
             default:
                 break
             }
