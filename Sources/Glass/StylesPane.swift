@@ -160,7 +160,12 @@ struct StylesPane: View {
         } else if let styles = session.styles {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    if !session.unreadableSheets.isEmpty { unreadableBanner }
+                    // Shown while anything is unread, being recovered, or has
+                    // failed — the banner reports the outcome either way.
+                    if !session.unreadableSheets.isEmpty || !session.recoveredSheets.isEmpty
+                        || !session.failedRecoveries.isEmpty {
+                        unreadableBanner
+                    }
 
                     switch mode {
                     case .rules:
@@ -195,26 +200,66 @@ struct StylesPane: View {
     /// every JS-based inspector, which shows nothing and leaves you to conclude
     /// the sheet had no rules. Saying so is the honest minimum.
     private var unreadableBanner: some View {
-        HStack(alignment: .top, spacing: 6) {
-            Image(systemName: "lock")
-                .font(.system(size: 10))
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(session.unreadableSheets.count) stylesheet\(session.unreadableSheets.count == 1 ? "" : "s") the page can't read")
-                    .font(DevToolsTheme.chrome.weight(.medium))
-                Text(session.unreadableSheets.map(shortName).joined(separator: ", "))
-                    .font(DevToolsTheme.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+        VStack(alignment: .leading, spacing: 4) {
+            if !session.recoveredSheets.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "lock.open")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(
+                            "\(session.recoveredSheets.count) cross-origin "
+                            + "stylesheet\(session.recoveredSheets.count == 1 ? "" : "s") recovered"
+                        )
+                        .font(DevToolsTheme.chrome.weight(.medium))
+                        // Worth stating: this is a capability, not a formality.
+                        // The page is forbidden to read these, so no inspector
+                        // built out of page script can show a rule from them.
+                        Text(
+                            "Fetched natively — the page itself can't read "
+                            + "\(session.recoveredSheets.count == 1 ? "it" : "them")."
+                        )
+                        .font(DevToolsTheme.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                }
             }
-            Spacer(minLength: 4)
+
+            if session.isRecovering {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Fetching cross-origin stylesheets…")
+                        .font(DevToolsTheme.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            ForEach(session.failedRecoveries.keys.sorted(), id: \.self) { href in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "lock")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(shortName(href))
+                            .font(DevToolsTheme.chrome.weight(.medium))
+                        Text("Couldn't be recovered — \(session.failedRecoveries[href] ?? "")")
+                            .font(DevToolsTheme.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 4)
+                }
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
-                .fill(Color.orange.opacity(0.10))
+                .fill(
+                    session.failedRecoveries.isEmpty
+                        ? Color.green.opacity(0.08) : Color.orange.opacity(0.10)
+                )
         }
     }
 

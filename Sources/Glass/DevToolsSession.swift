@@ -361,6 +361,7 @@ final class DevToolsSession: Identifiable {
             }
             resolveStyles()
             if isShowingComputed { await loadComputed() }
+            await recoverUnreadableSheets()
         }
     }
 
@@ -640,6 +641,59 @@ final class DevToolsSession: Identifiable {
     }
 
     var unreadableSheets: [String] { stylePayload?.unreadableSheets ?? [] }
+
+    // MARK: - Recovering cross-origin stylesheets
+
+    private(set) var recoveredSheets: Set<String> = []
+    /// By URL, with the reason — so a sheet that couldn't be fetched says why
+    /// rather than silently staying missing.
+    private(set) var failedRecoveries: [String: String] = [:]
+    private(set) var isRecovering = false
+
+    /// Attempted at most once per sheet per document. Without that guard this
+    /// loops forever: recovering triggers a re-read, and a re-read reports the
+    /// same unreadable sheets.
+    @ObservationIgnored private var recoveryAttempted: Set<String> = []
+
+    private func recoverUnreadableSheets() async {
+        guard let tab, let payload = stylePayload else { return }
+        let pending = payload.unreadableSheets.filter { !recoveryAttempted.contains($0) }
+        guard !pending.isEmpty else { return }
+
+        isRecovering = true
+        let issued = generation
+        var recoveredAny = false
+
+        for href in pending {
+            recoveryAttempted.insert(href)
+            let result = await StylesheetFetcher.fetch(href, in: tab)
+            guard issued == generation else { isRecovering = false; return }
+
+            switch result {
+            case .success(let text):
+                // Parsed in the page, because matching a selector against an
+                // element is something only the page can do.
+                let reply = try? await bridge.call(
+                    .cssAddRecoveredSheet, ["href": href, "text": text]
+                )
+                guard issued == generation else { isRecovering = false; return }
+                if reply != nil {
+                    recoveredSheets.insert(href)
+                    failedRecoveries.removeValue(forKey: href)
+                    recoveredAny = true
+                } else {
+                    failedRecoveries[href] = "couldn't be parsed"
+                }
+            case .failure(let error):
+                failedRecoveries[href] = error.errorDescription ?? "couldn't be fetched"
+            }
+        }
+
+        isRecovering = false
+        // Only when something actually landed: re-reading after a run of pure
+        // failures would just produce the same list again.
+        if recoveredAny { loadStyles() }
+    }
 
     // MARK: - Network
 
@@ -1135,6 +1189,9 @@ final class DevToolsSession: Identifiable {
         computed = [:]
         computedColors = [:]
         stylePseudo = nil
+        recoveredSheets.removeAll()
+        failedRecoveries.removeAll()
+        recoveryAttempted.removeAll()
         // Every rule handle belonged to the old document, and the page has
         // reloaded its own stylesheets — so the edits are gone whether we like
         // it or not, and pretending otherwise would offer a patch for a state

@@ -32,6 +32,9 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// preserves authored order, so it covers editing, disabling and adding.
     case cssSetRuleText = "CSS.setRuleText"
     case cssRevert = "CSS.revert"
+    /// Hands back a stylesheet the page itself is forbidden to read, refetched
+    /// natively. Parsed in the page so its selectors can be matched there.
+    case cssAddRecoveredSheet = "CSS.addRecoveredSheet"
 
     case overlaySetInspectMode = "Overlay.setInspectMode"
 
@@ -72,6 +75,7 @@ extension DevToolsMethod {
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
+             .cssAddRecoveredSheet,
              .overlaySetInspectMode:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,

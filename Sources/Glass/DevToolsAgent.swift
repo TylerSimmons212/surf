@@ -266,6 +266,19 @@ enum DevToolsAgent {
       const MAX_ANCESTORS = 10;
       const MAX_RULES = 500;
 
+      // ---- Recovered stylesheets ------------------------------------------
+
+      // A cross-origin sheet throws on `.cssRules`, so the page cannot read it
+      // and neither can any inspector built out of page script. Glass refetches
+      // it natively — `URLSession` is not bound by CORS — and hands the text
+      // back here.
+      //
+      // It returns as a *constructable* stylesheet rather than being injected:
+      // parsing it gives `.cssRules` to walk and `element.matches()` to test
+      // against, while adopting it into the document would apply every rule a
+      // second time and change the page being inspected.
+      const recoveredSheets = new Map();
+
       // ---- Editable rule handles ------------------------------------------
 
       // Rules are addressed by a minted id, never by their index in the sheet.
@@ -759,8 +772,18 @@ enum DevToolsAgent {
           } catch (e) {
             // Cross-origin. The page is forbidden to read it, and every
             // JS-based inspector therefore shows nothing — indistinguishable
-            // from the sheet having no rules for this element. Name it, so the
-            // panel can say so and Glass can refetch it natively.
+            // from the sheet having no rules for this element.
+            const recovered = sheet.href && recoveredSheets.get(sheet.href);
+            if (recovered) {
+              // Walked in place, so its rules take the document order they
+              // actually have — a recovered sheet appended at the end would
+              // cascade as though it were the last stylesheet on the page.
+              walk(recovered.cssRules, {
+                conditions: [], layer: '', label: sheetLabel(sheet),
+                parent: null, recovered: true
+              });
+              continue;
+            }
             if (sheet.href) { unreadable.push(sheet.href); }
             continue;
           }
@@ -1023,6 +1046,21 @@ enum DevToolsAgent {
               case 'CSS.getMatchedStyles': {
                 const node = nodeFor(params && params.nodeId);
                 return JSON.stringify(matchedStyles(node));
+              }
+
+              case 'CSS.addRecoveredSheet': {
+                const href = params && params.href;
+                const text = (params && params.text) || '';
+                if (!href) { return JSON.stringify({ error: 'no href' }); }
+                if (typeof CSSStyleSheet !== 'function') {
+                  return JSON.stringify({ error: 'constructable stylesheets unavailable' });
+                }
+                const sheet = new CSSStyleSheet();
+                // Synchronous, and deliberately never adopted: this parses the
+                // text so its rules can be read, and must not restyle the page.
+                sheet.replaceSync(text);
+                recoveredSheets.set(href, sheet);
+                return JSON.stringify({ ok: true, rules: sheet.cssRules.length });
               }
 
               case 'CSS.getComputedStyleForNode': {
