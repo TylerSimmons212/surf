@@ -260,3 +260,37 @@ struct AdSlotTests {
         #expect(generated.split(separator: ",").count == AdSlot.slotNames.count)
     }
 }
+
+@Suite("Windows a page opens")
+struct WindowRefusalTests {
+
+    private let classifier = BlockClassifier(
+        listedDomains: ["doubleclick.net"],
+        userBlockedDomains: ["tracker.example"]
+    )
+
+    @Test("A window aimed at a listed domain is refused")
+    func refusesAdWindows() {
+        // The pop-under: the click is real, so WebKit is right to allow it, and
+        // the destination is the only thing that gives it away.
+        #expect(classifier.refusesWindow(to: "doubleclick.net", from: "news.example"))
+        #expect(classifier.refusesWindow(to: "ads.doubleclick.net", from: "news.example"))
+        #expect(classifier.refusesWindow(to: "tracker.example", from: "news.example"))
+    }
+
+    @Test("A window a site opens onto itself is never refused")
+    func allowsFirstParty() {
+        // Even for a site that is itself on a list — that is the site working,
+        // and a reader who clicked a link and got nothing would rightly call it
+        // a broken browser.
+        #expect(!classifier.refusesWindow(to: "www.doubleclick.net", from: "doubleclick.net"))
+    }
+
+    @Test("An ordinary link to somewhere else still opens")
+    func allowsOrdinaryWindows() {
+        // The cost of being wrong here is a link the reader clicked and never
+        // got, so nothing is refused on a guess.
+        #expect(!classifier.refusesWindow(to: "example.org", from: "news.example"))
+        #expect(!classifier.refusesWindow(to: "docs.example.net", from: "news.example"))
+    }
+}

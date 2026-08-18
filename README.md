@@ -153,9 +153,13 @@ blockers — the same mechanism Safari extensions use — which match in the net
 process, so a blocked request is never made rather than made and discarded, and
 no script on the page can be first past the post.
 
-The lists are EasyList and EasyPrivacy — the first is about advertising, the
-second about tracking, and a page can be free of ads while still reporting
-everything you do on it to a dozen people. Both are published in Adblock Plus
+The lists are EasyList, EasyPrivacy and the Adblock Warning Removal List — the
+first is about advertising, the second about tracking, since a page can be free
+of ads while still reporting everything you do on it to a dozen people, and the
+third is about the sites that notice and put up a wall about it. That last one
+removes the wall rather than hiding from the thing that raised it, and Glass
+could only take it on once it converted lists itself: nobody publishes a WebKit
+build of it. Both are published in Adblock Plus
 filter syntax and converted here, which is the part Glass used to borrow.
 EasyList's publisher does build a WebKit version of that one list, and taking it
 worked until the second list made it untenable: EasyPrivacy is published in
@@ -165,8 +169,11 @@ could see. Converting also fixed what borrowing had cost — their rules are
 host-exact, so `||adnxs.com^` came out matching `adnxs.com` and not the
 `ib.adnxs.com` the ads actually come from.
 
-Between them the two lists convert to about 132,000 rules naming 88,000 domains,
-with 1.3% of EasyList and 0.2% of EasyPrivacy left behind as unconvertible.
+Between them the three lists convert to about 135,000 rules naming 89,000
+domains, with 1.5% of EasyList, 0.3% of EasyPrivacy and 0.2% of the warning list
+left behind as unconvertible. Each carries its own floor for what counts as a
+real download, because they are not the same size and one figure for all three
+would either wave a truncated EasyList through or refuse a healthy small list.
 Copies are bundled so a fresh install blocks on its first page, and they refresh
 weekly into Application Support from then on.
 
@@ -218,6 +225,23 @@ third party the page reached, each with a button that blocks it everywhere —
 which is the half that makes the panel worth opening twice. A site that breaks
 under blocking is fixed by the switch in the panel's header, which pauses that
 site alone and leaves it on everywhere else.
+
+Windows a page opens are judged the same way. Glass already refused any window
+opened *without* a click — `javaScriptCanOpenWindowsAutomatically` is off, so a
+script that opens one unprompted gets nowhere. What that can't cover is the
+pop-under, which is opened *by* the click: the gesture is real, WebKit is right
+to allow it, and the destination is the only thing that gives it away. So the
+destination is what gets asked about, before the tab exists rather than after it
+appears — a window that opens and vanishes is still something that happened to
+the reader. Nothing is refused on a heuristic, because the cost of being wrong
+is a link someone clicked and never got.
+
+A window aimed somewhere unlisted whose *contents* are then blocked is a
+different case: WebKit hands the window over and fails the load afterwards,
+leaving a blank tab with no address and no title. That tab is an artefact of
+blocking rather than anything the reader asked for, so it closes itself — but
+only ever a tab a page opened, and only while nothing has committed in it. A tab
+you opened stays open however empty it is, because you opened it.
 
 Blocking the request is only half of a blocked ad. A page reserves the space
 before it knows what will fill it — a banner slot is a container given a height

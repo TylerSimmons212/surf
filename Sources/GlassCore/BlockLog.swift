@@ -13,6 +13,9 @@ public enum ResourceKind: String, Sendable, Equatable, CaseIterable {
     case beacon
     case media
     case font
+    /// A window the page asked to open. Its own kind because it is the one a
+    /// reader notices happening to them.
+    case popup
     case other
 
     /// Maps what the page reports — Resource Timing's `initiatorType`, or the
@@ -25,6 +28,7 @@ public enum ResourceKind: String, Sendable, Equatable, CaseIterable {
         case "css", "link", "stylesheet": self = .stylesheet
         case "fetch", "xmlhttprequest", "xhr": self = .fetch
         case "beacon", "ping": self = .beacon
+        case "popup", "window": self = .popup
         case "video", "audio", "source", "track": self = .media
         case "font": self = .font
         default: self = .other
@@ -41,6 +45,7 @@ public enum ResourceKind: String, Sendable, Equatable, CaseIterable {
         case .beacon: "beacons"
         case .media: "media"
         case .font: "fonts"
+        case .popup: "pop-ups"
         case .other: "resources"
         }
     }
@@ -115,6 +120,19 @@ public struct BlockClassifier: Sendable {
             return .blocked(.filterList(domain: domain))
         }
         return .allowed
+    }
+
+    /// Whether a window a page asked to open should be refused.
+    ///
+    /// Separate from `verdict` only to name what it is being asked. A window is
+    /// the one refusal a reader *feels* — they clicked something and a tab
+    /// didn't appear — so the standard is the same as for any other request and
+    /// deliberately no looser: it points at a domain the lists name, or it
+    /// opens. A site opening its own window is never refused, whatever else is
+    /// true, because that is the site working.
+    public func refusesWindow(to host: String, from pageHost: String) -> Bool {
+        if case .blocked = verdict(forHost: host, pageHost: pageHost) { return true }
+        return false
     }
 }
 

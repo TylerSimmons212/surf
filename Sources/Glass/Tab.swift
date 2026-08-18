@@ -41,6 +41,15 @@ final class Tab: NSObject, Identifiable {
     /// and a running total across a session is a number nobody can act on.
     private(set) var blockLog = BlockLog()
 
+    /// Set on a tab WebKit asked for on a page's behalf, rather than one the
+    /// user opened. Only these are closed again when nothing arrives in them.
+    @ObservationIgnored var wasOpenedByPage = false
+
+    /// Whether any document has ever committed here.
+    @ObservationIgnored private var hasCommittedDocument = false
+
+    @ObservationIgnored private var emptyPopupWatchdog: Task<Void, Never>?
+
     /// The colour at the top of the page, used to tint the title strip so the
     /// window chrome belongs to the site rather than sitting apart from it.
     ///
@@ -1278,6 +1287,9 @@ extension Tab: WKNavigationDelegate {
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DevToolsController.shared.documentDidCommit(for: self)
+        // Something arrived, so this is a window with a page in it.
+        hasCommittedDocument = true
+        emptyPopupWatchdog?.cancel()
         if !blockLog.isEmpty { blockLog = BlockLog() }
     }
 
@@ -1306,6 +1318,13 @@ extension Tab: WKNavigationDelegate {
         withError error: Error
     ) {
         report(error)
+        // A window the page opened whose first load never arrived. Closed here
+        // rather than on the watchdog's schedule, because we already know.
+        if wasOpenedByPage, !hasCommittedDocument, webView.url == nil {
+            emptyPopupWatchdog?.cancel()
+            debugLog("closed a window whose only load failed")
+            session?.close(self)
+        }
     }
 
     /// A navigation that turns out to be a download — an `<a download>` link,
@@ -1420,11 +1439,83 @@ extension Tab: WKUIDelegate {
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
         guard let session else { return nil }
+
+        // Refused before the tab exists rather than closed after it appears.
+        // A window that opens and vanishes is still something that happened to
+        // the reader, and the point is that nothing happens at all.
+        if let url = navigationAction.request.url, isAdWindow(url) {
+            debugLog("refused a window to \(url.host ?? url.absoluteString)")
+            return nil
+        }
+
         // Must be built with WebKit's configuration, not a fresh one, or the
         // new view won't be linked to the opener.
         let tab = session.addTab(configuration: configuration)
+        tab.wasOpenedByPage = true
+        tab.watchForAnEmptyWindow()
         // No explicit load here — WebKit drives the returned view itself.
         return tab.webView
+    }
+
+    /// Whether a window the page asked to open is one the reader wanted.
+    ///
+    /// The popup blocker Glass already had only covers windows opened *without*
+    /// a click — `javaScriptCanOpenWindowsAutomatically` is off, so a script
+    /// that opens one unprompted gets nowhere. What it can't cover is the
+    /// pop-under, which is opened *by* the click: the gesture is real, WebKit is
+    /// right to allow it, and the destination is the only thing that gives it
+    /// away. So that is what gets asked about.
+    ///
+    /// No heuristic, and deliberately so: this either points at a domain the
+    /// lists name or it doesn't, and a window refused on a guess is a link the
+    /// reader clicked and never got.
+    private func isAdWindow(_ url: URL) -> Bool {
+        guard ContentBlocker.isEnabled, let host = url.host else { return false }
+
+        let pageHost = liveWebView?.url?.host ?? host
+        guard !ContentBlocker.shared.isPaused(on: pageHost) else { return false }
+
+        let classifier = ContentBlocker.shared.classifier
+        guard classifier.refusesWindow(to: host, from: pageHost) else { return false }
+        let verdict = classifier.verdict(forHost: host, pageHost: pageHost)
+
+        // Recorded like any other refusal, so the shield explains a window that
+        // didn't open rather than leaving the reader wondering if the click
+        // registered.
+        var log = blockLog
+        if log.record(
+            RequestRecord(url: url.absoluteString, kind: .popup, didLoad: false),
+            verdict: verdict,
+            host: host
+        ) {
+            blockLog = log
+        }
+        return true
+    }
+
+    /// Closes a window that opened with nothing in it.
+    ///
+    /// The destination check above catches a pop-under aimed at a domain the
+    /// lists name. What it can't catch is one aimed somewhere unlisted whose
+    /// *contents* are then blocked — WebKit hands over the window and fails the
+    /// load afterwards, leaving a blank tab with no address and no title. That
+    /// tab is an artefact of blocking rather than anything the reader asked
+    /// for, so it goes.
+    ///
+    /// Only ever a tab the page opened, and only while nothing has committed in
+    /// it: a tab the user opened stays open however empty it is, because they
+    /// opened it.
+    func watchForAnEmptyWindow() {
+        emptyPopupWatchdog?.cancel()
+        emptyPopupWatchdog = Task { @MainActor [weak self] in
+            // Long enough for a slow redirect chain to arrive, short enough that
+            // a blank tab isn't left sitting there.
+            try? await Task.sleep(for: .seconds(4))
+            guard let self, !Task.isCancelled else { return }
+            guard wasOpenedByPage, !hasCommittedDocument, liveWebView?.url == nil else { return }
+            debugLog("closed a window that never loaded anything")
+            session?.close(self)
+        }
     }
 
     func webViewDidClose(_ webView: WKWebView) {

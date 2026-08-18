@@ -114,7 +114,7 @@ final class ContentBlocker {
         let outcome = await Task.detached(priority: .utility) { () -> (Data, Set<String>, Int, Int)? in
             guard let text = String(data: published, encoding: .utf8) else { return nil }
             let result = FilterConverter.convert(text)
-            guard result.converted >= FilterList.minimumRuleCount,
+            guard result.converted >= source.minimumRuleCount,
                   let json = ContentRuleJSON.list(result.rules)
             else { return nil }
             return (Data(json.utf8), result.blockedDomains, result.converted, result.skipped)

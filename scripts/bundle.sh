@@ -62,16 +62,27 @@ fi
 # from them into Glass or into a page. Their publisher issues no checksums, so
 # what stands in for one is the same check the runtime update makes: each list
 # has to convert to tens of thousands of usable rules.
-for LIST in easylist easyprivacy; do
+# Each entry is "name|url|minimum rules". The minimum is per list because they
+# are not the same size: one floor for all three would either wave a truncated
+# EasyList through or refuse a healthy small list outright.
+for ENTRY in \
+    "easylist|https://easylist.to/easylist/easylist.txt|40000" \
+    "easyprivacy|https://easylist.to/easylist/easyprivacy.txt|30000" \
+    "antiadblock|https://easylist-downloads.adblockplus.org/antiadblockfilters.txt|1000" \
+    ; do
+    LIST="${ENTRY%%|*}"
+    REST="${ENTRY#*|}"
+    LIST_URL="${REST%%|*}"
+    LIST_MIN="${REST##*|}"
     LIST_CACHE="$ROOT/.build/vendor/$LIST.txt"
 
     if [ ! -f "$LIST_CACHE" ]; then
         mkdir -p "$(dirname "$LIST_CACHE")"
         echo "Fetching $LIST…"
-        if curl -fsSL --retry 2 -o "$LIST_CACHE.tmp" "https://easylist.to/easylist/$LIST.txt"; then
+        if curl -fsSL --retry 2 -o "$LIST_CACHE.tmp" "$LIST_URL"; then
             # A filter list is mostly rules. An error page is not.
             RULES=$(grep -c '^[^!#[:space:]]' "$LIST_CACHE.tmp" || true)
-            if [ "${RULES:-0}" -ge 5000 ]; then
+            if [ "${RULES:-0}" -ge "$LIST_MIN" ]; then
                 mv "$LIST_CACHE.tmp" "$LIST_CACHE"
             else
                 rm -f "$LIST_CACHE.tmp"
