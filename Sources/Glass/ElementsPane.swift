@@ -87,6 +87,13 @@ struct ElementsPane: View {
 
     // MARK: - Tree
 
+    /// The id of the row currently standing for the selection, if it is on
+    /// screen at all.
+    private var scrollTarget: String? {
+        guard let selected = session.selectedNode else { return nil }
+        return session.visibleRows.first { $0.nodeId == selected }?.id
+    }
+
     private var tree: some View {
         ScrollViewReader { proxy in
             // Vertical only. A horizontal scroll view proposes an unbounded
@@ -113,10 +120,20 @@ struct ElementsPane: View {
                     )
                 }
             }
-            .onChange(of: session.selectedNode) { _, value in
-                guard let value else { return }
+            // Keyed on the row that actually exists, not on a guess at its
+            // id. A row's identity carries its kind, so an expanded node's row
+            // is `<id>.open` and a collapsed one's is `<id>.whole` — scrolling
+            // to a hard-coded `.whole` silently did nothing for every node
+            // that happened to be open.
+            //
+            // Watching the resolved target rather than the selection also
+            // waits for the row to exist: revealing a picked node fetches its
+            // ancestors asynchronously, so at the moment the selection changes
+            // there is often nothing to scroll to yet.
+            .onChange(of: scrollTarget) { _, target in
+                guard let target else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
-                    proxy.scrollTo("\(value).whole", anchor: .center)
+                    proxy.scrollTo(target, anchor: .center)
                 }
             }
         }

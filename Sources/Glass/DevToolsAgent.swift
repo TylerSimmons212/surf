@@ -406,6 +406,31 @@ enum DevToolsAgent {
                 return JSON.stringify({ ok: true });
               }
 
+              case 'DOM.pathToNode': {
+                // Where a node lives, root first, excluding the node itself.
+                //
+                // Picking hands back an id minted on the spot for whatever was
+                // under the pointer, and the panel has very likely never
+                // fetched that subtree — so it cannot work out the ancestry on
+                // its own. Only the page knows.
+                const target = nodeFor(params && params.nodeId);
+                if (!target) { return JSON.stringify({ path: [] }); }
+                const path = [];
+                let cursor = target.parentNode || (target.getRootNode && target.getRootNode().host);
+                let depth = 0;
+                while (cursor && depth < 500) {
+                  if (cursor.nodeType === 9) { break; }
+                  path.push(idFor(cursor));
+                  cursor = cursor.parentNode
+                    || (cursor.getRootNode && cursor.getRootNode() !== cursor
+                        ? cursor.getRootNode().host
+                        : null);
+                  depth++;
+                }
+                path.reverse();
+                return JSON.stringify({ path: path });
+              }
+
               case 'DOM.getBoxModel': {
                 const node = nodeFor(params && params.nodeId);
                 return JSON.stringify({ box: boxModel(node) });

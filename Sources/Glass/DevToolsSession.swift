@@ -160,14 +160,42 @@ final class DevToolsSession: Identifiable {
 
     /// Brings a node into view in both the tree and the page.
     func revealAndSelect(_ id: DOMNodeID) {
+        Task { @MainActor in await revealAndSelectNow(id) }
+    }
+
+    private func revealAndSelectNow(_ id: DOMNodeID) async {
+        let issued = generation
+
+        // A picked node is very often one the tree has never fetched — the id
+        // was minted on the spot for whatever was under the pointer. With no
+        // node and therefore no ancestry, revealing it did nothing at all and
+        // the tree simply never moved. So ask the page where it lives.
+        if tree[id] == nil {
+            guard let reply = try? await bridge.call(.domPathToNode, ["nodeId": id]),
+                  issued == generation
+            else { return }
+
+            // Walked root-first: fetching a level yields the next ancestor,
+            // because the page's ids are stable, so the chain materialises as
+            // we descend.
+            for ancestor in reply["path"] as? [Int] ?? [] {
+                guard tree[ancestor] != nil else { break }
+                if tree[ancestor]?.childIds == nil { await fetchChildren(of: ancestor) }
+                guard issued == generation else { return }
+                tree.expand(ancestor)
+            }
+        }
+
         let missing = tree.reveal(id)
+        for parent in missing {
+            await fetchChildren(of: parent)
+            guard issued == generation else { return }
+        }
         refreshTree()
+
         selectedNode = id
         bridge.send(.domWatch, ["nodeId": id])
-        Task { @MainActor in
-            for parent in missing { await fetchChildren(of: parent) }
-            await refreshBox()
-        }
+        await refreshBox()
     }
 
     private func refreshBox() async {

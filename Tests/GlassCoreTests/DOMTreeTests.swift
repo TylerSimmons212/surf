@@ -270,3 +270,42 @@ struct DOMTreeTests {
         _ = tree.selectorPath(to: 2)
     }
 }
+
+@Suite("DOM row identity")
+struct DOMRowIdentityTests {
+
+    /// The bug this pins: the pane scrolled to a hard-coded `<id>.whole`,
+    /// which silently does nothing for any node that happens to be expanded —
+    /// its row is `<id>.open`. Selecting from the picker then appeared to do
+    /// nothing at all. Anything looking for "the row for this node" has to
+    /// find it, not guess its id.
+    @Test("An expanded node's row is not the same row as a collapsed one")
+    func rowKindFollowsExpansion() {
+        var tree = DOMTree()
+        tree.setRoot(DOMNode(id: 1, nodeName: "body", childCount: 1))
+        tree.setChildren([DOMNode(id: 2, nodeName: "div", childCount: 1)], of: 1)
+        tree.setChildren([DOMNode(id: 3, nodeName: "p", childCount: 0)], of: 2)
+
+        tree.collapse(2)
+        let collapsed = tree.visibleRows().first { $0.nodeId == 2 }
+        #expect(collapsed?.kind == .whole)
+        #expect(collapsed?.id == "2.whole")
+
+        tree.expand(2)
+        let expanded = tree.visibleRows().first { $0.nodeId == 2 }
+        #expect(expanded?.kind == .open)
+        #expect(expanded?.id == "2.open")
+    }
+
+    /// Whatever the state, exactly one row can stand for the selection.
+    @Test("Every node on screen has a findable first row", arguments: [true, false])
+    func selectionAlwaysHasARow(_ isExpanded: Bool) {
+        var tree = DOMTree()
+        tree.setRoot(DOMNode(id: 1, nodeName: "body", childCount: 1))
+        tree.setChildren([DOMNode(id: 2, nodeName: "div", childCount: 1)], of: 1)
+        tree.setChildren([DOMNode(id: 3, nodeName: "p", childCount: 0)], of: 2)
+        isExpanded ? tree.expand(2) : tree.collapse(2)
+
+        #expect(tree.visibleRows().first { $0.nodeId == 2 } != nil)
+    }
+}
