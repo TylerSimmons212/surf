@@ -268,3 +268,46 @@ struct FilterConverterTests {
         #expect(FilterConverter.convert(list) == FilterConverter.convert(list))
     }
 }
+
+@Suite("Surrogates")
+struct SurrogateTests {
+
+    @Test("The ad SDK a video player waits for is matched")
+    func matchesIMA() {
+        #expect(Surrogate.matching("https://imasdk.googleapis.com/js/sdkloader/ima3.js")
+                == .googleIMA)
+        #expect(Surrogate.matching("http://imasdk.googleapis.com/js/sdkloader/ima3_debug.js")
+                == .googleIMA)
+    }
+
+    @Test("A host is not enough on its own")
+    func matchesHostAndFile() {
+        // imasdk.googleapis.com serves more than the SDK, and standing in for
+        // something we haven't written a stand-in for is worse than blocking it.
+        #expect(Surrogate.matching("https://imasdk.googleapis.com/js/other.js") == nil)
+        #expect(Surrogate.matching("https://example.com/ima3.js") == nil)
+        #expect(Surrogate.matching("https://doubleclick.net/ad.js") == nil)
+    }
+
+    @Test("The page's table is generated from these cases")
+    func tableIsGenerated() {
+        // Two lists that have to agree are two lists that eventually don't, so
+        // the page tests the patterns declared here rather than its own copy.
+        let table = Surrogate.javaScriptTable
+        #expect(table.hasPrefix("["))
+        for surrogate in Surrogate.allCases {
+            #expect(table.contains(surrogate.jsPattern))
+        }
+    }
+
+    @Test("Every stub reports no ads rather than nothing at all")
+    func stubsReportEmpty() {
+        // The distinction the whole feature rests on: a component that is
+        // absent leaves a player waiting forever, where one that says it has
+        // nothing sends it down a path it already handles.
+        #expect(Surrogate.googleIMA.script.contains("VAST_EMPTY_RESPONSE"))
+        #expect(Surrogate.googleIMA.script.contains("adError"))
+        // Asynchronously, or a handler attached after the call never sees it.
+        #expect(Surrogate.googleIMA.script.contains("setTimeout"))
+    }
+}

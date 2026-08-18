@@ -236,12 +236,37 @@ appears — a window that opens and vanishes is still something that happened to
 the reader. Nothing is refused on a heuristic, because the cost of being wrong
 is a link someone clicked and never got.
 
-A window aimed somewhere unlisted whose *contents* are then blocked is a
-different case: WebKit hands the window over and fails the load afterwards,
-leaving a blank tab with no address and no title. That tab is an artefact of
-blocking rather than anything the reader asked for, so it closes itself — but
-only ever a tab a page opened, and only while nothing has committed in it. A tab
-you opened stays open however empty it is, because you opened it.
+A window aimed somewhere unlisted fails in two other ways. The first never gets
+off the ground: WebKit hands the window over, the load fails, and the tab has no
+address at all. The second is the one that gets seen — the landing page commits,
+so there is an address and a document, and then everything it exists to fetch is
+refused, leaving a blank tab with no title, no text, and a blocked count
+climbing on the shield.
+
+Both close themselves. The emptiness is not incidental in the second case; it is
+what a page whose entire contents were blocked looks like, and it is a better
+signal than any guess about how the window was opened. All three conditions have
+to hold together — no title, nothing readable in the body, and several refused
+requests — and only ever on a tab a page opened. A tab you opened stays open
+however empty it is, because you opened it.
+
+A blocked script is invisible to a page that never checks, and a video player is
+not that page. It loads Google's ad SDK, waits for `google.ima` to appear, and
+hands the viewer to it. Refuse the script and the global never arrives, so the
+player waits for a callback that cannot come — and the viewer, who pressed play,
+watches nothing happen. The site is then free to call that an ad blocker's
+fault, and usually does.
+
+So a script Glass has a stand-in for is answered rather than silenced. The stub
+is installed, nothing is fetched, and the script element reports the load the
+player is waiting on. What the stub then says is that there are no ads, which is
+a state every player already handles — it is what an unfilled ad slot looks like
+to them, and they play the video. This is not a way of hiding that blocking
+happened: it is the difference between a component that is *absent* and one that
+says it has *nothing*, and only the second is something the player was written
+to survive. Anything a player reaches for that the stub doesn't define answers as
+a harmless no-op, because a stand-in that breaks the page it was meant to rescue
+is worse than none.
 
 Blocking the request is only half of a blocked ad. A page reserves the space
 before it knows what will fill it — a banner slot is a container given a height
@@ -459,6 +484,8 @@ makes it unit-testable — the UI targets can't be.
   current, applies both to every tab
 - `Sources/GlassCore/AdSlots.swift` — what names an ad container, and what has
   to be true before its space is reclaimed
+- `Sources/GlassCore/Surrogates.swift` — stand-ins for the scripts blocking
+  removes, so a player is told there are no ads rather than left waiting
 - `Sources/Glass/BlockBridge.swift` — the page-side account of what was
   requested, and the two passes that close the hole a blocked ad leaves
 - `Sources/Glass/BlockPanel.swift` — the shield and the list behind it

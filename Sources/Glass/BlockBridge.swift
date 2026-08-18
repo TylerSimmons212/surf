@@ -134,6 +134,83 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
+      // Standing in for what was blocked.
+      //
+      // A player loads Google's ad SDK, waits for the global to appear, and
+      // hands the viewer to it. Refuse the script and the global never arrives,
+      // so the player waits for a callback that cannot come and the viewer, who
+      // pressed play, watches nothing happen.
+      //
+      // So a script we have a stand-in for is answered rather than silenced:
+      // the stub is installed, nothing is fetched, and the element reports the
+      // load the player is waiting on. What the stub then says is that there
+      // are no ads — a state every player already handles, because it is what
+      // an unfilled ad slot looks like to them.
+
+      const SURROGATES = \(Surrogate.javaScriptTable);
+      const installed = new Set();
+
+      function surrogateFor(url) {
+        for (let i = 0; i < SURROGATES.length; i++) {
+          if (SURROGATES[i].pattern.test(url)) { return SURROGATES[i]; }
+        }
+        return null;
+      }
+
+      function installSurrogate(surrogate) {
+        if (installed.has(surrogate)) { return; }
+        installed.add(surrogate);
+        try { surrogate.install(); } catch (error) { /* never break the page */ }
+      }
+
+      // Intercepting the property rather than the network, because the request
+      // is already refused by the time anything here could see it — and it is
+      // the element's `load` event, not the response, that the player is
+      // actually waiting for.
+      const nativeSrc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+      if (nativeSrc && nativeSrc.set) {
+        Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+          configurable: true,
+          enumerable: nativeSrc.enumerable,
+          get: function () { return nativeSrc.get.call(this); },
+          set: function (value) {
+            const surrogate = surrogateFor(String(value));
+            if (!surrogate) { return nativeSrc.set.call(this, value); }
+            installSurrogate(surrogate);
+            // Asynchronously, so a handler attached on the next line still sees
+            // it — the same reason the stub answers asynchronously itself.
+            const element = this;
+            setTimeout(function () {
+              try { element.dispatchEvent(new Event('load')); } catch (error) {}
+            }, 0);
+          }
+        });
+      }
+
+      // `setAttribute('src', …)` is the same act by another name, and players
+      // use both.
+      const nativeSetAttribute = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function (name, value) {
+        if (this instanceof HTMLScriptElement && String(name).toLowerCase() === 'src') {
+          this.src = value;
+          return;
+        }
+        return nativeSetAttribute.apply(this, arguments);
+      };
+
+      // A script written into the markup is fetched by the parser before any of
+      // the above can see it. Its `load` will never fire, but a player that
+      // polls for the global — most do — still finds one.
+      function sweepMarkupScripts() {
+        let scripts;
+        try { scripts = document.querySelectorAll('script[src]'); } catch (error) { return; }
+        for (let i = 0; i < scripts.length; i++) {
+          const surrogate = surrogateFor(scripts[i].getAttribute('src') || '');
+          if (surrogate) { installSurrogate(surrogate); }
+        }
+      }
+
+      // ------------------------------------------------------------------
       // The hole the ad leaves behind.
       //
       // Refusing the request doesn't reclaim the space: a slot is a container
@@ -256,7 +333,10 @@ enum BlockBridge {
         sweepTimer = setTimeout(() => { sweepTimer = null; sweepSlots(); }, 400);
       }
 
-      document.addEventListener('DOMContentLoaded', scheduleSweep, true);
+      document.addEventListener('DOMContentLoaded', function () {
+        sweepMarkupScripts();
+        scheduleSweep();
+      }, true);
       window.addEventListener('load', scheduleSweep, true);
       try {
         new MutationObserver(scheduleSweep)
