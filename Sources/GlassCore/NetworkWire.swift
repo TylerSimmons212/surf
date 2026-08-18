@@ -41,8 +41,33 @@ public enum NetworkWire {
             initiator: dict["initiator"] as? String ?? "",
             requestHeaders: dict["requestHeaders"] as? [String: String] ?? [:],
             responseHeaders: dict["responseHeaders"] as? [String: String] ?? [:],
-            isDetailed: dict["detailed"] as? Bool ?? false
+            isDetailed: dict["detailed"] as? Bool ?? false,
+            hasRequestBody: dict["hasRequestBody"] as? Bool ?? false,
+            hasResponseBody: dict["hasResponseBody"] as? Bool ?? false
         )
+    }
+
+    /// One request's bodies, fetched on demand.
+    public static func decodeBodies(
+        _ body: [String: Any]
+    ) -> (request: NetworkBody?, response: NetworkBody?) {
+        func read(_ prefix: String) -> NetworkBody? {
+            let omission = (body["\(prefix)Omission"] as? String).flatMap(BodyOmission.init)
+            guard let text = body[prefix] as? String else {
+                // No text and no reason means the request simply had no body —
+                // a GET with nothing to send is not an omission.
+                guard let omission else { return nil }
+                return NetworkBody(omission: omission)
+            }
+            return NetworkBody(
+                text: text,
+                byteCount: body["\(prefix)Bytes"] as? Int ?? text.utf8.count,
+                isTruncated: body["\(prefix)Truncated"] as? Bool ?? false,
+                contentType: body["\(prefix)Type"] as? String ?? "",
+                omission: omission
+            )
+        }
+        return (read("requestBody"), read("responseBody"))
     }
 
     /// Whether a record came from Resource Timing, and so must be folded into a

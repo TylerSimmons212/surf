@@ -21,6 +21,14 @@ struct RequestDetail: View {
                     if let request {
                         summary(request)
                         if request.isDetailed {
+                            bodySection(
+                                "Response body", session.responseBody,
+                                expected: request.hasResponseBody
+                            )
+                            bodySection(
+                                "Request body", session.requestBody,
+                                expected: request.hasRequestBody
+                            )
                             headerSection("Response headers", request.responseHeaders)
                             headerSection("Request headers", request.requestHeaders)
                         } else {
@@ -114,6 +122,74 @@ struct RequestDetail: View {
         .background {
             RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
                 .fill(DevToolsTheme.inputFill)
+        }
+    }
+
+    /// A body, or a plain statement of why there isn't one.
+    ///
+    /// Never a blank pane: "not captured because dev tools wasn't open" and
+    /// "the response was genuinely empty" look identical as emptiness, and
+    /// conflating them is how a network pane stops being believed.
+    @ViewBuilder
+    private func bodySection(_ title: String, _ body: NetworkBody?, expected: Bool) -> some View {
+        if let body {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(title)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    if let omission = body.omission {
+                        Text(omission.explanation)
+                            .font(DevToolsTheme.caption)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text(body.summary)
+                            .font(DevToolsTheme.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    if !body.isEmpty {
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(body.text, forType: .string)
+                        } label: {
+                            Image(systemName: "doc.on.doc").font(.system(size: 9))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy \(title.lowercased())")
+                    }
+                }
+
+                if !body.isEmpty {
+                    // Pretty-printed for JSON only, and by re-indenting rather
+                    // than re-serialising, so the server's key order survives.
+                    Text(body.pretty)
+                        .font(DevToolsTheme.mono)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                        .background {
+                            RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
+                                .fill(DevToolsTheme.inputFill)
+                        }
+
+                    if body.isTruncated {
+                        Label(
+                            "Truncated at 512 kB — \(NetworkRequest.formatBytes(body.byteCount)) in total",
+                            systemImage: "scissors"
+                        )
+                        .font(DevToolsTheme.caption)
+                        .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        } else if expected && session.isLoadingBody {
+            Text("Reading \(title.lowercased())…")
+                .font(DevToolsTheme.caption)
+                .foregroundStyle(.tertiary)
         }
     }
 

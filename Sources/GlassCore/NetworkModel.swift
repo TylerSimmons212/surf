@@ -116,6 +116,11 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
     /// status and headers. Resource Timing records never do.
     public var isDetailed: Bool
 
+    /// Whether a body is waiting in the page for this request. The bodies
+    /// themselves are fetched one at a time, so this is all the list knows.
+    public var hasRequestBody: Bool
+    public var hasResponseBody: Bool
+
     public init(
         id: String,
         url: String,
@@ -134,7 +139,9 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
         initiator: String = "",
         requestHeaders: [String: String] = [:],
         responseHeaders: [String: String] = [:],
-        isDetailed: Bool = false
+        isDetailed: Bool = false,
+        hasRequestBody: Bool = false,
+        hasResponseBody: Bool = false
     ) {
         self.id = id
         self.url = url
@@ -154,6 +161,8 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
         self.requestHeaders = requestHeaders
         self.responseHeaders = responseHeaders
         self.isDetailed = isDetailed
+        self.hasRequestBody = hasRequestBody
+        self.hasResponseBody = hasResponseBody
     }
 
     public var statusClass: NetworkStatusClass {

@@ -37,6 +37,68 @@ enum NetworkAgent {
       const HANDLER = '\(eventHandlerName)';
       const MAX_RECORDS = 400;
       const ACK_WINDOW = 8;
+      // Bodies live in the page until asked for. A panel that quietly grew an
+      // unbounded cache inside someone's tab would be a memory leak you cause
+      // by looking, so both a per-body and a total cap apply.
+      const MAX_BODY = 512 * 1024;
+      const MAX_BODY_TOTAL = 8 * 1024 * 1024;
+      let bodyBytes = 0;
+
+      function textual(contentType) {
+        const type = (contentType || '').toLowerCase();
+        if (!type) { return true; }
+        return type.indexOf('text/') === 0
+          || type.indexOf('json') >= 0
+          || type.indexOf('xml') >= 0
+          || type.indexOf('javascript') >= 0
+          || type.indexOf('ecmascript') >= 0
+          || type.indexOf('urlencoded') >= 0;
+      }
+
+      /// Stores a body against a record, or the reason there isn't one.
+      function setBody(record, key, text, contentType) {
+        const omissionKey = key + 'Omission';
+        if (text === null || text === undefined) {
+          record[omissionKey] = 'notCaptured';
+          return;
+        }
+        if (!textual(contentType)) { record[omissionKey] = 'binary'; return; }
+        if (text.length === 0) { record[omissionKey] = 'empty'; return; }
+        if (bodyBytes >= MAX_BODY_TOTAL) { record[omissionKey] = 'tooLarge'; return; }
+
+        const full = text.length;
+        const kept = full > MAX_BODY ? text.slice(0, MAX_BODY) : text;
+        record[key] = kept;
+        record[key + 'Bytes'] = full;
+        record[key + 'Truncated'] = full > MAX_BODY;
+        record[key + 'Type'] = contentType || '';
+        bodyBytes += kept.length;
+      }
+
+      /// What a request was sent with. A string is kept; anything else is
+      /// described, because serialising a Blob or a FormData to look at it
+      /// would mean reading data the page is in the middle of sending.
+      function describeRequestBody(body) {
+        if (body === null || body === undefined) { return null; }
+        if (typeof body === 'string') { return body; }
+        try {
+          if (body instanceof URLSearchParams) { return body.toString(); }
+          if (typeof FormData !== 'undefined' && body instanceof FormData) {
+            const parts = [];
+            body.forEach(function (value, key) {
+              parts.push(key + '=' + (typeof value === 'string' ? value : '(file)'));
+            });
+            return parts.join('&');
+          }
+          if (typeof Blob !== 'undefined' && body instanceof Blob) {
+            return '(Blob, ' + body.size + ' bytes)';
+          }
+          if (body && body.byteLength !== undefined) {
+            return '(binary, ' + body.byteLength + ' bytes)';
+          }
+        } catch (e) { /* fall through */ }
+        return String(body);
+      }
 
       let live = false;
       let sequence = 0;
@@ -71,10 +133,25 @@ enum NetworkAgent {
         records.set(record.id, record);
       }
 
+      /// A record without its bodies. Bodies can be half a megabyte each, and
+      /// pushing every one across the process boundary to fill a list where
+      /// only one row is ever open would be most of the cost of the pane for
+      /// none of the benefit — so they stay here until asked for.
+      function withoutBodies(record) {
+        const copy = {};
+        for (const key in record) {
+          if (key === 'requestBody' || key === 'responseBody') { continue; }
+          copy[key] = record[key];
+        }
+        copy.hasRequestBody = record.requestBody !== undefined;
+        copy.hasResponseBody = record.responseBody !== undefined;
+        return copy;
+      }
+
       function note(record) {
         remember(record);
         if (!live) { return; }
-        pending.push(record);
+        pending.push(withoutBodies(record));
         if (scheduled) { return; }
         scheduled = true;
         // A timer rather than rAF: network activity continues in a background
@@ -157,6 +234,15 @@ enum NetworkAgent {
             initiator: 'fetch', startedAt: started, detailed: true,
             requestHeaders: requestHeaders
           };
+          try {
+            const sent = (init && init.body) || (input && input.body) || null;
+            if (live && sent) {
+              setBody(record, 'requestBody', describeRequestBody(sent),
+                      requestHeaders['content-type'] || requestHeaders['Content-Type'] || '');
+            } else if (sent) {
+              record.requestBodyOmission = 'notCaptured';
+            }
+          } catch (e) { /* a body we can't read is not worth failing the fetch */ }
           note(record);
 
           return nativeFetch.apply(this, arguments).then(function (response) {
@@ -169,6 +255,30 @@ enum NetworkAgent {
             record.isOpaque = response.type === 'opaque' || response.type === 'opaqueredirect';
             if (record.isOpaque) { record.status = undefined; }
             note(record);
+
+            // Only while a panel is attached: cloning a response costs a second
+            // copy of every byte, and paying that on every page someone merely
+            // browses past is not a trade worth making.
+            if (live && !record.isOpaque) {
+              const type = response.headers.get('content-type') || '';
+              if (!textual(type)) {
+                record.responseBodyOmission = 'binary';
+                note(record);
+              } else {
+                try {
+                  response.clone().text().then(function (text) {
+                    setBody(record, 'responseBody', text, type);
+                    note(record);
+                  }, function () {
+                    record.responseBodyOmission = 'notCaptured';
+                  });
+                } catch (e) {
+                  record.responseBodyOmission = 'notCaptured';
+                }
+              }
+            } else if (!live) {
+              record.responseBodyOmission = 'notCaptured';
+            }
             return response;
           }, function (error) {
             record.failure = String((error && error.message) || error);
@@ -202,15 +312,24 @@ enum NetworkAgent {
           return nativeSetHeader.apply(this, arguments);
         };
 
-        proto.send = function () {
+        proto.send = function (body) {
           const info = this.__glassInfo;
           if (info) {
+            info.body = body;
             const started = performance.now();
             const record = {
               id: 'x' + (nextId++), url: info.url, method: info.method,
               initiator: 'xmlhttprequest', startedAt: started, detailed: true,
               requestHeaders: info.headers
             };
+            try {
+              if (live && info.body !== undefined && info.body !== null) {
+                setBody(record, 'requestBody', describeRequestBody(info.body),
+                        info.headers['Content-Type'] || info.headers['content-type'] || '');
+              } else if (info.body) {
+                record.requestBodyOmission = 'notCaptured';
+              }
+            } catch (e) { /* not fatal */ }
             note(record);
             const request = this;
             this.addEventListener('loadend', function () {
@@ -221,6 +340,23 @@ enum NetworkAgent {
                 record.status = request.status;
                 record.statusText = request.statusText || '';
                 record.responseHeaders = parseRawHeaders(request.getAllResponseHeaders());
+                if (live) {
+                  const type = request.getResponseHeader('content-type') || '';
+                  // `responseText` throws for a binary responseType, so it is
+                  // asked for only where it can legitimately answer.
+                  let text = null;
+                  try {
+                    if (!request.responseType || request.responseType === 'text') {
+                      text = request.responseText;
+                    } else if (request.responseType === 'json') {
+                      text = JSON.stringify(request.response);
+                    }
+                  } catch (e) { text = null; }
+                  if (text === null) { record.responseBodyOmission = 'binary'; }
+                  else { setBody(record, 'responseBody', text, type); }
+                } else {
+                  record.responseBodyOmission = 'notCaptured';
+                }
               } else {
                 record.failure = 'Request failed, was blocked, or was aborted';
               }
@@ -312,7 +448,7 @@ enum NetworkAgent {
             switch (method) {
               case 'Network.drain': {
                 const all = [];
-                records.forEach(function (record) { all.push(record); });
+                records.forEach(function (record) { all.push(withoutBodies(record)); });
                 const count = dropped;
                 dropped = 0;
                 return JSON.stringify({ requests: all, dropped: count });
@@ -325,10 +461,28 @@ enum NetworkAgent {
                 lastAck = Math.max(lastAck, (params && params.sequence) || 0);
                 return JSON.stringify({ ok: true });
               }
+              case 'Network.getBody': {
+                const record = records.get(params && params.id);
+                if (!record) { return JSON.stringify({ missing: true }); }
+                return JSON.stringify({
+                  requestBody: record.requestBody,
+                  requestBodyBytes: record.requestBodyBytes,
+                  requestBodyTruncated: record.requestBodyTruncated,
+                  requestBodyType: record.requestBodyType,
+                  requestBodyOmission: record.requestBodyOmission,
+                  responseBody: record.responseBody,
+                  responseBodyBytes: record.responseBodyBytes,
+                  responseBodyTruncated: record.responseBodyTruncated,
+                  responseBodyType: record.responseBodyType,
+                  responseBodyOmission: record.responseBodyOmission
+                });
+              }
+
               case 'Network.clear': {
                 records.clear();
                 pending = [];
                 dropped = 0;
+                bodyBytes = 0;
                 return JSON.stringify({ ok: true });
               }
               default:

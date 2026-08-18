@@ -680,8 +680,31 @@ final class DevToolsSession: Identifiable {
         networkSummary = network.summary()
     }
 
+    private(set) var requestBody: NetworkBody?
+    private(set) var responseBody: NetworkBody?
+    private(set) var isLoadingBody = false
+
     func selectRequest(_ id: NetworkRequest.ID?) {
         selectedRequest = id
+        requestBody = nil
+        responseBody = nil
+        guard let id else { return }
+        Task { @MainActor in await loadBodies(for: id) }
+    }
+
+    /// Bodies for one request, read only when its row is opened.
+    private func loadBodies(for id: NetworkRequest.ID) async {
+        isLoadingBody = true
+        let issued = generation
+        defer { isLoadingBody = false }
+
+        guard let reply = try? await bridge.call(.networkGetBody, ["id": id]),
+              issued == generation, selectedRequest == id
+        else { return }
+
+        let bodies = NetworkWire.decodeBodies(reply)
+        requestBody = bodies.request
+        responseBody = bodies.response
     }
 
     var selectedRequestDetail: NetworkRequest? {
@@ -692,6 +715,8 @@ final class DevToolsSession: Identifiable {
     func clearNetwork() {
         network.clear()
         selectedRequest = nil
+        requestBody = nil
+        responseBody = nil
         refreshNetworkView()
         bridge.send(.networkClear)
     }
@@ -1053,6 +1078,8 @@ final class DevToolsSession: Identifiable {
         refreshConsoleView()
         network.markNavigation(preserving: preservesNetworkOnNavigation)
         selectedRequest = nil
+        requestBody = nil
+        responseBody = nil
         refreshNetworkView()
         releaseEvictedObjects()
 
