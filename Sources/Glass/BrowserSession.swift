@@ -43,6 +43,7 @@ final class BrowserSession {
     private(set) var addressFocusCreatesTab = false
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var reclaimTimer: Task<Void, Never>?
     /// Suppresses saves while restoring, so a half-built session can't
     /// overwrite the file we're still reading from.
     @ObservationIgnored private var isRestoring = false
@@ -72,6 +73,8 @@ final class BrowserSession {
             first.session = self
             first.didBecomeVisible()
         }
+
+        startReclaimTimer()
 
         // Quitting doesn't give the debounced save time to fire, so flush.
         NotificationCenter.default.addObserver(
@@ -177,7 +180,8 @@ final class BrowserSession {
     /// ask fifteen times per evaluation.
     ///
     /// Kept honest by `setSelection`, which is the one path selection changes
-    /// through, and by `close` for the cases that replace the array wholesale.
+    /// through, and by `close`/`reopenClosedTab` for the cases that replace the
+    /// array wholesale.
     private(set) var selectedTab: Tab
 
     /// Restores the invariant after a mutation, and is the only writer of the
@@ -193,6 +197,49 @@ final class BrowserSession {
         selectedTabID = tab.id
         if outgoing !== tab { outgoing.didResignVisible() }
         tab.didBecomeVisible()
+        reclaimIdleTabs()
+    }
+
+    // MARK: - Reclaiming
+
+    /// Puts idle background tabs to sleep, returning their web content
+    /// processes.
+    ///
+    /// The decision itself is `TabHibernation`, which is pure and tested; this
+    /// only gathers the facts and carries out the verdict. What counts as
+    /// untouchable is decided here because only the session knows it: the tab
+    /// on screen, anything playing, and anything popped out.
+    private func reclaimIdleTabs() {
+        let now = Date()
+        let candidates = tabs.map { tab in
+            TabHibernation.Candidate(
+                id: tab.id,
+                lastViewedAt: tab.lastViewedAt,
+                isLive: tab.isLive,
+                isProtected: tab.id == selectedTabID
+                    || tab.media?.isPlaying == true
+                    || PopOutController.shared.isPoppedOut(tab)
+            )
+        }
+
+        let doomed = Set(TabHibernation.tabsToSleep(among: candidates, now: now))
+        guard !doomed.isEmpty else { return }
+        for tab in tabs where doomed.contains(tab.id) {
+            tab.sleep()
+        }
+    }
+
+    /// Idle tabs go stale on the clock, not on interaction, so something has to
+    /// look while nothing is happening — otherwise a session left open all
+    /// afternoon holds every process until the next time you touch a tab.
+    private func startReclaimTimer() {
+        reclaimTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled, let self else { return }
+                self.reclaimIdleTabs()
+            }
+        }
     }
 
     // MARK: - Lifecycle

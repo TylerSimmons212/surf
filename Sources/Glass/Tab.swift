@@ -61,7 +61,34 @@ final class Tab: NSObject, Identifiable {
     /// site doesn't refetch and navigating away clears a now-wrong icon.
     @ObservationIgnored private var faviconHost: String?
 
-    @ObservationIgnored let webView: WKWebView
+    /// The web view, built the first time it's genuinely needed.
+    ///
+    /// A `WKWebView` costs a web content process from the moment it exists, so
+    /// building one per tab up front meant restoring a session of fifty tabs
+    /// spawned fifty processes before anything was on screen — for tabs whose
+    /// pages hadn't loaded and, in most cases, never would that session.
+    ///
+    /// Touching this property *creates* the view. Anything that only wants to
+    /// describe a tab — its address, its title, what to write to disk — must go
+    /// through `currentURL` / `snapshot()` instead, or it will quietly wake
+    /// every sleeping tab it looks at.
+    @ObservationIgnored private var liveWebView: WKWebView?
+
+    /// Whether the tab is currently holding a web view.
+    var isLive: Bool { liveWebView != nil }
+
+    var webView: WKWebView {
+        if let liveWebView { return liveWebView }
+        return buildWebView()
+    }
+
+    /// WebKit's own configuration, for a popup or `target="_blank"` link.
+    ///
+    /// Consumed on first use and dropped: it ties the new view to its opener,
+    /// which is right for the view WebKit asked for and wrong for any
+    /// replacement built later, after the tab has been asleep.
+    @ObservationIgnored private var providedConfiguration: WKWebViewConfiguration?
+
     /// Weak: the session owns its tabs, so a strong link back would retain-cycle.
     @ObservationIgnored weak var session: BrowserSession?
 
@@ -70,11 +97,28 @@ final class Tab: NSObject, Identifiable {
     /// `configuration` is non-nil only when WebKit hands us one for a popup or
     /// `target="_blank"` link — those must use the configuration WebKit supplies.
     init(configuration: WKWebViewConfiguration? = nil) {
-        let config = configuration ?? WKWebViewConfiguration()
-        if configuration == nil {
+        providedConfiguration = configuration
+
+        super.init()
+
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: .glassAppearanceChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appearanceSettingsChanged() }
+        }
+    }
+
+    /// Builds the web view and everything that hangs off it.
+    ///
+    /// Assigns `liveWebView` before wiring anything up, because the helpers
+    /// below reach for `webView` — and would otherwise re-enter this and build
+    /// a second one.
+    @discardableResult
+    private func buildWebView() -> WKWebView {
+        let config = providedConfiguration ?? WKWebViewConfiguration()
+        if providedConfiguration == nil {
             // Shared by default, so cookies and logins carry across tabs.
             config.websiteDataStore = .default()
-            // UA TEST
             // Left at the default (false): scripted `window.open` without a
             // user gesture is blocked, while real link clicks still open tabs.
             // This is the popup blocker.
@@ -84,23 +128,24 @@ final class Tab: NSObject, Identifiable {
             // WKWebView; Safari has it on.
             config.preferences.isElementFullscreenEnabled = true
         }
+        providedConfiguration = nil
 
-        webView = WKWebView(frame: .zero, configuration: config)
-        webView.allowsBackForwardNavigationGestures = true
-        webView.allowsMagnification = true
+        let created = WKWebView(frame: .zero, configuration: config)
+        created.allowsBackForwardNavigationGestures = true
+        created.allowsMagnification = true
+        created.navigationDelegate = self
+        created.uiDelegate = self
 
-        super.init()
+        liveWebView = created
 
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
         installMediaBridge()
         observeWebViewState()
 
-        appearanceObserver = NotificationCenter.default.addObserver(
-            forName: .glassAppearanceChanged, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.appearanceSettingsChanged() }
-        }
+        // Zoom is per-tab and outlives a sleep, so a woken tab comes back at
+        // the magnification it was left at.
+        if !ZoomSteps.isStandard(zoomLevel) { created.pageZoom = zoomLevel }
+
+        return created
     }
 
     @ObservationIgnored private var appearanceObserver: (any NSObjectProtocol)?
@@ -109,17 +154,25 @@ final class Tab: NSObject, Identifiable {
     ///
     /// Everything outside the tab should ask for this rather than reaching
     /// through to `webView.url`: a tab that hasn't been opened yet — restored
-    /// from disk — knows perfectly well where it points without having loaded.
+    /// from disk, or asleep — knows perfectly well where it points without
+    /// having a web view to ask.
     var currentURL: String? {
-        if let url = webView.url { return url.absoluteString }
-        return pendingRestore?.url
+        if let url = liveWebView?.url { return url.absoluteString }
+        if let pending = pendingRestore?.url { return pending }
+        guard mode == .browsing, !addressText.isEmpty else { return nil }
+        return addressText
     }
 
     /// The label shown on the tab chip, degrading gracefully before a title lands.
+    ///
+    /// Careful not to reach for the web view: this is read for *every* row in
+    /// the sidebar, so asking a sleeping tab for its title would wake the whole
+    /// session the moment the list drew.
     var displayTitle: String {
         if !pageTitle.isEmpty { return pageTitle }
         if mode == .home { return "New Tab" }
-        return webView.url?.host ?? "Loading…"
+        if let host = currentURL.flatMap(URL.init(string:))?.host { return host }
+        return "Loading…"
     }
 
     // MARK: - Restore
@@ -243,6 +296,11 @@ final class Tab: NSObject, Identifiable {
 
     /// The scheme, or the decision to synthesise one, has changed.
     private func appearanceSettingsChanged() {
+        // Every tab in the session hears this. A sleeping one has no scripts to
+        // reinstall and no page to restyle — and reaching for its web view here
+        // would wake the entire session on a single flip of the scheme. It
+        // picks up the new setting when it's next built.
+        guard isLive else { return }
         installUserScripts()
         if ThemePreferences.isEnabled {
             // Every tab hears this at once. Sweeping them all together is what
@@ -333,26 +391,39 @@ final class Tab: NSObject, Identifiable {
     /// keeps its content process alive, so a closed tab can keep making noise
     /// long after it's gone from the sidebar.
     func teardown() {
-        sampleTask?.cancel()
-        themeTask?.cancel()
         if let appearanceObserver {
             NotificationCenter.default.removeObserver(appearanceObserver)
         }
         appearanceObserver = nil
+        releaseWebView()
+    }
+
+    /// Lets go of the web view without ending the tab.
+    ///
+    /// Everything here works from a local reference rather than through the
+    /// `webView` property: that property *builds* a view when there isn't one,
+    /// so the trailing async cleanup would otherwise resurrect the very thing
+    /// it was called to dispose of.
+    private func releaseWebView() {
+        sampleTask?.cancel()
+        themeTask?.cancel()
         observations.forEach { $0.invalidate() }
         observations.removeAll()
 
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
-        webView.stopLoading()
+        guard let live = liveWebView else { return }
+        liveWebView = nil
+
+        live.navigationDelegate = nil
+        live.uiDelegate = nil
+        live.stopLoading()
 
         // The window's container keeps recently shown pages mounted so
-        // switching back to them is free. A closed tab is never coming back, so
-        // it leaves under its own steam rather than lingering there until it
-        // happens to be evicted.
-        webView.isHidden = false
-        webView.removeFromSuperview()
-        webView.configuration.userContentController
+        // switching back to them is free. A view being released is not coming
+        // back, so it leaves under its own steam rather than lingering there
+        // until it happens to be evicted.
+        live.isHidden = false
+        live.removeFromSuperview()
+        live.configuration.userContentController
             .removeScriptMessageHandler(forName: MediaBridge.handlerName)
 
         media = nil
@@ -360,10 +431,52 @@ final class Tab: NSObject, Identifiable {
         Task { @MainActor in
             // Pause first for an immediate stop, then navigate away to tear the
             // media elements down for good.
-            await webView.pauseAllMediaPlayback()
-            await webView.closeAllMediaPresentations()
-            webView.load(URLRequest(url: URL(string: "about:blank")!))
+            await live.pauseAllMediaPlayback()
+            await live.closeAllMediaPresentations()
+            live.load(URLRequest(url: URL(string: "about:blank")!))
         }
+    }
+
+    // MARK: - Sleep
+
+    /// Gives the web view back, keeping everything the sidebar draws.
+    ///
+    /// The tab keeps its title, icon, address, and history blob, so the row is
+    /// indistinguishable from a live one — what it loses is the web content
+    /// process. Waking goes through exactly the path a restored tab takes on
+    /// first view, which is why that machinery is reused rather than repeated.
+    func sleep() {
+        // Never the tab on screen, and never one with nothing to come back to.
+        guard isLive, !isVisible else { return }
+        let persisted = snapshot(refreshingState: true)
+        guard persisted.isRestorable else { return }
+
+        releaseWebView()
+
+        pendingRestore = persisted
+        // A tab that was navigated to explicitly has this set, and it is what
+        // stops a pending restore from overwriting deliberate navigation.
+        // Going to sleep makes the restore *the* deliberate outcome, so the
+        // flag has to be cleared or the tab would wake up blank.
+        hasNavigatedExplicitly = false
+
+        // State that belonged to the page that just went away. Left behind, it
+        // would describe a document this tab no longer has: a spinner that
+        // never stops, a back button for history it can't reach yet.
+        isLoading = false
+        progress = 0
+        canGoBack = false
+        canGoForward = false
+        lastError = nil
+        sampledTopColor = nil
+        themeColor = nil
+        underPageColor = nil
+        establishedGround = nil
+        themeSweeps = 0
+        needsThemeSweep = false
+        needsTopColorSample = false
+
+        debugLog("slept \(persisted.url ?? "?")")
     }
 
     // MARK: - Top colour sampling
@@ -409,6 +522,12 @@ final class Tab: NSObject, Identifiable {
     /// selection. `BrowserSession.adoptSelection` is its only writer.
     @ObservationIgnored private(set) var isVisible = false
 
+    /// When the tab was last on screen, for deciding what to reclaim.
+    ///
+    /// Nil means never shown — which makes it the first thing worth sleeping,
+    /// since it holds a web view that has displayed nothing.
+    @ObservationIgnored private(set) var lastViewedAt: Date?
+
     /// Work deferred because the tab wasn't being looked at when it came up.
     @ObservationIgnored private var needsThemeSweep = false
     @ObservationIgnored private var needsTopColorSample = false
@@ -416,6 +535,7 @@ final class Tab: NSObject, Identifiable {
     func didBecomeVisible() {
         guard !isVisible else { return }
         isVisible = true
+        lastViewedAt = Date()
 
         // A page that changed while backgrounded has been left alone until
         // now; catch it up before it's seen rather than after.
@@ -433,6 +553,8 @@ final class Tab: NSObject, Identifiable {
     func didResignVisible() {
         guard isVisible else { return }
         isVisible = false
+        // Stamped on the way out, so the clock starts when you stop looking.
+        lastViewedAt = Date()
 
         // Nothing off screen is worth restyling or measuring, and both are
         // expensive enough to be worth stopping mid-flight.
@@ -448,7 +570,7 @@ final class Tab: NSObject, Identifiable {
     /// posts to native every 250ms forever, and each post costs a full theme
     /// sweep. In a background tab that is pure waste.
     private func pauseThemeObserver() {
-        guard ThemePreferences.isEnabled else { return }
+        guard isLive, ThemePreferences.isEnabled else { return }
         Task { @MainActor in
             _ = try? await webView.callAsyncJavaScript(
                 ThemeBridge.pauseObserverScript, arguments: [:],
@@ -458,7 +580,7 @@ final class Tab: NSObject, Identifiable {
     }
 
     private func resumeThemeObserver() {
-        guard ThemePreferences.isEnabled else { return }
+        guard isLive, ThemePreferences.isEnabled else { return }
         Task { @MainActor in
             _ = try? await webView.callAsyncJavaScript(
                 ThemeBridge.resumeObserverScript, arguments: [:],
@@ -783,17 +905,26 @@ final class Tab: NSObject, Identifiable {
     /// where an exact scroll position is worth the cost that a routine
     /// debounced save is not.
     func snapshot(refreshingState: Bool = false) -> PersistedTab {
-        // A tab restored but never opened still has an empty web view; hand
-        // back what we loaded so its history survives another quit.
+        // A tab restored but never opened — or one that has been put back to
+        // sleep — has no web view to ask. Hand back what we were holding, so
+        // its history survives another quit.
         if let pendingRestore { return pendingRestore }
 
+        guard let live = liveWebView else {
+            return PersistedTab(
+                url: currentURL,
+                title: pageTitle,
+                interactionState: cachedInteractionState
+            )
+        }
+
         if refreshingState || interactionStateIsStale {
-            cachedInteractionState = webView.interactionState as? Data
+            cachedInteractionState = live.interactionState as? Data
             interactionStateIsStale = false
         }
 
         return PersistedTab(
-            url: webView.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
+            url: live.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
             title: pageTitle,
             interactionState: cachedInteractionState
         )
@@ -901,7 +1032,9 @@ final class Tab: NSObject, Identifiable {
     /// everything that depends on the zoom — the reset menu item's enabled
     /// state, the sidebar's indicator — silently keeps whatever it saw first.
     private(set) var zoomLevel: Double = ZoomSteps.standard {
-        didSet { webView.pageZoom = zoomLevel }
+        // Only if there's a view to zoom — a sleeping tab records the level and
+        // applies it when it's rebuilt.
+        didSet { liveWebView?.pageZoom = zoomLevel }
     }
 
     var isZoomed: Bool { !ZoomSteps.isStandard(zoomLevel) }
