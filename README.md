@@ -89,17 +89,12 @@ Gradients move as one body rather than stop by stop: transforming each stop
 alone reverses the direction the light falls from, which reads as broken rather
 than as dark.
 
-Images are never recoloured — inverting a logo is the most visible damage this
-could do, and there is no recovering from a brand mark in the wrong colours.
-That leaves one casualty worth rescuing: artwork drawn as dark ink on
-transparency, which reads on the white page it was made for and disappears on a
-dark one. It gets a plate painted *behind* it instead, so every pixel of the
-artwork stays exactly as its designer drew it — for an `<img>` and for a CSS
-`background-image` alike, since a background colour paints underneath the
-artwork either way. Only that case is touched: an opaque image carries its own
-background and was never at risk, light artwork is already visible, and an
-image that can't be inspected is left alone, because the cost of guessing wrong
-is so much higher than the cost of doing nothing.
+Images are left alone entirely. Inverting a logo is the most visible damage
+this could do, and there is no recovering from a brand mark in the wrong
+colours. Artwork drawn as dark ink on transparency is hard to see on a dark
+page, and that is accepted rather than solved: a colour painted behind it fills
+the element's whole box, so it arrives as a rectangle around the mark that the
+design never had — a worse intrusion than the problem it fixes.
 
 An inline `<svg>` is a different thing wearing the same clothes. It is DOM
 rather than pixels, and it is how most sites now ship their icons, so its paint
@@ -114,6 +109,15 @@ have an answer in place before it draws one. It works by removing colour rather
 than imposing it: backgrounds go transparent so everything shows the one dark
 ground beneath, which leaves overlays overlaying instead of turning them into
 opaque blocks.
+
+The walk crosses the two boundaries `querySelectorAll` stops at: an open shadow
+root, and a same-origin iframe. Between them they hold most of the web's
+design-system components and embedded widgets. Shadow DOM needs more than
+reaching, because encapsulation runs both ways — a sheet injected into the
+document never applies inside one, so marking those elements alone would change
+nothing. Each root adopts a single constructed stylesheet carrying the same
+rules instead. A cross-origin frame is a document nothing in the page can reach
+into, and is left exactly as it is.
 
 Pages don't hold still, so the theme is swept again whenever one changes under
 it — a section revealed on scroll, a lazily loaded list, a subtree re-rendered
@@ -292,8 +296,5 @@ State lives in `~/Library/Application Support/Glass/session.json`.
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
 - Tab reordering by drag, and ⌘⇧T to reopen a closed tab
 - Bookmarks
-- Reaching into shadow DOM and same-origin iframes, which the element walk
-  doesn't cross
-- Inspecting cross-origin images, which taint a canvas and so can't be sampled
-  from the page — reading their bytes natively would need no permission we
-  don't already have
+- Cross-origin iframes, which are a separate document nothing in the page can
+  reach into — theming one means running the whole pass inside it

@@ -17,6 +17,67 @@ enum ThemeBridge {
     /// The channel the page uses to say it has changed under us.
     static let handlerName = "glassTheme"
 
+
+    /// Walking and styling the page, shared by the survey and the apply pass so
+    /// the two can never disagree about what counts as part of it.
+    ///
+    /// `querySelectorAll` stops at two boundaries. A shadow root is a separate
+    /// tree, and a same-origin iframe is a separate document — between them
+    /// they hold most of the web's design-system components and embedded
+    /// widgets, and every one of them was staying light on a dark page.
+    ///
+    /// Shadow DOM needs more than reaching, though: style encapsulation runs
+    /// both ways, so the sheet injected into the document never applies inside
+    /// a shadow tree. Marking those elements would have changed nothing at all.
+    /// They are reached *and* given the rules, through one constructed
+    /// stylesheet adopted by every root, which also means one object to switch
+    /// off when measuring rather than a search for scattered copies.
+    static let traversal = """
+    function parentOf(element) {
+      if (element.parentElement) { return element.parentElement; }
+      const root = element.getRootNode();
+      // Out through a shadow boundary to the host that owns it...
+      if (root && root.host) { return root.host; }
+      // ...or out of a frame to the element that embeds it.
+      if (root && root.defaultView && root.defaultView.frameElement) {
+        return root.defaultView.frameElement;
+      }
+      return null;
+    }
+
+    function eachElement(start, budget, visit, onRoot) {
+      const roots = [start];
+      let seen = 0;
+      while (roots.length && seen < budget) {
+        const root = roots.shift();
+        if (onRoot && root !== start) { onRoot(root); }
+        let list;
+        try { list = root.querySelectorAll('*'); } catch (error) { continue; }
+        for (let i = 0; i < list.length && seen < budget; i++) {
+          const element = list[i];
+          seen++;
+          visit(element, root);
+          if (element.shadowRoot) { roots.push(element.shadowRoot); }
+          if (element.localName === 'iframe') {
+            let document_ = null;
+            // A cross-origin frame throws here, or hands back nothing. Either
+            // way it is not ours to touch, and refusing is the whole answer.
+            try { document_ = element.contentDocument; } catch (error) { document_ = null; }
+            if (document_ && document_.documentElement) { roots.push(document_); }
+          }
+        }
+      }
+      return seen;
+    }
+
+    function viewOf(element) {
+      const document_ = element.ownerDocument;
+      return (document_ && document_.defaultView) || window;
+    }
+
+    function styleOf(element) { return viewOf(element).getComputedStyle(element); }
+    """
+
     /// How many elements are examined. A long article can run to tens of
     /// thousands of nodes and the colours stop being new long before that;
     /// this is a ceiling on the cost, not a sample of the page.
@@ -34,83 +95,28 @@ enum ThemeBridge {
     /// the question it answers is "what is the biggest thing this colour
     /// paints" — a masthead, or a badge repeated forty times.
     static let collectScript = """
-    // Nothing useful to measure yet, and a page mid-parse reports a palette of
-    // three colours that isn't the site's. Reported rather than guessed at, so
-    // the caller can leave the holding colour up and come back.
     if (document.readyState === 'loading') {
       return JSON.stringify({ ground: '', themed: false, ready: false, colors: [] });
     }
 
-    // Measuring through our own paint would only measure our own paint, so both
-    // the holding colour and the theme itself are switched off for the read.
-    //
-    // This is what makes a page re-readable. Once a colour is overridden,
-    // getComputedStyle returns the value *we* wrote, and the author's is no
-    // longer observable — so a second look would either transform our own
-    // output again or have to skip everything it had already touched. Skipping
-    // is what a reveal-on-scroll page punishes: an element whose colour changes
-    // underneath us has already been marked, so it would keep the answer for a
-    // colour it no longer has.
-    //
-    // Safe because nothing paints in the middle of a script turn: the browser
-    // renders between turns, not during one, so the page is never shown
-    // unstyled. getComputedStyle still forces the recalc, synchronously.
-    const ourSheets = ['__glass_preflight', '__glass_theme']
-      .map(function (id) { const el = document.getElementById(id); return el && el.sheet; })
-      .filter(Boolean);
+    \(traversal)
+
+    // Every sheet of ours, wherever it ended up — the document, an iframe, or
+    // adopted by a shadow root. Switched off around the read, because measuring
+    // through our own paint would only measure our own paint.
+    function ourStyleSheets() {
+      const sheets = [];
+      function add(sheet) { if (sheet && sheets.indexOf(sheet) === -1) { sheets.push(sheet); } }
+      const preflight = document.getElementById('__glass_preflight');
+      add(preflight && preflight.sheet);
+      (window.__glassSheets || []).forEach(add);
+      return sheets;
+    }
+
+    const ourSheets = ourStyleSheets();
     ourSheets.forEach(function (sheet) { sheet.disabled = true; });
 
-    let payload = null;
-    let deferred = [];
-
     try {
-
-    // Sample any image that might be a logo.
-    //
-    // Pixels are never altered — this only asks whether the artwork would
-    // survive on a dark page, and the answer, when it is no, is a plate painted
-    // behind it. A 16x16 reduction is plenty for "is this broadly dark ink on
-    // nothing", and keeps the message small.
-    //
-    // getImageData throws for a cross-origin image loaded without CORS, which
-    // is most images on most sites. That is left as a refusal rather than
-    // worked around: an image we cannot inspect is one we leave exactly alone,
-    // which is the safe outcome anyway.
-    if (!window.__glassSeenImages) { window.__glassSeenImages = new Set(); }
-    const sampled = [];
-    const backgroundGrounds = [];
-
-    function firstURL(value) {
-      if (!value) { return ''; }
-      const start = value.indexOf('url(');
-      if (start === -1) { return ''; }
-      let inner = value.slice(start + 4);
-      const end = inner.indexOf(')');
-      if (end === -1) { return ''; }
-      inner = inner.slice(0, end).trim();
-      const quote = inner.charAt(0);
-      if (quote === '"' || quote === "'") { inner = inner.slice(1, -1); }
-      // A data: URI is already in hand and costs nothing; anything else is a
-      // fetch we only want to make once.
-      return inner;
-    }
-
-    function pixelsOf(image) {
-      try {
-        context.clearRect(0, 0, 16, 16);
-        context.drawImage(image, 0, 0, 16, 16);
-        const data = context.getImageData(0, 0, 16, 16).data;
-        let binary = '';
-        for (let j = 0; j < data.length; j++) { binary += String.fromCharCode(data[j]); }
-        return btoa(binary);
-      } catch (error) {
-        return null;  // tainted: left alone, which is the safe outcome
-      }
-    }
-    const canvas = document.createElement('canvas');
-    canvas.width = 16;
-    canvas.height = 16;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
 
     const viewport = Math.max(1, innerWidth * innerHeight);
     const found = new Map();
@@ -119,28 +125,24 @@ enum ThemeBridge {
       return !!value && value !== 'transparent' && value.indexOf('rgba(0, 0, 0, 0)') !== 0;
     }
 
-    // What each element's content actually sits on.
-    //
-    // Text is legible against the thing behind *it*, not against the page: a
-    // label on a brand-coloured button is judged on that button. Filled in as
-    // the walk goes, which is O(n) rather than O(n·depth) because
-    // querySelectorAll returns document order, so a parent is always resolved
-    // before its children ask for it.
+    // What each element's content sits on. Filled in as the walk goes, which is
+    // O(n) rather than O(n·depth) because a parent is always resolved before a
+    // child asks for it — including across a shadow or frame boundary, which
+    // parentOf follows.
     const backdrops = new Map();
     function backdropFor(element, own) {
       if (opaque(own)) { backdrops.set(element, own); return own; }
-      const parent = element.parentElement;
+      const parent = parentOf(element);
       const inherited = parent ? (backdrops.get(parent) || '') : '';
       backdrops.set(element, inherited);
       return inherited;
     }
 
     function note(value, property, area, interactive, large, on) {
-      if (!opaque(value)) return;
+      if (!opaque(value)) { return; }
       const key = property + '|' + value;
       const existing = found.get(key);
       if (existing) {
-        // The largest sighting wins, and carries its backdrop with it.
         if (area > existing.area) { existing.area = area; existing.on = on || ''; }
         existing.interactive = existing.interactive || interactive;
         existing.large = existing.large || large;
@@ -149,12 +151,9 @@ enum ThemeBridge {
       }
     }
 
-    const elements = document.querySelectorAll('*');
-    const limit = Math.min(elements.length, \(elementBudget));
-    for (let i = 0; i < limit; i++) {
-      const element = elements[i];
-      const style = getComputedStyle(element);
-      if (style.display === 'none' || style.visibility === 'hidden') continue;
+    eachElement(document, \(elementBudget), function (element) {
+      const style = styleOf(element);
+      if (style.display === 'none' || style.visibility === 'hidden') { return; }
 
       const box = element.getBoundingClientRect();
       const area = Math.max(0, box.width * box.height) / viewport;
@@ -163,7 +162,6 @@ enum ThemeBridge {
       );
       const fontSize = parseFloat(style.fontSize) || 16;
       const weight = parseInt(style.fontWeight, 10) || 400;
-      // WCAG's large-text threshold, in the px it converts to.
       const large = fontSize >= 24 || (fontSize >= 18.5 && weight >= 700);
 
       const backdrop = backdropFor(element, style.backgroundColor);
@@ -171,17 +169,12 @@ enum ThemeBridge {
       note(style.backgroundColor, 'background', area, interactive, large, '');
       note(style.color, 'text', area, interactive, large, backdrop);
 
-      // Only where a border is actually drawn.
-      //
-      // An element without one still reports a border colour, because the
-      // initial value is currentColor — so every element on the page claims a
-      // border in its own text colour. That is not merely noise: html and body
-      // cover the whole viewport, so their phantom black border wins the
-      // aggregation on area, and the real hairline's backdrop is never seen.
-      // Emphasis is measured against that backdrop, so losing it costs the
-      // border its weight.
-      function noteEdge(width, style_, color) {
-        if (style_ === 'none' || style_ === 'hidden') { return; }
+      // Only where a border is actually drawn. An element without one still
+      // reports a colour, because the initial value is currentColor — and html
+      // and body cover the viewport, so their phantom border would win the
+      // aggregation on area and carry no backdrop with it.
+      function noteEdge(width, edgeStyle, color) {
+        if (edgeStyle === 'none' || edgeStyle === 'hidden') { return; }
         if (!(parseFloat(width) > 0)) { return; }
         note(color, 'border', area, interactive, large, backdrop);
       }
@@ -194,11 +187,8 @@ enum ThemeBridge {
         note(style.outlineColor, 'outline', area, interactive, large, backdrop);
       }
 
-      // SVG paint, which is how most sites now ship their icons. This is DOM
-      // rather than pixels, so it is recoloured like anything else and gets the
-      // same role treatment: a neutral mark inverts as text does, a chromatic
-      // one is brand and keeps its hue. Only real colours — `none`, and a
-      // url(#gradient) reference, are not ours to touch.
+      // SVG paint, which is how most sites ship their icons. DOM rather than
+      // pixels, so it is remapped like any other colour and by the same rules.
       if (element instanceof SVGElement) {
         const fill = style.fill;
         if (fill && fill !== 'none' && fill.indexOf('url(') !== 0) {
@@ -210,120 +200,52 @@ enum ThemeBridge {
         }
       }
 
-      // A background image is artwork too, and can be backed the same way —
-      // background-color paints behind background-image, so the plate lands
-      // under it without the artwork being touched. Deferred to after the
-      // measurement, because reading one means loading it.
-      const backgroundURL = firstURL(style.backgroundImage);
-      if (backgroundURL && !window.__glassSeenImages.has(backgroundURL)
-          && backgroundGrounds.length < 8) {
-        window.__glassSeenImages.add(backgroundURL);
-        backgroundGrounds.push({ url: backgroundURL, backdrop: backdrop });
-      }
-
-      // Gradients only. A url() is an image, and images are never recoloured.
       const image = style.backgroundImage;
       if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
         note(image, 'gradient', area, interactive, large, backdrop);
       }
-    }
-
-    const images = document.querySelectorAll('img');
-
-    for (let i = 0; i < Math.min(images.length, 40) && sampled.length < 16; i++) {
-      const image = images[i];
-      const source = image.currentSrc || image.src;
-      if (!source || window.__glassSeenImages.has(source)) { continue; }
-      if (!image.complete || !image.naturalWidth) { continue; }
-
-      const box = image.getBoundingClientRect();
-      // Too small to matter, or far too large to be a mark rather than a
-      // picture — and a picture is opaque and was never at risk.
-      if (box.width < 8 || box.height < 8) { continue; }
-      if (box.width > 512 || box.height > 512) { continue; }
-
-      window.__glassSeenImages.add(source);
-      const pixels = pixelsOf(image);
-      if (!pixels) { continue; }
-      sampled.push({ key: source, pixels: pixels, backdrop: backdrops.get(image) || '' });
-    }
+    });
 
     // What the page is actually sitting on, which decides whether it needs us
     // at all. Walked up from the body because a transparent body shows the
     // html element's paint, and that's what the eye sees.
     let ground = getComputedStyle(document.body || document.documentElement).backgroundColor;
-    if (!ground || ground.indexOf('rgba(0, 0, 0, 0)') === 0) {
+    if (!opaque(ground)) {
       ground = getComputedStyle(document.documentElement).backgroundColor;
     }
 
     // Whether this page already carries a theme. When it does, the ground is
-    // ours rather than the site's, so the caller must not read it as evidence
-    // that the site was always dark — it simply sweeps whatever is new.
+    // ours rather than the site's, and can't be read as evidence about it.
     const themed = !!document.getElementById('__glass_theme');
 
-    payload = {
+    return JSON.stringify({
       ground: ground || '', themed: themed, ready: true,
-      colors: Array.from(found.values()), images: sampled
-    };
-    deferred = backgroundGrounds;
+      colors: Array.from(found.values())
+    });
 
     } finally {
       ourSheets.forEach(function (sheet) { sheet.disabled = false; });
     }
-
-    // Only now is it safe to wait for anything. An await yields to the event
-    // loop, and a frame painted while our styles were switched off would show
-    // the page stripped bare — so every measurement above had to be
-    // synchronous, and loading an image never can be.
-    for (const pending of deferred) {
-      const pixels = await new Promise(function (resolve) {
-        const image = new Image();
-        let settled = false;
-        function finish(value) { if (!settled) { settled = true; resolve(value); } }
-        image.onload = function () { finish(pixelsOf(image)); };
-        image.onerror = function () { finish(null); };
-        // A background that never arrives must not hold the sweep open.
-        setTimeout(function () { finish(null); }, 1200);
-        // Deliberately no crossOrigin: asking for CORS would make a second,
-        // uncached request of every background on the page, and an image we
-        // can't read is one we leave alone anyway.
-        image.src = pending.url;
-      });
-      if (pixels) {
-        payload.images.push({ key: pending.url, pixels: pixels, backdrop: pending.backdrop });
-      }
-    }
-
-    return JSON.stringify(payload);
     """
 
     /// Writes the plan onto the page.
     ///
     /// Each element gets a custom property and a marker attribute, and one
-    /// injected stylesheet turns those into declarations. The indirection is
+    /// stylesheet per tree turns those into declarations. The indirection is
     /// worth it: the author's own rules are never overwritten, so the original
     /// value survives, removing the theme is a matter of dropping attributes,
     /// and a page that re-renders can be swept again without anything having
     /// been destroyed in the meantime.
     ///
-    /// The whole sheet is `@media screen`. WebKit forces light appearance while
+    /// The rules are `@media screen`. WebKit forces light appearance while
     /// printing, and an unscoped dark theme would put black pages through
     /// someone's printer.
     static let applyScript = """
-    // Stop watching while we write. Our own attribute and property changes are
-    // page mutations like any other, and an observer left running would report
-    // them straight back and sweep forever.
     if (window.__glassObserver) { window.__glassObserver.disconnect(); }
 
-    const sheetID = '__glass_theme';
-    let sheet = document.getElementById(sheetID);
-    if (!sheet) {
-      sheet = document.createElement('style');
-      sheet.id = sheetID;
-      document.documentElement.appendChild(sheet);
-    }
+    \(traversal)
 
-    sheet.textContent = `
+    const RULES = `
     @media screen {
       :root { color-scheme: ${scheme}; }
       html { background-color: ${ground} !important; }
@@ -334,32 +256,54 @@ enum ThemeBridge {
       [data-glass-gr] { background-image: var(--glass-gr) !important; }
       [data-glass-fl] { fill: var(--glass-fl) !important; }
       [data-glass-st] { stroke: var(--glass-st) !important; }
-      /* Behind the artwork, never over it. The image itself is untouched; its
-         transparent areas simply show this instead of the dark page. Last, so
-         it wins over a background colour on the same element — the plate was
-         computed to make that particular artwork readable. */
-      [data-glass-plate] { background-color: var(--glass-plate) !important; }
     }`;
 
-    // Read the site's colours, not ours — the plan is keyed on what the author
-    // wrote, and with our sheet live every lookup would be of our own output.
-    const ourSheets = ['__glass_preflight', '__glass_theme']
-      .map(function (id) { const el = document.getElementById(id); return el && el.sheet; })
-      .filter(Boolean);
-    ourSheets.forEach(function (each) { each.disabled = true; });
-
-    function firstURL(value) {
-      if (!value) { return ''; }
-      const start = value.indexOf('url(');
-      if (start === -1) { return ''; }
-      let inner = value.slice(start + 4);
-      const end = inner.indexOf(')');
-      if (end === -1) { return ''; }
-      inner = inner.slice(0, end).trim();
-      const quote = inner.charAt(0);
-      if (quote === '"' || quote === "'") { inner = inner.slice(1, -1); }
-      return inner;
+    window.__glassSheets = [];
+    function register(sheet) {
+      if (sheet && window.__glassSheets.indexOf(sheet) === -1) {
+        window.__glassSheets.push(sheet);
+        // Created mid-read, so it starts switched off with all the others and
+        // is turned on at the end along with them.
+        sheet.disabled = true;
+      }
     }
+
+    function styleDocument(target) {
+      let element = target.getElementById('__glass_theme');
+      if (!element) {
+        element = target.createElement('style');
+        element.id = '__glass_theme';
+        target.documentElement.appendChild(element);
+      }
+      element.textContent = RULES;
+      register(element.sheet);
+    }
+
+    // A shadow root is styled by adoption rather than injection: encapsulation
+    // means a sheet in the document never reaches inside one, so marking those
+    // elements without this would change precisely nothing. One constructed
+    // sheet is shared by every root, which also leaves one object to switch off
+    // when measuring instead of a search for scattered copies.
+    function styleShadow(root) {
+      if (!window.__glassShadowSheet) {
+        try { window.__glassShadowSheet = new CSSStyleSheet(); }
+        catch (error) { window.__glassShadowSheet = null; }
+      }
+      const sheet = window.__glassShadowSheet;
+      if (!sheet) { return; }
+      try {
+        sheet.replaceSync(RULES);
+        if (root.adoptedStyleSheets.indexOf(sheet) === -1) {
+          root.adoptedStyleSheets = root.adoptedStyleSheets.concat([sheet]);
+        }
+        register(sheet);
+      } catch (error) { /* a root that won't take it is left as it is */ }
+    }
+
+    styleDocument(document);
+
+    const preflight = document.getElementById('__glass_preflight');
+    if (preflight && preflight.sheet) { preflight.sheet.disabled = true; }
 
     function paint(element, attribute, variable, replacement) {
       if (!replacement) { return; }
@@ -368,11 +312,8 @@ enum ThemeBridge {
     }
 
     try {
-      const elements = document.querySelectorAll('*');
-      const limit = Math.min(elements.length, \(elementBudget));
-      for (let i = 0; i < limit; i++) {
-        const element = elements[i];
-        const style = getComputedStyle(element);
+      eachElement(document, \(elementBudget), function (element) {
+        const style = styleOf(element);
 
         paint(element, 'data-glass-bg', '--glass-bg',
               plan['background|' + style.backgroundColor]);
@@ -389,30 +330,17 @@ enum ThemeBridge {
         }
 
         const image = style.backgroundImage;
-        if (image && image !== 'none') {
-          if (image.indexOf('gradient(') !== -1) {
-            paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
-          }
-          // A background image gets its plate on the element carrying it,
-          // where background-color already paints underneath the artwork.
-          const backgroundURL = firstURL(image);
-          if (backgroundURL) {
-            paint(element, 'data-glass-plate', '--glass-plate', plates[backgroundURL]);
-          }
+        if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
+          paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
         }
-      }
+      }, function (root) {
+        // A tree discovered on the way: give it the rules, or nothing marked
+        // inside it will mean anything.
+        if (root.host) { styleShadow(root); }
+        else if (root.documentElement) { styleDocument(root); }
+      });
     } finally {
-      ourSheets.forEach(function (each) { each.disabled = false; });
-    }
-
-    const images = document.querySelectorAll('img');
-    for (let i = 0; i < Math.min(images.length, 64); i++) {
-      const image = images[i];
-      const plate = plates[image.currentSrc || image.src];
-      if (plate) {
-        image.style.setProperty('--glass-plate', plate);
-        image.setAttribute('data-glass-plate', '');
-      }
+      (window.__glassSheets || []).forEach(function (sheet) { sheet.disabled = false; });
     }
 
     // Last, so there is never a frame between the holding colour coming off and
@@ -420,10 +348,9 @@ enum ThemeBridge {
     document.getElementById('__glass_preflight')?.remove();
 
     // Then watch for the page changing underneath us — a section revealed on
-    // scroll, a lazily loaded list, a header that turns opaque, a framework
-    // re-rendering a subtree and taking our properties with it. Coalesced into
-    // one report, because a page that loads fifty rows fires fifty times and
-    // they all want the same single answer.
+    // scroll, a lazily loaded list, a subtree re-rendered with our properties
+    // torn off. Coalesced into one report, because a list that adds fifty rows
+    // fires fifty times and they all want the same answer.
     if (!window.__glassObserver) {
       window.__glassObserver = new MutationObserver(function () {
         if (window.__glassPending) { return; }
@@ -436,9 +363,6 @@ enum ThemeBridge {
     window.__glassObserver.observe(document.documentElement, {
       childList: true,
       subtree: true,
-      // Colour follows class far more often than it follows an inline style,
-      // and watching every attribute on a large page is a lot of noise for the
-      // two that matter.
       attributes: true,
       attributeFilter: ['class', 'style']
     });
@@ -510,14 +434,14 @@ enum ThemeBridge {
     static let revertScript = """
     window.__glassObserver?.disconnect();
     window.__glassObserver = null;
-    window.__glassSeenImages = null;
+    window.__glassSheets = [];
     document.getElementById('__glass_theme')?.remove();
     document.getElementById('__glass_preflight')?.remove();
     const attributes = ['data-glass-bg', 'data-glass-fg', 'data-glass-bd',
-                        'data-glass-ol', 'data-glass-gr', 'data-glass-plate',
+                        'data-glass-ol', 'data-glass-gr',
                         'data-glass-fl', 'data-glass-st'];
     const variables = ['--glass-bg', '--glass-fg', '--glass-bd',
-                       '--glass-ol', '--glass-gr', '--glass-plate',
+                       '--glass-ol', '--glass-gr',
                        '--glass-fl', '--glass-st'];
     for (const attribute of attributes) {
       for (const element of document.querySelectorAll('[' + attribute + ']')) {
@@ -541,16 +465,6 @@ enum ThemeBridge {
         var on: String?
     }
 
-    /// One image, reduced to something the analysis can read.
-    struct ImageReading: Decodable {
-        var key: String
-        /// Base64 of a 16x16 RGBA reduction.
-        var pixels: String
-        /// The site's own colour behind it, resolved through the plan to find
-        /// what it will actually be sitting on once the theme lands.
-        var backdrop: String
-    }
-
     struct Survey: Decodable {
         var ground: String
         /// True once this page has been themed. The ground reading is then our
@@ -560,7 +474,6 @@ enum ThemeBridge {
         /// is representative of the finished page.
         var ready: Bool
         var colors: [Reading]
-        var images: [ImageReading]
     }
 
     /// Turns the page's report into the observations `GlassCore` reasons about.
