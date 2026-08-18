@@ -15,7 +15,7 @@ import SwiftUI
 final class DevToolsSession: Identifiable {
 
     enum Pane: String, CaseIterable, Identifiable {
-        case elements, styles, network, storage, console
+        case elements, styles, network, storage, performance, console
 
         var id: String { rawValue }
 
@@ -25,6 +25,7 @@ final class DevToolsSession: Identifiable {
             case .styles: "Styles"
             case .network: "Network"
             case .storage: "Storage"
+            case .performance: "Speed"
             case .console: "Console"
             }
         }
@@ -35,6 +36,7 @@ final class DevToolsSession: Identifiable {
             case .styles: "paintbrush"
             case .network: "arrow.up.arrow.down"
             case .storage: "externaldrive"
+            case .performance: "gauge.with.needle"
             case .console: "terminal"
             }
         }
@@ -1047,6 +1049,71 @@ final class DevToolsSession: Identifiable {
         await loadStorage()
     }
 
+    // MARK: - Performance
+
+    private(set) var performance = PerformanceReport()
+    private(set) var isMeasuringLayout = false
+    /// What the pane asked for, as opposed to what the current document is
+    /// doing. A reload replaces the agent with a fresh one that is watching
+    /// nothing, so the intent has to outlive the document or "reload and
+    /// measure" would reload and then measure nothing.
+    @ObservationIgnored private var wantsLayoutWatching = false
+    @ObservationIgnored private var performanceTimer: Task<Void, Never>?
+
+    func loadPerformance() async {
+        let issued = generation
+        guard let reply = try? await bridge.call(.performanceRead), issued == generation
+        else { return }
+        performance = PerformanceWire.decode(reply)
+        isMeasuringLayout = performance.isWatchingLayout
+
+        // Re-arms itself after a navigation. Cheaper and more reliable than
+        // hooking the load: the poll is already running, and this converges
+        // within one tick however the document changed.
+        if wantsLayoutWatching, !performance.isWatchingLayout {
+            _ = try? await bridge.call(.performanceWatchLayout, ["enabled": true])
+        }
+    }
+
+    /// Starts watching for layout shifts.
+    ///
+    /// Opt-in and self-stopping, because reading element rects forces layout —
+    /// measuring this way costs a little of the thing it measures. It runs
+    /// while the pane is open and stops once the page settles.
+    func setLayoutWatching(_ enabled: Bool) async {
+        wantsLayoutWatching = enabled
+        _ = try? await bridge.call(.performanceWatchLayout, ["enabled": enabled])
+        isMeasuringLayout = enabled
+        await loadPerformance()
+    }
+
+    /// Polls while the pane is on screen. Metrics arrive over the life of a
+    /// page — LCP is refined as bigger content paints, interactions happen when
+    /// someone interacts — so a single read would be a snapshot of the first
+    /// moment rather than a picture of the page.
+    func startPerformanceUpdates() {
+        performanceTimer?.cancel()
+        performanceTimer = Task { @MainActor in
+            while !Task.isCancelled {
+                await loadPerformance()
+                try? await Task.sleep(for: .milliseconds(700))
+            }
+        }
+    }
+
+    func stopPerformanceUpdates() {
+        performanceTimer?.cancel()
+        performanceTimer = nil
+    }
+
+    /// Reloads with the agent already installed, which is the only way to get a
+    /// complete picture: layout shifts and blocked frames can't be recovered
+    /// after the fact the way paint timings can.
+    func reloadAndMeasure() async {
+        await setLayoutWatching(true)
+        tab?.reload()
+    }
+
     // MARK: - Console
 
     private(set) var console = ConsoleBuffer()
@@ -1308,6 +1375,7 @@ final class DevToolsSession: Identifiable {
     }
 
     func stop() {
+        stopPerformanceUpdates()
         bridge.detach()
     }
 
@@ -1329,6 +1397,7 @@ final class DevToolsSession: Identifiable {
         computed = [:]
         computedColors = [:]
         stylePseudo = nil
+        performance = PerformanceReport()
         cookies = []
         storageItems = []
         siteData = []

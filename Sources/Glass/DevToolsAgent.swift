@@ -266,6 +266,179 @@ enum DevToolsAgent {
       const MAX_ANCESTORS = 10;
       const MAX_RULES = 500;
 
+      // ---- Performance ----------------------------------------------------
+
+      // What this engine will and won't tell us, asked rather than assumed.
+      //
+      // The trap worth naming: `observe({ type })` does *not* throw for a type
+      // WebKit doesn't implement — it silently never fires. Feature-detecting
+      // by try/catch reports every type as supported and then quietly produces
+      // no data. `supportedEntryTypes` is the only honest signal.
+      const perfSupport = (function () {
+        const types = (typeof PerformanceObserver !== 'undefined'
+          && PerformanceObserver.supportedEntryTypes) || [];
+        return {
+          lcp: types.indexOf('largest-contentful-paint') >= 0,
+          paint: types.indexOf('paint') >= 0,
+          event: types.indexOf('event') >= 0,
+          layoutShift: types.indexOf('layout-shift') >= 0,
+          longtask: types.indexOf('longtask') >= 0
+        };
+      })();
+
+      let lcpEntry = null;
+      let slowestInteraction = null;
+      const blockingEvents = [];
+      const layoutShifts = [];
+
+      if (perfSupport.lcp) {
+        try {
+          new PerformanceObserver(function (list) {
+            const entries = list.getEntries();
+            // The last one wins: LCP is refined as bigger content paints.
+            const last = entries[entries.length - 1];
+            if (last) {
+              lcpEntry = {
+                at: last.startTime,
+                size: last.size || 0,
+                element: last.element
+                  ? (last.element.tagName || '').toLowerCase()
+                    + (last.element.id ? '#' + last.element.id : '')
+                  : ''
+              };
+            }
+          }).observe({ type: 'largest-contentful-paint', buffered: true });
+        } catch (e) { /* nothing to do but carry on without it */ }
+      }
+
+      if (perfSupport.event) {
+        try {
+          new PerformanceObserver(function (list) {
+            const entries = list.getEntries();
+            for (let i = 0; i < entries.length; i++) {
+              const entry = entries[i];
+              if (!slowestInteraction || entry.duration > slowestInteraction.duration) {
+                slowestInteraction = { duration: entry.duration, name: entry.name };
+              }
+            }
+          }).observe({ type: 'event', buffered: true, durationThreshold: 16 });
+        } catch (e) { /* older engines simply report no interactions */ }
+      }
+
+      // Long tasks, approximated by watching for the scheduler to go missing.
+      //
+      // WebKit implements no `longtask` entry type, so this is the only way to
+      // know the main thread stopped answering: a timer that should fire every
+      // frame, and the size of the gap when it doesn't. It costs one timer and
+      // reports the same thing the real metric would.
+      let lastTick = performance.now();
+      setInterval(function () {
+        const now = performance.now();
+        const gap = now - lastTick;
+        lastTick = now;
+        if (gap >= 50 && blockingEvents.length < 500) {
+          blockingEvents.push({ at: now - gap, duration: gap });
+        }
+      }, 16);
+
+      // Layout shifts, approximated by watching elements move.
+      //
+      // Also unimplemented here, and the more valuable of the two: no WebKit
+      // browser can tell you its CLS. Reading rects forces layout, so this runs
+      // only while someone is looking at the Performance pane, and stops once
+      // the page settles.
+      let shiftWatch = null;
+      let tracked = [];
+      let quietFrames = 0;
+
+      function sampleRects() {
+        const out = [];
+        const elements = document.body
+          ? document.body.querySelectorAll('*') : [];
+        const limit = Math.min(elements.length, 300);
+        for (let i = 0; i < limit; i++) {
+          const element = elements[i];
+          const rect = element.getBoundingClientRect();
+          // Off-screen elements cannot shift anything the user can see.
+          if (rect.bottom < 0 || rect.top > innerHeight) { continue; }
+          if (!rect.width && !rect.height) { continue; }
+          out.push({ element: element, x: rect.x, y: rect.y, w: rect.width, h: rect.height });
+        }
+        return out;
+      }
+
+      function compareShift() {
+        if (!shiftWatch) { return; }
+        const current = sampleRects();
+        const previous = tracked;
+        tracked = current;
+
+        let moved = 0;
+        const byElement = new Map();
+        for (let i = 0; i < previous.length; i++) {
+          byElement.set(previous[i].element, previous[i]);
+        }
+
+        let unionMinX = Infinity, unionMinY = Infinity;
+        let unionMaxX = -Infinity, unionMaxY = -Infinity;
+        let maxDistance = 0;
+
+        for (let i = 0; i < current.length; i++) {
+          const now = current[i];
+          const before = byElement.get(now.element);
+          if (!before) { continue; }
+          const dx = Math.abs(now.x - before.x);
+          const dy = Math.abs(now.y - before.y);
+          // Sub-pixel drift is antialiasing, not a layout shift.
+          if (dx < 1 && dy < 1) { continue; }
+          moved++;
+          maxDistance = Math.max(maxDistance, dx, dy);
+          unionMinX = Math.min(unionMinX, before.x, now.x);
+          unionMinY = Math.min(unionMinY, before.y, now.y);
+          unionMaxX = Math.max(unionMaxX, before.x + before.w, now.x + now.w);
+          unionMaxY = Math.max(unionMaxY, before.y + before.h, now.y + now.h);
+        }
+
+        if (moved > 0 && layoutShifts.length < 200) {
+          quietFrames = 0;
+          const area = Math.max(0, unionMaxX - unionMinX)
+            * Math.max(0, unionMaxY - unionMinY);
+          post_shift(area, maxDistance, moved);
+        } else {
+          quietFrames++;
+        }
+
+        // Stops itself once the page settles, so a pane left open doesn't keep
+        // forcing layout for ever.
+        if (quietFrames > 180) { setShiftWatch(false); return; }
+        shiftWatch = requestAnimationFrame(compareShift);
+      }
+
+      function post_shift(area, distance, count) {
+        const viewportArea = innerWidth * innerHeight;
+        if (!viewportArea) { return; }
+        const impact = Math.min(1, area / viewportArea);
+        const distanceFraction = Math.min(1, distance / Math.max(innerWidth, innerHeight));
+        const value = impact * distanceFraction;
+        if (value <= 0) { return; }
+        layoutShifts.push({
+          at: performance.now(), value: value,
+          describedBy: count + (count === 1 ? ' element' : ' elements')
+        });
+      }
+
+      function setShiftWatch(enabled) {
+        if (enabled && !shiftWatch) {
+          tracked = sampleRects();
+          quietFrames = 0;
+          shiftWatch = requestAnimationFrame(compareShift);
+        } else if (!enabled && shiftWatch) {
+          cancelAnimationFrame(shiftWatch);
+          shiftWatch = null;
+          tracked = [];
+        }
+      }
+
       // ---- Recovered stylesheets ------------------------------------------
 
       // A cross-origin sheet throws on `.cssRules`, so the page cannot read it
@@ -1200,6 +1373,44 @@ enum DevToolsAgent {
                     usage: estimate.usage || 0, quota: estimate.quota || 0
                   });
                 });
+              }
+
+              case 'Performance.read': {
+                const nav = performance.getEntriesByType('navigation')[0];
+                const paints = performance.getEntriesByType('paint');
+                const fcp = paints.filter(function (p) {
+                  return p.name === 'first-contentful-paint';
+                })[0];
+
+                return JSON.stringify({
+                  support: perfSupport,
+                  navigation: nav ? {
+                    redirectStart: nav.redirectStart, redirectEnd: nav.redirectEnd,
+                    domainLookupStart: nav.domainLookupStart,
+                    domainLookupEnd: nav.domainLookupEnd,
+                    connectStart: nav.connectStart, connectEnd: nav.connectEnd,
+                    secureConnectionStart: nav.secureConnectionStart,
+                    requestStart: nav.requestStart, responseStart: nav.responseStart,
+                    responseEnd: nav.responseEnd, domInteractive: nav.domInteractive,
+                    domContentLoadedEventStart: nav.domContentLoadedEventStart,
+                    domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
+                    domComplete: nav.domComplete,
+                    loadEventEnd: nav.loadEventEnd,
+                    transferSize: nav.transferSize, type: nav.type
+                  } : null,
+                  fcp: fcp ? fcp.startTime : null,
+                  lcp: lcpEntry,
+                  interaction: slowestInteraction,
+                  blocking: blockingEvents,
+                  shifts: layoutShifts,
+                  watching: !!shiftWatch,
+                  now: performance.now()
+                });
+              }
+
+              case 'Performance.watchLayout': {
+                setShiftWatch(!!(params && params.enabled));
+                return JSON.stringify({ ok: true, watching: !!shiftWatch });
               }
 
               case 'Overlay.setInspectMode': {

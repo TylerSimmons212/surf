@@ -43,6 +43,9 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case storageListDatabases = "Storage.listDatabases"
     case storageEstimate = "Storage.estimate"
 
+    case performanceRead = "Performance.read"
+    case performanceWatchLayout = "Performance.watchLayout"
+
     case overlaySetInspectMode = "Overlay.setInspectMode"
 
     case networkDrain = "Network.drain"
@@ -85,6 +88,7 @@ extension DevToolsMethod {
              .cssAddRecoveredSheet,
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
+             .performanceRead, .performanceWatchLayout,
              .overlaySetInspectMode:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
