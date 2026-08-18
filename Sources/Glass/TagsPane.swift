@@ -195,42 +195,45 @@ struct TagsPane: View {
     private var libraryList: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 8) {
-                // Said up front, because the honest shape of this feature is
-                // not what people expect from a "show me their ads" tool.
+                // The honest shape of this, said plainly. Of these platforms
+                // exactly one has an API a marketer could use — Meta's, free
+                // but covering commercial ads only where they were delivered to
+                // the EU or UK — and TikTok's research API bars commercial use
+                // outright. Deep links need no token and can't go stale.
                 Text(
-                    "These platforms have no public ad-library API — Meta's needs an app "
-                    + "token and covers political ads, and Google's, TikTok's and LinkedIn's "
-                    + "are web-only. Glass takes you there with the search filled in rather "
-                    + "than scraping them."
+                    "Glass links out rather than fetching. Only Meta has an ad API a "
+                    + "marketer can use, and only for EU and UK delivery; TikTok's research "
+                    + "API excludes commercial use, and Google's and LinkedIn's libraries "
+                    + "are browser-only."
                 )
                 .font(DevToolsTheme.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-                // Editable, because these libraries index by advertiser name
-                // and the best Glass can do is guess one from the page.
-                HStack(spacing: 6) {
-                    Text("Search as")
-                        .font(DevToolsTheme.chrome)
-                        .foregroundStyle(.secondary)
-                    TextField("advertiser name", text: $session.advertiserName)
-                        .textFieldStyle(.roundedBorder)
-                        .font(DevToolsTheme.mono)
-                        .frame(width: 200)
+                if session.socialProfiles.isEmpty {
+                    Text(
+                        "No accounts declared on this page. Sites usually link theirs in "
+                        + "the footer, or declare a Facebook page with an fb:pages tag."
+                    )
+                    .font(DevToolsTheme.chrome)
+                    .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(session.socialProfiles) { profile in
+                        ProfileRow(profile: profile)
+                    }
                 }
 
-                let libraries = session.adLibraries()
-                if libraries.isEmpty {
-                    Text("No advertising tags found on this page, so there's nothing to look up.")
-                        .font(DevToolsTheme.chrome)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    ForEach(libraries, id: \.vendor) { entry in
-                        LibraryRow(
-                            vendor: entry.vendor, library: entry.library,
-                            accountId: entry.accountId, url: entry.url
-                        )
-                    }
+                // Domain-keyed, since Google's centre indexes that way and no
+                // account on the page improves on it.
+                if let google = TagDecoder.signatures
+                    .first(where: { $0.id == "google-ads" })?.adLibrary,
+                   session.detectedTags.contains(where: { $0.vendorId == "google-ads" }) {
+                    ProfileRow(profile: SocialProfile(
+                        platform: "Google Ads", handle: session.siteDomain,
+                        profileURL: "https://\(session.siteDomain)",
+                        adLibraryURL: google.url(id: "", domain: session.siteDomain),
+                        note: "searched by domain — no public API"
+                    ))
                 }
             }
             .padding(DevToolsTheme.barInset)
@@ -352,34 +355,50 @@ private struct EventRow: View {
     }
 }
 
-private struct LibraryRow: View {
-    let vendor: String
-    let library: AdLibrary
-    let accountId: String
-    let url: String
+private struct ProfileRow: View {
+    let profile: SocialProfile
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(library.name)
-                    .font(DevToolsTheme.chrome.weight(.medium))
-                HStack(spacing: 4) {
-                    Text(vendor)
-                        .font(DevToolsTheme.caption)
-                        .foregroundStyle(.secondary)
-                    if !accountId.isEmpty {
-                        Text(accountId)
-                            .font(DevToolsTheme.caption.monospaced())
-                            .foregroundStyle(ElementsStyle.valueColor)
+                HStack(spacing: 5) {
+                    Text(profile.platform)
+                        .font(DevToolsTheme.chrome.weight(.medium))
+                    Text(profile.handle)
+                        .font(DevToolsTheme.caption.monospaced())
+                        .foregroundStyle(ElementsStyle.valueColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if profile.isExact {
+                        // Worth marking: an exact id returns one advertiser,
+                        // where a name search returns everyone who shares it.
+                        Text("exact")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(NetworkStyle.success)
+                            .padding(.horizontal, 3)
+                            .padding(.vertical, 0.5)
+                            .background {
+                                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                    .fill(NetworkStyle.success.opacity(0.15))
+                            }
                     }
                 }
-                Text(library.note)
+                Text(profile.note)
                     .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
             }
+
             Spacer(minLength: 4)
-            Link("Open", destination: URL(string: url) ?? URL(string: "https://example.com")!)
-                .font(DevToolsTheme.chrome)
+
+            if let library = profile.adLibraryURL, let url = URL(string: library) {
+                Link("Their ads", destination: url)
+                    .font(DevToolsTheme.chrome)
+            }
+            if let url = URL(string: profile.profileURL) {
+                Link("Profile", destination: url)
+                    .font(DevToolsTheme.chrome)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -55,7 +55,10 @@ public enum TagDecoder {
             adLibrary: AdLibrary(
                 name: "Meta Ad Library",
                 template: "https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&q={domain}",
-                note: "searched by name — the Ad Library API needs an app token"
+                // Exact, when the site declares its Page: this returns that one
+                // advertiser's ads rather than a name search.
+                pageTemplate: "https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ALL&view_all_page_id={id}",
+                note: "the API is free but covers commercial ads only for EU and UK delivery"
             ),
             globals: ["fbq", "_fbq"]
         ),

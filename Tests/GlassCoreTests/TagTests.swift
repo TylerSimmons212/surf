@@ -105,13 +105,17 @@ struct TagDecoderTests {
     }
 
     /// The ad-library links are the honest half of the ad idea: no scraping,
-    /// no API that needs a token, just the search already filled in.
-    @Test("Ad library links fill in the identifier")
+    /// no token, just the search already filled in — and the note states the
+    /// real constraint, which is that Meta's API covers commercial ads only
+    /// where they were delivered to the EU or UK.
+    @Test("Ad library links fill in the identifier and state the constraint")
     func adLibraryLinks() {
         let meta = TagDecoder.signatures.first { $0.id == "meta" }?.adLibrary
         let url = meta?.url(id: "123", domain: "shop.example.com")
         #expect(url?.contains("shop.example.com") == true)
-        #expect(meta?.note.contains("app token") == true)
+        #expect(meta?.note.contains("EU and UK") == true)
+        // An exact page lookup exists for when the site declares its Page id.
+        #expect(meta?.isExact == true)
     }
 }
 
@@ -298,5 +302,131 @@ struct AdvertiserNameTests {
     @Test("With nothing to go on, the domain is still better than empty")
     func fallback() {
         #expect(AdvertiserName.guess(siteName: "", title: "", domain: "store.acme.com") == "acme")
+    }
+}
+
+@Suite("Social identity detection")
+struct SocialDetectionTests {
+
+    /// A Page id addresses one advertiser exactly, where a name search returns
+    /// everyone who shares that name. It is also unrelated to the pixel id
+    /// already recovered from traffic — having one says nothing about the other.
+    @Test("fb:pages yields numeric page ids")
+    func metaPageIds() {
+        #expect(SocialDetection.pageIds(fromMeta: "123456789") == ["123456789"])
+        #expect(SocialDetection.pageIds(fromMeta: "111, 222 ,333") == ["111", "222", "333"])
+        // Documented as numeric; anything else would look up a page that
+        // doesn't exist.
+        #expect(SocialDetection.pageIds(fromMeta: "acmestore").isEmpty)
+        #expect(SocialDetection.pageIds(fromMeta: "").isEmpty)
+    }
+
+    @Test("A Facebook link yields its page name or id")
+    func facebookLinks() {
+        #expect(SocialDetection.page(fromURL: "https://www.facebook.com/acmestore").name == "acmestore")
+        #expect(SocialDetection.page(fromURL: "https://facebook.com/123456789").id == "123456789")
+        #expect(
+            SocialDetection.page(fromURL: "https://www.facebook.com/profile.php?id=99").id == "99"
+        )
+        // The legacy form ends in the id.
+        #expect(
+            SocialDetection.page(fromURL: "https://www.facebook.com/pages/Acme/5551212").id
+                == "5551212"
+        )
+    }
+
+    /// Share buttons and the pixel itself all live on facebook.com. Reading
+    /// every link naively turns `sharer.php` into an advertiser.
+    @Test("Facebook's own plumbing is not an advertiser")
+    func ignoresPlumbing() {
+        for url in [
+            "https://www.facebook.com/sharer/sharer.php?u=x",
+            "https://www.facebook.com/tr/?id=1&ev=PageView",
+            "https://www.facebook.com/plugins/like.php",
+            "https://www.facebook.com/dialog/share",
+        ] {
+            let page = SocialDetection.page(fromURL: url)
+            #expect(page.id == nil && page.name == nil)
+        }
+    }
+
+    @Test("Other platforms yield their handles")
+    func otherPlatforms() {
+        let identity = SocialDetection.identity(metaPages: [], links: [
+            "https://www.instagram.com/acmestore/",
+            "https://www.linkedin.com/company/acme-inc/",
+            "https://www.tiktok.com/@acmestore",
+            "https://x.com/acme",
+            "https://www.youtube.com/@acmetv",
+        ])
+        #expect(identity.instagramHandles == ["acmestore"])
+        #expect(identity.linkedinCompanies == ["acme-inc"])
+        #expect(identity.tiktokHandles == ["acmestore"])
+        #expect(identity.xHandles == ["acme"])
+        #expect(identity.youtubeChannels == ["acmetv"])
+    }
+
+    /// Share intents look exactly like profile links until you read the path.
+    @Test("Share intents on other platforms are ignored too")
+    func ignoresIntents() {
+        let identity = SocialDetection.identity(metaPages: [], links: [
+            "https://x.com/intent/tweet?text=hi",
+            "https://x.com/share?url=x",
+            "https://www.instagram.com/p/ABC123/",
+            "https://www.youtube.com/watch?v=abc",
+        ])
+        #expect(identity.xHandles.isEmpty)
+        #expect(identity.instagramHandles.isEmpty)
+        #expect(identity.youtubeChannels.isEmpty)
+    }
+
+    @Test("Duplicated links collapse to one entry")
+    func deduplicates() {
+        let identity = SocialDetection.identity(metaPages: ["123", "123"], links: [
+            "https://facebook.com/acme", "https://www.facebook.com/acme",
+        ])
+        #expect(identity.pageIds == ["123"])
+        #expect(identity.pageNames == ["acme"])
+    }
+
+    // MARK: - Deep links
+
+    /// The payoff: an exact page id links to that one advertiser's ads rather
+    /// than to a search that might return anybody.
+    @Test("A page id produces an exact ad-library link")
+    func exactAdLibraryLink() {
+        let profiles = SocialDetection.profiles(
+            for: SocialIdentity(pageIds: ["123456789"]), fallbackTerm: "acme"
+        )
+        let facebook = profiles.first { $0.platform == "Facebook" }
+        #expect(facebook?.isExact == true)
+        #expect(facebook?.adLibraryURL?.contains("view_all_page_id=123456789") == true)
+        #expect(facebook?.profileURL == "https://www.facebook.com/123456789")
+    }
+
+    @Test("Without an id it falls back to a name search, and says so")
+    func nameSearchFallback() {
+        let profiles = SocialDetection.profiles(
+            for: SocialIdentity(pageNames: ["acmestore"]), fallbackTerm: "acme"
+        )
+        let facebook = profiles.first { $0.platform == "Facebook" }
+        #expect(facebook?.isExact == false)
+        #expect(facebook?.adLibraryURL?.contains("q=acmestore") == true)
+        #expect(facebook?.note.contains("not id") == true)
+    }
+
+    @Test("Platforms with no per-advertiser library offer only a profile")
+    func noLibrary() {
+        let profiles = SocialDetection.profiles(
+            for: SocialIdentity(xHandles: ["acme"]), fallbackTerm: "acme"
+        )
+        let x = profiles.first { $0.platform == "X" }
+        #expect(x?.adLibraryURL == nil)
+        #expect(x?.profileURL == "https://x.com/acme")
+    }
+
+    @Test("Nothing declared produces no links rather than broken ones")
+    func empty() {
+        #expect(SocialDetection.profiles(for: SocialIdentity(), fallbackTerm: "acme").isEmpty)
     }
 }

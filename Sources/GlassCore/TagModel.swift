@@ -85,22 +85,46 @@ public struct TagSignature: Sendable, Identifiable {
 /// can't legitimately get.
 public struct AdLibrary: Sendable, Equatable {
     public var name: String
-    /// `{id}` is replaced with the account id, `{domain}` with the site's host.
+    /// `{id}` is replaced with the account id, `{domain}` with the search term.
     public var template: String
+    /// Used instead when an exact advertiser page id is known. A name search
+    /// returns everyone who shares that name; a page lookup returns one
+    /// advertiser, which is the difference between browsing and finding.
+    public var pageTemplate: String?
     public var note: String
 
-    public init(name: String, template: String, note: String = "") {
+    public init(
+        name: String, template: String, pageTemplate: String? = nil, note: String = ""
+    ) {
         self.name = name
         self.template = template
+        self.pageTemplate = pageTemplate
         self.note = note
     }
 
     public func url(id: String, domain: String) -> String {
-        template
+        substitute(template, id: id, term: domain)
+    }
+
+    /// The most precise link available: an exact page lookup where the page is
+    /// known, a name search otherwise.
+    public func url(identity: SocialIdentity, accountId: String, term: String) -> String {
+        if let pageTemplate, let pageId = identity.pageIds.first {
+            return substitute(pageTemplate, id: pageId, term: term)
+        }
+        // A vanity name from a link beats a name guessed off the title.
+        let best = identity.pageNames.first ?? identity.instagramHandles.first ?? term
+        return substitute(template, id: accountId, term: best)
+    }
+
+    public var isExact: Bool { pageTemplate != nil }
+
+    private func substitute(_ text: String, id: String, term: String) -> String {
+        text
             .replacingOccurrences(of: "{id}", with: id.addingPercentEncoding(
                 withAllowedCharacters: .urlQueryAllowed) ?? id)
-            .replacingOccurrences(of: "{domain}", with: domain.addingPercentEncoding(
-                withAllowedCharacters: .urlQueryAllowed) ?? domain)
+            .replacingOccurrences(of: "{domain}", with: term.addingPercentEncoding(
+                withAllowedCharacters: .urlQueryAllowed) ?? term)
     }
 }
 

@@ -1194,6 +1194,8 @@ final class DevToolsSession: Identifiable {
     /// What to search an ad library for. A guess, and editable, because the
     /// tool that does this for a living just asks a human.
     var advertiserName = ""
+    /// The accounts the site declares about itself, and the deep links to them.
+    private(set) var socialProfiles: [SocialProfile] = []
     private(set) var isLoadingTags = false
 
     /// Bodies for the vendors that POST their payload, fetched only for
@@ -1250,6 +1252,14 @@ final class DevToolsSession: Identifiable {
                 siteName: reply["siteName"] as? String ?? "",
                 title: reply["title"] as? String ?? "",
                 domain: siteDomain
+            )
+            let identity = SocialDetection.identity(
+                metaPages: reply["metaPages"] as? [String] ?? [],
+                links: reply["links"] as? [String] ?? []
+            )
+            socialProfiles = SocialDetection.profiles(
+                for: identity,
+                fallbackTerm: advertiserName.isEmpty ? siteDomain : advertiserName
             )
         }
 
@@ -1655,6 +1665,7 @@ final class DevToolsSession: Identifiable {
         tagEvents = []
         detectedTags = []
         tagFindings = []
+        socialProfiles = []
         tagBodies.removeAll()
         cookies = []
         storageItems = []

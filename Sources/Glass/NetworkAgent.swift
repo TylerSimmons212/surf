@@ -524,6 +524,32 @@ enum NetworkAgent {
                 // What the site calls itself. Ad libraries are indexed by
                 // advertiser name, not by domain, so this is the term that
                 // actually finds anything.
+                // What the site declares about its own accounts. A Facebook
+                // Page id addresses one advertiser exactly, where a name search
+                // returns everyone who shares the name — and it is unrelated to
+                // the pixel id, so having one says nothing about the other.
+                const metaPages = [];
+                const pageTags = document.querySelectorAll(
+                  'meta[property="fb:pages"], meta[name="fb:pages"], '
+                  + 'meta[property="fb:page_id"], meta[name="fb:page_id"]'
+                );
+                for (let i = 0; i < pageTags.length; i++) {
+                  const content = pageTags[i].getAttribute('content');
+                  if (content) { metaPages.push(content); }
+                }
+
+                const links = [];
+                const anchors = document.querySelectorAll('a[href]');
+                for (let i = 0; i < anchors.length && links.length < 400; i++) {
+                  const href = anchors[i].getAttribute('href') || '';
+                  if (href.indexOf('facebook.com') >= 0 || href.indexOf('instagram.com') >= 0
+                      || href.indexOf('linkedin.com') >= 0 || href.indexOf('tiktok.com') >= 0
+                      || href.indexOf('x.com') >= 0 || href.indexOf('twitter.com') >= 0
+                      || href.indexOf('youtube.com') >= 0) {
+                    try { links.push(new URL(href, location.href).href); } catch (e) {}
+                  }
+                }
+
                 const siteName = document.querySelector('meta[property="og:site_name"]');
                 const appName = document.querySelector('meta[name="application-name"]');
                 return JSON.stringify({
@@ -532,6 +558,8 @@ enum NetworkAgent {
                   siteName: (siteName && siteName.getAttribute('content'))
                     || (appName && appName.getAttribute('content')) || '',
                   title: document.title || '',
+                  metaPages: metaPages,
+                  links: links,
                   generator: generator ? generator.getAttribute('content') : '',
                   dataLayerLength: (window.dataLayer && window.dataLayer.length) || 0
                 });
