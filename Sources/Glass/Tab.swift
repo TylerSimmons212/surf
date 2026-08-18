@@ -417,10 +417,33 @@ final class Tab: NSObject, Identifiable {
         // designers' work for an approximation of it. Declared signals —
         // a meta tag, a media query — say what a site claims; this says what it
         // did, and cross-origin stylesheets can't hide it.
-        if !survey.themed, let ground = CSSColor(css: survey.ground) {
+        debugLog("""
+            theme: target=\(target.rawValue) ground=\(survey.ground) \
+            themed=\(survey.themed) colours=\(survey.colors.count)
+            """)
+
+        guard survey.ready else {
+            debugLog("theme: document still parsing — waiting")
+            return
+        }
+
+        // A transparent ground is not a dark one.
+        //
+        // A page that declares no background shows the browser's canvas, which
+        // is white. Read literally, `rgba(0, 0, 0, 0)` parses as black, lands
+        // at lightness zero, and satisfies "already dark" — so every site that
+        // simply never set a background would be judged as having a dark mode
+        // and left in light mode permanently. Treating it as undeclared sends
+        // it down the synthesis path instead, which is what it needs.
+        let declaredGround = CSSColor(css: survey.ground).flatMap {
+            $0.alpha > 0.5 ? $0 : nil
+        }
+
+        if !survey.themed, let ground = declaredGround {
             let lightness = OKLCH(ground.rgb).l
             let alreadyRight = target == .dark ? lightness < 0.35 : lightness > 0.7
             if alreadyRight {
+                debugLog("theme: site already \(target.rawValue) (L=\(rounded(lightness))) — left alone")
                 _ = try? await webView.callAsyncJavaScript(
                     ThemeBridge.dismissPreflightScript,
                     arguments: [:], in: nil, contentWorld: .defaultClient
@@ -443,6 +466,7 @@ final class Tab: NSObject, Identifiable {
         }
 
         guard !plan.isEmpty else {
+            debugLog("theme: nothing to change — left alone")
             _ = try? await webView.callAsyncJavaScript(
                 ThemeBridge.dismissPreflightScript,
                 arguments: [:], in: nil, contentWorld: .defaultClient
@@ -459,6 +483,11 @@ final class Tab: NSObject, Identifiable {
             ],
             in: nil, contentWorld: .defaultClient
         )
+
+        debugLog("""
+            theme: applied \(plan.replacements.count) substitutions, \
+            ground \(plan.pageBackground.css)
+            """)
 
         // Public API, and the fix for the white band that rubber-band scrolling
         // would otherwise reveal under a darkened page.
@@ -807,6 +836,11 @@ extension Tab: WKUIDelegate {
     func webViewDidClose(_ webView: WKWebView) {
         session?.close(self)
     }
+}
+
+/// Two decimal places, for log lines where more would be noise.
+private func rounded(_ value: Double) -> String {
+    String((value * 100).rounded() / 100)
 }
 
 /// stderr, so it survives output redirection unbuffered. Gated on the dev

@@ -31,6 +31,13 @@ enum ThemeBridge {
     /// the question it answers is "what is the biggest thing this colour
     /// paints" — a masthead, or a badge repeated forty times.
     static let collectScript = """
+    // Nothing useful to measure yet, and a page mid-parse reports a palette of
+    // three colours that isn't the site's. Reported rather than guessed at, so
+    // the caller can leave the holding colour up and come back.
+    if (document.readyState === 'loading') {
+      return JSON.stringify({ ground: '', themed: false, ready: false, colors: [] });
+    }
+
     // Measuring through our own holding colour would only measure the holding
     // colour — the page would look dark, be declared already dark, and be left
     // alone in a scheme it never had. So the preflight is switched off for the
@@ -142,7 +149,8 @@ enum ThemeBridge {
     const themed = !!document.getElementById('__glass_theme');
 
     return JSON.stringify({
-      ground: ground || '', themed: themed, colors: Array.from(found.values())
+      ground: ground || '', themed: themed, ready: true,
+      colors: Array.from(found.values())
     });
 
     } finally {
@@ -318,6 +326,9 @@ enum ThemeBridge {
         /// True once this page has been themed. The ground reading is then our
         /// own paint, and can't be used to judge what the site does.
         var themed: Bool
+        /// False while the document is still parsing, when nothing it reports
+        /// is representative of the finished page.
+        var ready: Bool
         var colors: [Reading]
     }
 
