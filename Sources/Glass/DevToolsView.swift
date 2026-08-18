@@ -45,6 +45,16 @@ struct DevToolsView: View {
                 }
             }
             .pickerStyle(.segmented)
+            // macOS 26 defaults a segmented control to a capsule. That reads as
+            // a pill-shaped filter chip, which is the wrong signal for what is
+            // really a two-view switcher — and it collides with the actual
+            // filter chips a few points below it in the console.
+            //
+            // The border shape is a first-class control property in the new
+            // design (`NSSegmentedControl.BorderShape` is `.automatic`,
+            // `.capsule` or `.roundedRectangle`), so this is choosing between
+            // sanctioned appearances rather than overriding one.
+            .buttonBorderShape(.roundedRectangle)
             .labelsHidden()
             .fixedSize()
 
