@@ -240,6 +240,385 @@ enum DevToolsAgent {
         });
       }
 
+      // ---- Styles ---------------------------------------------------------
+
+      // Pseudo-classes describing a state the element is not in while being
+      // inspected. `matches()` answers "no" for all of them, so a rule that
+      // only styles the hover state would simply never appear — which is why
+      // no inspector shows you what an element looks like on hover without
+      // making you hover it. These are stripped so the rule matches, and the
+      // rule is then flagged as not currently applying.
+      const STATE_PSEUDOS = [
+        'hover', 'active', 'focus', 'focus-visible', 'focus-within',
+        'target', 'visited'
+      ];
+      // Pseudo-elements that predate the double colon.
+      const LEGACY_ELEMENTS = ['before', 'after', 'first-line', 'first-letter'];
+      const MAX_VALUE = 400;
+      const MAX_ANCESTORS = 10;
+      const MAX_RULES = 500;
+
+      function isNameChar(ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+          || (ch >= '0' && ch <= '9') || ch === '-' || ch === '_';
+      }
+
+      /// Splits a selector into something `matches()` can answer, plus what had
+      /// to be removed to get there.
+      function analyseSelector(selector) {
+        let pseudo = null;
+        const states = [];
+        let out = '';
+        let depth = 0;
+        let quote = null;
+        let i = 0;
+
+        while (i < selector.length) {
+          const ch = selector[i];
+          if (quote) {
+            out += ch;
+            if (ch === quote) { quote = null; }
+            i++;
+            continue;
+          }
+          if (ch === '"' || ch === "'") { quote = ch; out += ch; i++; continue; }
+          if (ch === '(') { depth++; out += ch; i++; continue; }
+          if (ch === ')') { depth = Math.max(0, depth - 1); out += ch; i++; continue; }
+
+          // Only at the top level: `:not(:hover)` means something quite
+          // different from `:hover`, and stripping inside it would change which
+          // elements the selector picks out.
+          if (ch === ':' && depth === 0) {
+            let j = i + 1;
+            let isElement = false;
+            if (selector[j] === ':') { isElement = true; j++; }
+            let k = j;
+            while (k < selector.length && isNameChar(selector[k])) { k++; }
+            const name = selector.slice(j, k).toLowerCase();
+
+            let end = k;
+            if (selector[k] === '(') {
+              let d = 0;
+              let m = k;
+              for (; m < selector.length; m++) {
+                if (selector[m] === '(') { d++; }
+                else if (selector[m] === ')') { d--; if (d === 0) { m++; break; } }
+              }
+              end = m;
+            }
+
+            if (isElement || LEGACY_ELEMENTS.indexOf(name) >= 0) {
+              pseudo = '::' + name;
+              i = end;
+              continue;
+            }
+            if (STATE_PSEUDOS.indexOf(name) >= 0) {
+              states.push(':' + name);
+              i = end;
+              continue;
+            }
+            out += selector.slice(i, end);
+            i = end;
+            continue;
+          }
+          out += ch;
+          i++;
+        }
+
+        let clean = out.trim();
+        // A selector that was nothing but state — `:hover { }` — still applies
+        // to something.
+        if (!clean) { clean = '*'; }
+        const tail = clean[clean.length - 1];
+        if (tail === '>' || tail === '+' || tail === '~') { clean += ' *'; }
+        return { clean: clean, pseudo: pseudo, states: states };
+      }
+
+      function splitDeclarations(text) {
+        const out = [];
+        let depth = 0;
+        let quote = null;
+        let current = '';
+        for (let i = 0; i < text.length; i++) {
+          const ch = text[i];
+          if (quote) {
+            current += ch;
+            if (ch === quote) { quote = null; }
+            continue;
+          }
+          if (ch === '"' || ch === "'") { quote = ch; current += ch; continue; }
+          if (ch === '(') { depth++; }
+          else if (ch === ')') { depth = Math.max(0, depth - 1); }
+          // A `;` inside `url(data:...)` is not a separator, and splitting on
+          // it produces two declarations that are both nonsense.
+          else if (ch === ';' && depth === 0) {
+            if (current.trim()) { out.push(current.trim()); }
+            current = '';
+            continue;
+          }
+          current += ch;
+        }
+        if (current.trim()) { out.push(current.trim()); }
+        return out;
+      }
+
+      // What a shorthand actually sets, asked of the engine rather than
+      // guessed from a table that would go stale. This is what lets the panel
+      // strike through only the sides of a `margin` that lost.
+      const longhandCache = new Map();
+      let scratch = null;
+
+      function longhandsFor(name, value) {
+        if (name.indexOf('--') === 0) { return [name]; }
+        const key = name + '|' + value;
+        const cached = longhandCache.get(key);
+        if (cached) { return cached; }
+        // Detached, so it never enters the document and the page's own
+        // MutationObserver never sees it.
+        if (!scratch) { scratch = document.createElement('div'); }
+        scratch.style.cssText = '';
+        try { scratch.style.setProperty(name, value); } catch (e) { /* unknown property */ }
+        const out = [];
+        for (let i = 0; i < scratch.style.length; i++) { out.push(scratch.style.item(i)); }
+        const result = out.length ? out : [name];
+        longhandCache.set(key, result);
+        return result;
+      }
+
+      function readDeclarations(style) {
+        const out = [];
+        if (!style) { return out; }
+        // The authored names in authored order, taken from `cssText` — walking
+        // the indexed list instead would report four `margin-*` longhands for
+        // a `margin` nobody wrote.
+        const seen = new Set();
+        const pieces = splitDeclarations(style.cssText || '');
+        for (let i = 0; i < pieces.length; i++) {
+          const colon = pieces[i].indexOf(':');
+          if (colon < 0) { continue; }
+          const name = pieces[i].slice(0, colon).trim();
+          if (!name || seen.has(name)) { continue; }
+          seen.add(name);
+          let value = style.getPropertyValue(name);
+          if (value === '' && name.indexOf('--') !== 0) {
+            value = pieces[i].slice(colon + 1).replace('!important', '').trim();
+          }
+          if (value.length > MAX_VALUE) { value = value.slice(0, MAX_VALUE) + '…'; }
+          out.push({
+            name: name,
+            value: value,
+            important: style.getPropertyPriority(name) === 'important',
+            longhands: longhandsFor(name, value)
+          });
+        }
+        return out;
+      }
+
+      function sheetLabel(sheet) {
+        if (!sheet) { return '<style>'; }
+        if (!sheet.href) { return sheet.ownerNode && sheet.ownerNode.nodeName === 'STYLE'
+          ? '<style>' : 'inline'; }
+        try {
+          const url = new URL(sheet.href);
+          const parts = url.pathname.split('/');
+          return parts[parts.length - 1] || url.hostname;
+        } catch (e) {
+          return sheet.href;
+        }
+      }
+
+      /// Resolves a nested rule's selector against its parent, the way the
+      /// nesting spec says to. Without this, CSS nesting reads as a pile of
+      /// selectors starting with `&` that match nothing at all.
+      function resolveNested(selector, parent) {
+        if (!parent) { return selector; }
+        const scope = ':is(' + parent + ')';
+        if (selector.indexOf('&') >= 0) { return selector.split('&').join(scope); }
+        return scope + ' ' + selector;
+      }
+
+      function matchedStyles(node) {
+        if (!node || node.nodeType !== 1) { return { rules: [], layers: [] }; }
+
+        const chain = [node];
+        let cursor = node.parentElement;
+        while (cursor && chain.length <= MAX_ANCESTORS) {
+          chain.push(cursor);
+          cursor = cursor.parentElement;
+        }
+
+        const rules = [];
+        const layers = [];
+        const unreadable = [];
+        let order = 0;
+        let ruleId = 1;
+
+        function noteLayer(name) {
+          if (name && layers.indexOf(name) < 0) { layers.push(name); }
+        }
+
+        function visitStyleRule(rule, context) {
+          if (rules.length >= MAX_RULES) { return; }
+          const declarations = readDeclarations(rule.style);
+          const position = order++;
+          if (!declarations.length) { return; }
+
+          const selectorText = resolveNested(rule.selectorText || '', context.parent);
+          const branches = selectorText.split(',');
+          // Reassembled so a `,` inside :is() doesn't produce broken branches.
+          const list = [];
+          let buffer = '';
+          let depth = 0;
+          for (let i = 0; i < branches.length; i++) {
+            buffer = buffer ? buffer + ',' + branches[i] : branches[i];
+            for (let c = 0; c < branches[i].length; c++) {
+              const ch = branches[i][c];
+              if (ch === '(' || ch === '[') { depth++; }
+              else if (ch === ')' || ch === ']') { depth = Math.max(0, depth - 1); }
+            }
+            if (depth === 0) { list.push(buffer.trim()); buffer = ''; }
+          }
+          if (buffer.trim()) { list.push(buffer.trim()); }
+
+          for (let d = 0; d < chain.length; d++) {
+            const target = chain[d];
+            for (let i = 0; i < list.length; i++) {
+              const parsed = analyseSelector(list[i]);
+              let hit = false;
+              try { hit = target.matches(parsed.clean); } catch (e) { hit = false; }
+              if (!hit) { continue; }
+              rules.push({
+                id: ruleId++,
+                selector: selectorText,
+                matched: list[i],
+                origin: 'author',
+                layer: context.layer || '',
+                conditions: context.conditions,
+                href: (rule.parentStyleSheet && rule.parentStyleSheet.href) || '',
+                label: context.label,
+                order: position,
+                declarations: declarations,
+                pseudo: parsed.pseudo || '',
+                states: parsed.states,
+                inline: false,
+                distance: d,
+                from: d > 0 ? describe(target) : '',
+                recovered: !!context.recovered
+              });
+              // One hit per element is enough; the heaviest branch is what
+              // decides the fight and `calculate` already takes the maximum.
+              break;
+            }
+          }
+        }
+
+        function walk(list, context) {
+          for (let i = 0; i < list.length; i++) {
+            const rule = list[i];
+            const name = (rule.constructor && rule.constructor.name) || '';
+
+            if (rule.selectorText !== undefined && rule.style) {
+              visitStyleRule(rule, context);
+              // CSS nesting: a style rule can contain more style rules.
+              if (rule.cssRules && rule.cssRules.length) {
+                const nested = Object.assign({}, context);
+                nested.parent = resolveNested(rule.selectorText, context.parent);
+                walk(rule.cssRules, nested);
+              }
+              continue;
+            }
+
+            if (name === 'CSSLayerStatementRule') {
+              const names = rule.nameList || [];
+              for (let n = 0; n < names.length; n++) { noteLayer(names[n]); }
+              continue;
+            }
+
+            if (!rule.cssRules) { continue; }
+
+            const next = Object.assign({}, context);
+            next.conditions = context.conditions.slice();
+
+            if (name === 'CSSLayerBlockRule') {
+              const layerName = rule.name || '';
+              next.layer = context.layer && layerName
+                ? context.layer + '.' + layerName
+                : (layerName || context.layer);
+              noteLayer(next.layer);
+            } else if (rule.media && rule.media.mediaText) {
+              next.conditions.push('@media ' + rule.media.mediaText);
+            } else if (name === 'CSSContainerRule') {
+              next.conditions.push('@container ' + (rule.containerQuery || rule.conditionText || ''));
+            } else if (rule.conditionText !== undefined) {
+              next.conditions.push('@supports ' + rule.conditionText);
+            } else if (name === 'CSSScopeRule') {
+              next.conditions.push('@scope');
+            }
+            walk(rule.cssRules, next);
+          }
+        }
+
+        const sheets = document.styleSheets || [];
+        for (let s = 0; s < sheets.length; s++) {
+          const sheet = sheets[s];
+          if (sheet.disabled) { continue; }
+          let list = null;
+          try {
+            list = sheet.cssRules;
+          } catch (e) {
+            // Cross-origin. The page is forbidden to read it, and every
+            // JS-based inspector therefore shows nothing — indistinguishable
+            // from the sheet having no rules for this element. Name it, so the
+            // panel can say so and Glass can refetch it natively.
+            if (sheet.href) { unreadable.push(sheet.href); }
+            continue;
+          }
+          if (!list) { continue; }
+          walk(list, {
+            conditions: [], layer: '', label: sheetLabel(sheet), parent: null, recovered: false
+          });
+        }
+
+        // The style attribute, which behaves as a final layer of its own.
+        const inline = readDeclarations(node.style);
+        if (inline.length) {
+          rules.push({
+            id: ruleId++,
+            selector: 'style attribute', matched: '', origin: 'author',
+            layer: '', conditions: [], href: '', label: 'element',
+            order: order + 1, declarations: inline,
+            pseudo: '', states: [], inline: true, distance: 0, from: '', recovered: false
+          });
+        }
+
+        // Every custom property the element can see, resolved. Chrome shows a
+        // resolved value on hover; none of them tells you where it was set,
+        // which is the actual question when a token doesn't take effect.
+        const variables = {};
+        const computed = getComputedStyle(node);
+        for (let i = 0; i < rules.length; i++) {
+          const declarations = rules[i].declarations;
+          for (let d = 0; d < declarations.length; d++) {
+            const name = declarations[d].name;
+            if (name.indexOf('--') !== 0 || variables[name] !== undefined) { continue; }
+            variables[name] = (computed.getPropertyValue(name) || '').trim();
+          }
+        }
+
+        return {
+          rules: rules, layers: layers, unreadable: unreadable, variables: variables
+        };
+      }
+
+      function describe(element) {
+        let text = element.nodeName.toLowerCase();
+        if (element.id) { text += '#' + element.id; }
+        else if (element.classList && element.classList.length) {
+          text += '.' + element.classList[0];
+        }
+        return text;
+      }
+
       // ---- Element picker -------------------------------------------------
 
       let picking = false;
@@ -447,6 +826,23 @@ enum DevToolsAgent {
               case 'DOM.ack': {
                 lastAck = Math.max(lastAck, (params && params.sequence) || 0);
                 return JSON.stringify({ ok: true });
+              }
+
+              case 'CSS.getMatchedStyles': {
+                const node = nodeFor(params && params.nodeId);
+                return JSON.stringify(matchedStyles(node));
+              }
+
+              case 'CSS.getComputedStyleForNode': {
+                const node = nodeFor(params && params.nodeId);
+                if (!node || node.nodeType !== 1) { return JSON.stringify({ computed: {} }); }
+                const style = getComputedStyle(node);
+                const out = {};
+                for (let i = 0; i < style.length; i++) {
+                  const name = style.item(i);
+                  out[name] = style.getPropertyValue(name);
+                }
+                return JSON.stringify({ computed: out });
               }
 
               case 'Overlay.setInspectMode': {

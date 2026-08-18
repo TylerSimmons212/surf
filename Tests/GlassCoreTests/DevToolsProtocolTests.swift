@@ -80,7 +80,7 @@ struct DevToolsRoutingTests {
     func inspectionRunsIsolated() {
         #expect(DevToolsMethod.runtimePing.target == .agent)
         #expect(DevToolsMethod.domGetDocument.target == .agent)
-        #expect(DevToolsMethod.cssGetMatchedRules.target == .agent)
+        #expect(DevToolsMethod.cssGetMatchedStyles.target == .agent)
         #expect(DevToolsMethod.overlaySetInspectMode.target == .agent)
     }
 

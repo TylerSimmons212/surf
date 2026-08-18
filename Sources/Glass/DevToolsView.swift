@@ -13,6 +13,7 @@ struct DevToolsView: View {
             Group {
                 switch session.pane {
                 case .elements: ElementsPane(session: session)
+                case .styles: StylesPane(session: session)
                 case .console: ConsolePane(session: session)
                 }
             }

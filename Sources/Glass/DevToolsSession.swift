@@ -15,13 +15,14 @@ import SwiftUI
 final class DevToolsSession: Identifiable {
 
     enum Pane: String, CaseIterable, Identifiable {
-        case elements, console
+        case elements, styles, console
 
         var id: String { rawValue }
 
         var label: String {
             switch self {
             case .elements: "Elements"
+            case .styles: "Styles"
             case .console: "Console"
             }
         }
@@ -29,6 +30,7 @@ final class DevToolsSession: Identifiable {
         var symbol: String {
             switch self {
             case .elements: "chevron.left.forwardslash.chevron.right"
+            case .styles: "paintbrush"
             case .console: "terminal"
             }
         }
@@ -198,6 +200,7 @@ final class DevToolsSession: Identifiable {
         // The page reports this one's geometry from now on, so the highlight
         // follows scrolling without anything here asking on a timer.
         bridge.send(.domWatch, ["nodeId": id])
+        loadStyles()
         Task { @MainActor in await refreshBox() }
     }
 
@@ -238,6 +241,7 @@ final class DevToolsSession: Identifiable {
 
         selectedNode = id
         bridge.send(.domWatch, ["nodeId": id])
+        loadStyles()
         await refreshBox()
     }
 
@@ -277,6 +281,108 @@ final class DevToolsSession: Identifiable {
         // window is key; only the click was being eaten.
         if enabled { tab?.webView.window?.makeKeyAndOrderFront(nil) }
     }
+
+    // MARK: - Styles
+
+    private(set) var styles: ResolvedStyles?
+    private(set) var stylePayload: MatchedStylesPayload?
+    private(set) var computed: [String: String] = [:]
+    private(set) var isLoadingStyles = false
+
+    /// Which box the pane is resolving: the element, or one of its
+    /// pseudo-elements. They cascade separately, so they're shown separately.
+    var stylePseudo: String? {
+        didSet { if stylePseudo != oldValue { resolveStyles() } }
+    }
+
+    /// Computed values are only worth the round trip when they're on screen —
+    /// there are several hundred of them, against a couple of dozen rules.
+    var isShowingComputed = false {
+        didSet {
+            guard isShowingComputed, isShowingComputed != oldValue else { return }
+            Task { @MainActor in await loadComputed() }
+        }
+    }
+
+    /// Pseudo-elements this element actually has rules for, so the switcher
+    /// only offers boxes that exist.
+    var availablePseudoElements: [String] {
+        let all = stylePayload?.rules.compactMap(\.pseudoElement) ?? []
+        return Array(Set(all)).sorted()
+    }
+
+    @ObservationIgnored private var styleTask: Task<Void, Never>?
+
+    /// Reads every rule that reaches the selected element.
+    ///
+    /// Debounced rather than fired per selection change: walking every
+    /// stylesheet and testing each selector against the element and ten
+    /// ancestors is real work, and arrowing down the tree would otherwise
+    /// queue one full walk per keystroke.
+    func loadStyles() {
+        styleTask?.cancel()
+        guard let selectedNode, tree[selectedNode]?.isElement == true else {
+            styles = nil
+            stylePayload = nil
+            computed = [:]
+            return
+        }
+
+        isLoadingStyles = true
+        styleTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            guard !Task.isCancelled else { return }
+
+            let issued = generation
+            let reply = try? await bridge.call(.cssGetMatchedStyles, ["nodeId": selectedNode])
+            guard !Task.isCancelled, issued == generation, selectedNode == self.selectedNode
+            else { return }
+
+            isLoadingStyles = false
+            guard let reply else {
+                stylePayload = nil
+                styles = nil
+                return
+            }
+            stylePayload = CSSWire.decodeMatchedStyles(reply)
+            // A pseudo-element the previous selection had is very unlikely to
+            // exist on this one, and resolving against a box that isn't there
+            // shows an empty pane rather than the element's own styles.
+            if let pseudo = stylePseudo, !availablePseudoElements.contains(pseudo) {
+                stylePseudo = nil
+            }
+            resolveStyles()
+            if isShowingComputed { await loadComputed() }
+        }
+    }
+
+    private func resolveStyles() {
+        guard let stylePayload else {
+            styles = nil
+            return
+        }
+        styles = CSSCascade.resolve(
+            rules: stylePayload.rules,
+            layerOrder: stylePayload.layerOrder,
+            pseudoElement: stylePseudo
+        )
+    }
+
+    private func loadComputed() async {
+        guard let selectedNode else { return }
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssGetComputed, ["nodeId": selectedNode]),
+              issued == generation, selectedNode == self.selectedNode
+        else { return }
+        computed = reply["computed"] as? [String: String] ?? [:]
+    }
+
+    /// A `var()` reference resolved to what it actually evaluates to.
+    func resolvedVariable(_ name: String) -> String? {
+        stylePayload?.variables[name]
+    }
+
+    var unreadableSheets: [String] { stylePayload?.unreadableSheets ?? [] }
 
     // MARK: - Console
 
@@ -553,6 +659,11 @@ final class DevToolsSession: Identifiable {
         selectedBox = nil
         hoveredNode = nil
         hoveredBox = nil
+        styleTask?.cancel()
+        styles = nil
+        stylePayload = nil
+        computed = [:]
+        stylePseudo = nil
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
         refreshConsoleView()
         releaseEvictedObjects()
@@ -598,6 +709,15 @@ final class DevToolsSession: Identifiable {
             bridge.send(.domAck, ["sequence": sequence])
             // A mutation may have moved whatever is highlighted.
             if selectedNode != nil { Task { @MainActor in await refreshBox() } }
+            // A class or style change anywhere up the chain can change which
+            // rules reach the selection — that's the whole point of a class
+            // toggle. `loadStyles` debounces, so a re-rendering app coalesces
+            // into one walk rather than one per mutation.
+            if selectedNode != nil, mutations.contains(where: {
+                if case .attributeChanged = $0 { return true } else { return false }
+            }) {
+                loadStyles()
+            }
             // Anything open whose children were dropped has to be re-read.
             let pending = tree.pendingFetches()
             if !pending.isEmpty {

@@ -26,7 +26,7 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domPathToNode = "DOM.pathToNode"
     case domAck = "DOM.ack"
 
-    case cssGetMatchedRules = "CSS.getMatchedRulesForNode"
+    case cssGetMatchedStyles = "CSS.getMatchedStyles"
     case cssGetComputed = "CSS.getComputedStyleForNode"
 
     case overlaySetInspectMode = "Overlay.setInspectMode"
@@ -54,7 +54,7 @@ extension DevToolsMethod {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
-             .cssGetMatchedRules, .cssGetComputed,
+             .cssGetMatchedStyles, .cssGetComputed,
              .overlaySetInspectMode:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
