@@ -89,12 +89,20 @@ Gradients move as one body rather than stop by stop: transforming each stop
 alone reverses the direction the light falls from, which reads as broken rather
 than as dark.
 
-Images are left alone entirely. Inverting a logo is the most visible damage
-this could do, and there is no recovering from a brand mark in the wrong
-colours. Artwork drawn as dark ink on transparency is hard to see on a dark
-page, and that is accepted rather than solved: a colour painted behind it fills
-the element's whole box, so it arrives as a rectangle around the mark that the
-design never had — a worse intrusion than the problem it fixes.
+Images are left alone, with one exception narrow enough to be safe: a mark
+carrying **no colour at all** is inverted, so a black wordmark drawn for a white
+page comes back white rather than invisible. There is no hue to shift and no
+brand to mangle, and a filter touches only the pixels already being drawn — so
+transparency stays transparent and no box appears around the artwork. Anything
+with real colour in it is left exactly as it was, even where that leaves it
+dim: Wikipedia's wordmark carries a blue badge beside its black letters, and
+inverting that would turn the badge orange.
+
+Colourlessness is judged per pixel and weighted by alpha. A logo of a red
+circle beside a green one averages to grey and would fool any test of its mean;
+and sampled pixels arrive unpremultiplied, so the soft edge of a black wordmark
+reads as scattered navy unless the faint pixels are given proportionally little
+say.
 
 An inline `<svg>` is a different thing wearing the same clothes. It is DOM
 rather than pixels, and it is how most sites now ship their icons, so its paint

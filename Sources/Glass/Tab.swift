@@ -527,7 +527,37 @@ final class Tab: NSObject, Identifiable {
             plan.replacements["gradient|" + reading.value] = transformed
         }
 
-        guard !plan.isEmpty else {
+        // Artwork is not recoloured, with one exception narrow enough to be
+        // safe: a mark carrying no colour at all, which would otherwise vanish.
+        // A black wordmark becomes a white one — what its designers drew for
+        // their own dark mode — and there is no hue to lose by flipping it.
+        var inverts: [String: String] = [:]
+        for reading in survey.images {
+            guard let data = Data(base64Encoded: reading.pixels),
+                  let verdict = ImageAnalysis.verdict(rgba: [UInt8](data))
+            else { continue }
+
+            // What it will be sitting on once the theme lands, not what it sits
+            // on now: the surface behind it is about to move too.
+            let surface: SRGB = {
+                if let themed = plan.replacements["background|" + reading.backdrop]
+                    .flatMap(CSSColor.init(css:)) {
+                    return themed.rgb
+                }
+                if let backdrop = CSSColor(css: reading.backdrop), backdrop.alpha > 0.5 {
+                    return backdrop.rgb
+                }
+                return plan.pageBackground.rgb
+            }()
+
+            if ImageAnalysis.shouldInvert(verdict, on: surface) { inverts[reading.key] = "1" }
+        }
+
+        if !inverts.isEmpty {
+            debugLog("theme: inverting \(inverts.count) colourless mark(s)")
+        }
+
+        guard !plan.isEmpty || !inverts.isEmpty else {
             debugLog("theme: nothing to change — left alone")
             _ = try? await webView.callAsyncJavaScript(
                 ThemeBridge.dismissPreflightScript,
@@ -540,6 +570,7 @@ final class Tab: NSObject, Identifiable {
             ThemeBridge.applyScript,
             arguments: [
                 "plan": plan.replacements,
+                "inverts": inverts,
                 "ground": plan.pageBackground.css,
                 "scheme": target.rawValue,
             ],

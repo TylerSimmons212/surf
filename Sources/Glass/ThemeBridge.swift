@@ -121,6 +121,43 @@ enum ThemeBridge {
     const viewport = Math.max(1, innerWidth * innerHeight);
     const found = new Map();
 
+    // Sampling marks, to find the colourless ones that would vanish.
+    //
+    // 64x64 rather than something smaller: a wordmark's strokes are thin, and
+    // reduced much further they survive only as part-transparent smudges, which
+    // is not enough to tell ink from colour. getImageData throws for a
+    // cross-origin image loaded without CORS — that refusal is the whole
+    // answer, since an image we can't inspect is one we leave alone.
+    if (!window.__glassSeenImages) { window.__glassSeenImages = new Set(); }
+    const sampled = [];
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+
+    function sampleImage(element, backdrop) {
+      if (sampled.length >= 16) { return; }
+      const source = element.currentSrc || element.src;
+      if (!source || window.__glassSeenImages.has(source)) { return; }
+      if (!element.complete || !element.naturalWidth) { return; }
+
+      const box = element.getBoundingClientRect();
+      // Too small to matter, or far too large to be a mark rather than a
+      // picture — and a picture is opaque and was never at risk.
+      if (box.width < 8 || box.height < 8) { return; }
+      if (box.width > 512 || box.height > 512) { return; }
+
+      window.__glassSeenImages.add(source);
+      try {
+        context.clearRect(0, 0, 64, 64);
+        context.drawImage(element, 0, 0, 64, 64);
+        const data = context.getImageData(0, 0, 64, 64).data;
+        let binary = '';
+        for (let j = 0; j < data.length; j++) { binary += String.fromCharCode(data[j]); }
+        sampled.push({ key: source, pixels: btoa(binary), backdrop: backdrop || '' });
+      } catch (error) { /* tainted: left alone */ }
+    }
+
     function opaque(value) {
       return !!value && value !== 'transparent' && value.indexOf('rgba(0, 0, 0, 0)') !== 0;
     }
@@ -212,6 +249,8 @@ enum ThemeBridge {
       if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
         note(image, 'gradient', area, interactive, large, backdrop);
       }
+
+      if (element.localName === 'img') { sampleImage(element, backdrop); }
     });
 
     // What the page is actually sitting on, which decides whether it needs us
@@ -228,7 +267,7 @@ enum ThemeBridge {
 
     return JSON.stringify({
       ground: ground || '', themed: themed, ready: true,
-      colors: Array.from(found.values())
+      colors: Array.from(found.values()), images: sampled
     });
 
     } finally {
@@ -264,6 +303,10 @@ enum ThemeBridge {
       [data-glass-gr] { background-image: var(--glass-gr) !important; }
       [data-glass-fl] { fill: var(--glass-fl) !important; }
       [data-glass-st] { stroke: var(--glass-st) !important; }
+      /* Only ever on a mark carrying no colour, so there is no hue to shift.
+         A filter touches the pixels already being drawn and leaves
+         transparency transparent — no box appears around the artwork. */
+      img[data-glass-invert] { filter: invert(1) brightness(0.92) !important; }
     }`;
 
     window.__glassSheets = [];
@@ -344,6 +387,10 @@ enum ThemeBridge {
         const image = style.backgroundImage;
         if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
           paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
+        }
+
+        if (element.localName === 'img' && inverts[element.currentSrc || element.src]) {
+          element.setAttribute('data-glass-invert', '');
         }
       }, function (root) {
         // A tree discovered on the way: give it the rules, or nothing marked
@@ -447,11 +494,12 @@ enum ThemeBridge {
     window.__glassObserver?.disconnect();
     window.__glassObserver = null;
     window.__glassSheets = [];
+    window.__glassSeenImages = null;
     document.getElementById('__glass_theme')?.remove();
     document.getElementById('__glass_preflight')?.remove();
     const attributes = ['data-glass-bg', 'data-glass-fg', 'data-glass-bd',
                         'data-glass-ol', 'data-glass-gr',
-                        'data-glass-fl', 'data-glass-st'];
+                        'data-glass-fl', 'data-glass-st', 'data-glass-invert'];
     const variables = ['--glass-bg', '--glass-fg', '--glass-bd',
                        '--glass-ol', '--glass-gr',
                        '--glass-fl', '--glass-st'];
@@ -477,6 +525,16 @@ enum ThemeBridge {
         var on: String?
     }
 
+    /// One image, reduced to something the analysis can read.
+    struct ImageReading: Decodable {
+        var key: String
+        /// Base64 of a 64x64 RGBA reduction.
+        var pixels: String
+        /// The site's own colour behind it, resolved through the plan to find
+        /// what it will actually be sitting on once the theme lands.
+        var backdrop: String
+    }
+
     struct Survey: Decodable {
         var ground: String
         /// True once this page has been themed. The ground reading is then our
@@ -486,6 +544,7 @@ enum ThemeBridge {
         /// is representative of the finished page.
         var ready: Bool
         var colors: [Reading]
+        var images: [ImageReading]
     }
 
     /// Turns the page's report into the observations `GlassCore` reasons about.
