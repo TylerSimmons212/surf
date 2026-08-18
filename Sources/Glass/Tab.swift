@@ -184,6 +184,20 @@ final class Tab: NSObject, Identifiable {
     /// The dev tools bridge, alive only while a panel is open for this tab.
     @ObservationIgnored private(set) var devToolsBridge: DevToolsBridge?
 
+    /// The main document's real response.
+    ///
+    /// Kept whether or not dev tools is open, because otherwise opening the
+    /// panel on a page that has already loaded shows no document row at all —
+    /// the list would start at the first subresource, missing the one request
+    /// that explains the rest.
+    struct DocumentResponse: Sendable {
+        var url: String
+        var status: Int
+        var headers: [String: String]
+        var mime: String
+    }
+    @ObservationIgnored private(set) var lastDocumentResponse: DocumentResponse?
+
     func attachDevTools(_ bridge: DevToolsBridge) { devToolsBridge = bridge }
     func detachDevTools() { devToolsBridge = nil }
 
@@ -214,6 +228,19 @@ final class Tab: NSObject, Identifiable {
         controller.addUserScript(
             WKUserScript(
                 source: ConsoleAgent.script,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false,
+                in: .page
+            )
+        )
+
+        // Always, for the same reason as the console: the request you want to
+        // look at is nearly always the one that already failed, and a network
+        // pane that only starts recording when you open it would miss it.
+        // Zero messages cross the process boundary until a panel attaches.
+        controller.addUserScript(
+            WKUserScript(
+                source: NetworkAgent.script,
                 injectionTime: .atDocumentStart,
                 forMainFrameOnly: false,
                 in: .page
@@ -663,7 +690,25 @@ extension Tab: WKNavigationDelegate {
         _ webView: WKWebView,
         decidePolicyFor navigationResponse: WKNavigationResponse
     ) async -> WKNavigationResponsePolicy {
-        navigationResponse.canShowMIMEType ? .allow : .download
+        // The document's real status and headers, which the page itself cannot
+        // read for a cross-origin redirect and which no JS-based inspector can
+        // therefore report. Taken natively so the top row of the network list
+        // is the one thing in it that is never a guess.
+        if navigationResponse.isForMainFrame,
+           let http = navigationResponse.response as? HTTPURLResponse,
+           let url = http.url?.absoluteString {
+            var headers: [String: String] = [:]
+            for (key, value) in http.allHeaderFields {
+                headers["\(key)"] = "\(value)"
+            }
+            let response = DocumentResponse(
+                url: url, status: http.statusCode,
+                headers: headers, mime: http.mimeType ?? ""
+            )
+            lastDocumentResponse = response
+            DevToolsController.shared.session(for: self)?.recordDocument(response)
+        }
+        return navigationResponse.canShowMIMEType ? .allow : .download
     }
 
     private func report(_ error: Error) {
@@ -699,7 +744,8 @@ extension Tab: WKScriptMessageHandler {
                 // Media that never started isn't worth showing in the player.
                 if state.isPlaying || media != nil { media = state }
 
-            case DevToolsAgent.eventHandlerName, ConsoleAgent.eventHandlerName:
+            case DevToolsAgent.eventHandlerName, ConsoleAgent.eventHandlerName,
+                 NetworkAgent.eventHandlerName:
                 // Forwarded rather than handled by the bridge directly, so a tab
                 // still registers exactly one script message handler and the
                 // retain-cycle reasoning above holds for every bridge we add.

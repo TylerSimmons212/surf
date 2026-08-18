@@ -34,6 +34,11 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case cssRevert = "CSS.revert"
 
     case overlaySetInspectMode = "Overlay.setInspectMode"
+
+    case networkDrain = "Network.drain"
+    case networkSetLive = "Network.setLive"
+    case networkAck = "Network.ack"
+    case networkClear = "Network.clear"
 }
 
 /// Which injected script answers a command.
@@ -50,6 +55,11 @@ public enum DevToolsTarget: Sendable, Equatable {
     case agent
     /// The page's own world: console capture, evaluation, object handles.
     case page
+    /// Also the page's world, but a separate script with its own dispatcher.
+    /// Network capture has to replace `fetch` and `XMLHttpRequest`, which can
+    /// only be done where the page's own globals live — but it is a different
+    /// concern from the console and is installed and drained separately.
+    case network
 }
 
 extension DevToolsMethod {
@@ -65,6 +75,8 @@ extension DevToolsMethod {
              .runtimeCompletions,
              .consoleDrain, .consoleSetLive, .consoleAck:
             .page
+        case .networkDrain, .networkSetLive, .networkAck, .networkClear:
+            .network
         }
     }
 }
@@ -92,6 +104,14 @@ public enum DevToolsEvent: Sendable, Equatable {
     /// A watched element moved — scrolled, resized, or animated. Reported from
     /// the page rather than polled, so the highlight tracks without lag.
     case boxChanged(nodeId: DOMNodeID, box: BoxModel?)
+    /// Requests observed, batched. `dropped` counts records the agent had to
+    /// discard to stay bounded.
+    case networkBatch(
+        requests: [NetworkRequest], timings: [NetworkRequest], sequence: Int, dropped: Int
+    )
+    /// The agent stopped reporting to keep up. Everything is still in its map,
+    /// so the answer is a resync — a replay would double-count.
+    case networkOverflowed
 }
 
 public enum DevToolsProtocol {
@@ -134,6 +154,16 @@ public enum DevToolsProtocol {
             return .inspectPicked(nodeId: nodeId)
         case "dom.inspectCancelled":
             return .inspectCancelled
+        case "network.batch":
+            let batch = NetworkWire.decodeBatch(dict["requests"])
+            return .networkBatch(
+                requests: batch.records,
+                timings: batch.timings,
+                sequence: dict["sequence"] as? Int ?? 0,
+                dropped: dict["dropped"] as? Int ?? 0
+            )
+        case "network.overflowed":
+            return .networkOverflowed
         case "dom.boxChanged":
             guard let nodeId = dict["nodeId"] as? Int else { return nil }
             return .boxChanged(nodeId: nodeId, box: DOMWire.decodeBox(dict["box"]))

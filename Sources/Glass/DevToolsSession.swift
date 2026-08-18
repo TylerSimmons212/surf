@@ -15,7 +15,7 @@ import SwiftUI
 final class DevToolsSession: Identifiable {
 
     enum Pane: String, CaseIterable, Identifiable {
-        case elements, styles, console
+        case elements, styles, network, console
 
         var id: String { rawValue }
 
@@ -23,6 +23,7 @@ final class DevToolsSession: Identifiable {
             switch self {
             case .elements: "Elements"
             case .styles: "Styles"
+            case .network: "Network"
             case .console: "Console"
             }
         }
@@ -31,6 +32,7 @@ final class DevToolsSession: Identifiable {
             switch self {
             case .elements: "chevron.left.forwardslash.chevron.right"
             case .styles: "paintbrush"
+            case .network: "arrow.up.arrow.down"
             case .console: "terminal"
             }
         }
@@ -639,6 +641,122 @@ final class DevToolsSession: Identifiable {
 
     var unreadableSheets: [String] { stylePayload?.unreadableSheets ?? [] }
 
+    // MARK: - Network
+
+    private(set) var network = NetworkBuffer()
+    private(set) var visibleRequests: [NetworkRequest] = []
+    private(set) var networkCounts: [NetworkKind: Int] = [:]
+    private(set) var networkSummary = NetworkBuffer.Summary()
+    private(set) var selectedRequest: NetworkRequest.ID?
+
+    /// Off by default, like every browser: the previous page's traffic is
+    /// usually noise.
+    var preservesNetworkOnNavigation = false
+
+    var networkKinds: Set<NetworkKind> = Set(NetworkKind.allCases) {
+        didSet { if networkKinds != oldValue { refreshNetworkView() } }
+    }
+    var networkQuery = "" {
+        didSet { if networkQuery != oldValue { refreshNetworkView() } }
+    }
+
+    var isNetworkFiltered: Bool {
+        networkKinds.count != NetworkKind.allCases.count
+            || !networkQuery.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// Cached for the same reason the console's list is: SwiftUI reads these
+    /// several times per render pass and each one walks the whole buffer.
+    private func refreshNetworkView() {
+        // Chronological, not the order the two observers happened to report in.
+        // A patched record is created when the request starts and its timing
+        // observation arrives later, so recording order puts every fetch above
+        // images that loaded before it — and a waterfall whose rows aren't in
+        // time order is worse than no waterfall.
+        visibleRequests = network
+            .filtered(kinds: networkKinds, query: networkQuery)
+            .sorted { $0.startedAt < $1.startedAt }
+        networkCounts = network.counts()
+        networkSummary = network.summary()
+    }
+
+    func selectRequest(_ id: NetworkRequest.ID?) {
+        selectedRequest = id
+    }
+
+    var selectedRequestDetail: NetworkRequest? {
+        guard let selectedRequest else { return nil }
+        return network.requests.first { $0.id == selectedRequest }
+    }
+
+    func clearNetwork() {
+        network.clear()
+        selectedRequest = nil
+        refreshNetworkView()
+        bridge.send(.networkClear)
+    }
+
+    /// Collects what the page recorded before this window existed.
+    private func drainNetworkBacklog() async {
+        let issued = generation
+        guard let reply = try? await bridge.call(.networkDrain), issued == generation
+        else { return }
+
+        // The document first, so it heads the list even when the panel opened
+        // long after the page finished loading.
+        if let document = tab?.lastDocumentResponse { recordDocument(document) }
+
+        let batch = NetworkWire.decodeBatch(reply["requests"])
+        for request in batch.records { network.record(request) }
+        // Merged after, so a timing observation always has its patched record
+        // to attach to rather than becoming a duplicate row.
+        for timing in batch.timings { network.merge(timing: timing) }
+        if let dropped = reply["dropped"] as? Int, dropped > 0 { noteDroppedRequests(dropped) }
+        refreshNetworkView()
+        bridge.send(.networkSetLive, ["live": true])
+    }
+
+    private func noteDroppedRequests(_ count: Int) {
+        record(ConsoleEntry(
+            id: 0,
+            level: .warning,
+            arguments: [RemoteObject(
+                type: .string,
+                description: "\(count.formatted()) requests were dropped — the page made them faster than Glass could read."
+            )]
+        ))
+    }
+
+    /// The main document, as the *native* layer saw it.
+    ///
+    /// Worth taking from here rather than from the page: `WKNavigationDelegate`
+    /// reports the real status and the real response headers, including for
+    /// cross-origin redirects that page script is forbidden to look at. It is
+    /// the one row in the list that no JS-based inspector can report honestly.
+    func recordDocument(_ response: Tab.DocumentResponse) {
+        var request = NetworkRequest(
+            id: "document:\(generation)",
+            url: response.url,
+            method: "GET",
+            kind: .document,
+            status: response.status,
+            transferSize: nil,
+            startedAt: 0,
+            duration: nil,
+            protocolName: "",
+            initiator: "navigation",
+            responseHeaders: response.headers,
+            isDetailed: true
+        )
+        if let length = response.headers
+            .first(where: { $0.key.lowercased() == "content-length" })?.value,
+           let bytes = Int(length) {
+            request.transferSize = bytes
+        }
+        network.record(request)
+        refreshNetworkView()
+    }
+
     // MARK: - Console
 
     private(set) var console = ConsoleBuffer()
@@ -863,6 +981,7 @@ final class DevToolsSession: Identifiable {
             do {
                 try await bridge.attach()
                 await drainConsoleBacklog()
+                await drainNetworkBacklog()
                 await loadDocument()
                 await refreshStatus()
             } catch {
@@ -932,6 +1051,9 @@ final class DevToolsSession: Identifiable {
         rejectedEdit = nil
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
         refreshConsoleView()
+        network.markNavigation(preserving: preservesNetworkOnNavigation)
+        selectedRequest = nil
+        refreshNetworkView()
         releaseEvictedObjects()
 
         Task { @MainActor in
@@ -939,6 +1061,7 @@ final class DevToolsSession: Identifiable {
             // live — it has no idea a window is open — so it has to be told,
             // and its startup logs collected, exactly as at attach time.
             await drainConsoleBacklog()
+            await drainNetworkBacklog()
             await loadDocument()
             await refreshStatus()
         }
@@ -1016,6 +1139,18 @@ final class DevToolsSession: Identifiable {
             isPicking = false
             hoveredNode = nil
             hoveredBox = nil
+
+        case .networkBatch(let requests, let timings, let sequence, let dropped):
+            if dropped > 0 { noteDroppedRequests(dropped) }
+            for request in requests { network.record(request) }
+            for timing in timings { network.merge(timing: timing) }
+            refreshNetworkView()
+            bridge.send(.networkAck, ["sequence": sequence])
+
+        case .networkOverflowed:
+            // Everything is still in the agent's map, so the answer is to read
+            // it again rather than to replay — a replay would double-count.
+            Task { @MainActor in await drainNetworkBacklog() }
 
         case .consoleCleared:
             // The page called console.clear() itself. Honouring it matches

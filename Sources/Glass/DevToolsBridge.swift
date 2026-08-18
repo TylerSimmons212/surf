@@ -79,6 +79,19 @@ final class DevToolsBridge {
             name: ConsoleAgent.eventHandlerName
         )
 
+        // Network capture has been recording since document-start for exactly
+        // the same reason the console has: the request worth looking at is
+        // usually the one that already failed.
+        controller.removeScriptMessageHandler(
+            forName: NetworkAgent.eventHandlerName,
+            contentWorld: .page
+        )
+        controller.add(
+            WeakScriptMessageProxy(target: tab),
+            contentWorld: .page,
+            name: NetworkAgent.eventHandlerName
+        )
+
         // Adds the agent to the document-start set, so it survives navigation.
         tab.reinstallUserScripts()
 
@@ -126,6 +139,10 @@ final class DevToolsBridge {
             forName: ConsoleAgent.eventHandlerName,
             contentWorld: .page
         )
+        controller.removeScriptMessageHandler(
+            forName: NetworkAgent.eventHandlerName,
+            contentWorld: .page
+        )
         // Drops the agent from the document-start set. The copy in the *current*
         // document stays resident until navigation, but with its handler gone it
         // can no longer speak, and its `post` swallows the resulting throw.
@@ -150,13 +167,22 @@ final class DevToolsBridge {
     ) async throws -> [String: Any] {
         guard isAttached, let tab else { throw BridgeError.notAttached }
 
-        let isPageWorld = method.target == .page
+        // Three injected scripts, so three dispatchers. Console and network
+        // both live in the page's world but are separate objects with separate
+        // lifetimes, and routing a network command through the console's
+        // dispatcher fails as "unknown method" — which reads like a missing
+        // feature rather than a misroute.
+        let (dispatch, world): (String, WKContentWorld) = switch method.target {
+        case .agent: (DevToolsAgent.dispatchScript, DevToolsAgent.world)
+        case .page: (ConsoleAgent.dispatchScript, .page)
+        case .network: (NetworkAgent.dispatchScript, .page)
+        }
 
         let raw = try await tab.webView.callAsyncJavaScript(
-            isPageWorld ? ConsoleAgent.dispatchScript : DevToolsAgent.dispatchScript,
+            dispatch,
             arguments: ["method": method.rawValue, "params": params],
             in: nil,
-            contentWorld: isPageWorld ? .page : DevToolsAgent.world
+            contentWorld: world
         )
 
         // Null means the agent isn't present — an `about:blank`, a PDF view, or
@@ -187,6 +213,7 @@ final class DevToolsBridge {
     func receive(name: String, body: Any) {
         guard name == DevToolsAgent.eventHandlerName
                 || name == ConsoleAgent.eventHandlerName
+                || name == NetworkAgent.eventHandlerName
         else { return }
         guard let event = DevToolsProtocol.decodeEvent(body) else { return }
         onEvent?(event)

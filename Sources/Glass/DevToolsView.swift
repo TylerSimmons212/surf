@@ -14,6 +14,7 @@ struct DevToolsView: View {
                 switch session.pane {
                 case .elements: ElementsPane(session: session)
                 case .styles: StylesPane(session: session)
+                case .network: NetworkPane(session: session)
                 case .console: ConsolePane(session: session)
                 }
             }
