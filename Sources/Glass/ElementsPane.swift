@@ -14,7 +14,7 @@ struct ElementsPane: View {
             toolbar
             Divider()
             tree
-            Divider()
+            if !session.breadcrumb.isEmpty { Divider() }
             breadcrumb
         }
     }
@@ -82,13 +82,19 @@ struct ElementsPane: View {
 
     private var tree: some View {
         ScrollViewReader { proxy in
-            ScrollView([.vertical, .horizontal]) {
+            // Vertical only. A horizontal scroll view proposes an unbounded
+            // width to its children, so rows asking for `maxWidth: .infinity`
+            // collapsed to nothing — every tag truncated to "<he…" and the
+            // whole tree drifted to the centre. Long rows truncate at the
+            // right edge instead, which is what a tree wants anyway.
+            ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(session.visibleRows) { row in
                         DOMRowView(session: session, row: row)
                             .id(row.id)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, DevToolsTheme.unit)
             }
             .overlay {
@@ -111,7 +117,16 @@ struct ElementsPane: View {
 
     // MARK: - Breadcrumb
 
+    @ViewBuilder
     private var breadcrumb: some View {
+        if session.breadcrumb.isEmpty {
+            EmptyView()
+        } else {
+            breadcrumbBar
+        }
+    }
+
+    private var breadcrumbBar: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 3) {
                 ForEach(session.breadcrumb) { node in
@@ -163,9 +178,8 @@ private struct DOMRowView: View {
         HStack(alignment: .firstTextBaseline, spacing: 3) {
             disclosure
             markup
-            Spacer(minLength: 0)
         }
-        .padding(.leading, DevToolsTheme.rowInset + CGFloat(row.depth) * DevToolsTheme.indent)
+        .padding(.leading, DevToolsTheme.rowInset + indent)
         .padding(.trailing, DevToolsTheme.rowInset)
         .padding(.vertical, 1.5)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -201,11 +215,20 @@ private struct DOMRowView: View {
         }
     }
 
+    /// Indentation stops deepening past a point. A document nested forty
+    /// levels down would otherwise push its own markup off the right edge,
+    /// which is the one thing a tree must never do.
+    private var indent: CGFloat {
+        CGFloat(min(row.depth, 16)) * DevToolsTheme.indent
+    }
+
     private var markup: some View {
         Text(attributed)
             .font(DevToolsTheme.mono)
             .lineLimit(1)
+            .truncationMode(.tail)
             .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The row as syntax-coloured markup.
