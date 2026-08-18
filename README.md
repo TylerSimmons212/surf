@@ -146,6 +146,40 @@ signals — a meta tag, a `prefers-color-scheme` rule — say what a site claims
 reading what it painted says what it did, and cross-origin stylesheets can't
 hide it.
 
+### Talking to a page
+
+Everything Glass wants from a page — the colours it painted, what it is
+playing, which icons it declares — goes through one resident agent per content
+world, installed at document start and addressed by method name.
+
+The alternative, and what this replaced, is handing WebKit a fresh block of
+JavaScript source for every question. That works, and it is how most of this
+started, but it means each feature arrives with its own conventions for
+arguments, for errors, and for what "nothing" looks like — which is what makes
+a browser feel like something wrapped around WebKit rather than something built
+on it.
+
+Two worlds, because the split is forced: media has to run in the page's own,
+where `navigator.mediaSession` and the site's media elements are, and the theme
+has to run outside it, where nothing it defines can collide with the site's
+scripts. `PageProtocol.Method` names every method once and says which world it
+belongs to, so a call site can't pick the wrong one.
+
+Nothing is interpolated into JavaScript at a call site. `callAsyncJavaScript`
+binds arguments as real variables, so a method name and its parameters are
+values and can never become script.
+
+A reply is an envelope rather than a bare result, which is what lets the three
+ways a call comes back empty stay apart: the page reported a failure, the reply
+wasn't the shape the method promised, or there was legitimately nothing to
+report. Only the last is ordinary. Collapsing them — which is what a `try?`
+around a raw evaluation does — is how a page that had been failing to answer
+for months looked exactly like a page with nothing to say.
+
+The agent hangs off a property name chosen fresh each launch. In the isolated
+world that is invisible either way; in the page world a fixed name is a
+reliable way for a site to tell which browser it is being read in.
+
 ### Privacy
 
 Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
@@ -259,6 +293,14 @@ makes it unit-testable — the UI targets can't be.
   the page's substitutions
 - `Sources/GlassCore/ImageAnalysis.swift` — decides which artwork would vanish,
   and what to back it with
+- `Sources/GlassCore/PageProtocol.swift` — the wire format Glass and the page
+  agree on: method names, which world each runs in, and the reply envelope
+- `Sources/Glass/PageAgent.swift` — Glass's side of one content world: typed
+  calls out, decoded events back
+- `Sources/Glass/PageRuntime.swift` — the agent itself, and the only property
+  Glass adds to a page's globals
+- `Sources/Glass/PageScripts.swift` — the one place that decides what is
+  injected, and into which world
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
@@ -274,10 +316,10 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/SettingsView.swift` — the Settings window
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
 - `Sources/Glass/Appearance.swift` — maps the setting onto `NSAppearance`
-- `Sources/Glass/ThemeBridge.swift` — measures a page's colours and writes the
-  plan back onto it
+- `Sources/Glass/ThemeBridge.swift` — the theme domain: measures a page's
+  colours and writes the plan back onto it
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
-- `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
+- `Sources/Glass/MediaBridge.swift` — the media and find domains of the agent
 - `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
 - `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes;
   routes each source to WebKit or to yt-dlp
@@ -302,6 +344,16 @@ results to stderr — handy for exercising navigation without clicking.
 Comma-separate to open several tabs: `GLASS_URL=example.com,apple.com swift run`.
 
 State lives in `~/Library/Application Support/Glass/session.json`.
+
+Every web view is inspectable, so Safari's Develop menu opens a full Web
+Inspector on any tab. Safari ships with that menu hidden, so it costs nothing
+until someone goes looking for it.
+
+The agent's contract has two halves in two languages — a case in
+`PageProtocol.Method`, and an `agent.define` in a domain script — and the
+compiler only sees the first. `./scripts/check-js.sh` closes that gap: it dumps
+the real scripts, installs them in a real JavaScript engine, and asks whether
+they answer to everything the enum claims. Needs `node` on `PATH`.
 
 ## Next
 

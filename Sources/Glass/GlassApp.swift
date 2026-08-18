@@ -12,6 +12,7 @@ struct GlassApp: App {
     init() {
         // Must precede BrowserSession, which consults these on construction.
         PrivacySettings.registerDefaults()
+        PageScripts.dumpAndExitIfAsked()
         _session = State(initialValue: BrowserSession())
     }
 

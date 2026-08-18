@@ -1,9 +1,12 @@
 import Foundation
 import GlassCore
-import WebKit
 
 /// What a tab is currently playing.
-struct MediaState: Equatable {
+///
+/// Decoded straight off the wire rather than picked out of a dictionary a
+/// field at a time: a renamed key is then a decoding failure that says so,
+/// instead of a silent fall back to `false` that shows an empty player.
+struct MediaState: Equatable, Decodable {
     var isPlaying: Bool
     var title: String
     var artist: String
@@ -11,7 +14,13 @@ struct MediaState: Equatable {
     var duration: Double
     var currentTime: Double
     /// The resolved media URL, or empty if the element has no source yet.
-    var sourceURL: String = ""
+    var sourceURL: String
+
+    private enum CodingKeys: String, CodingKey {
+        case isPlaying = "playing"
+        case title, artist, hasVideo, duration, currentTime
+        case sourceURL = "src"
+    }
 
     /// What the source actually is, which decides how it gets downloaded.
     var kind: MediaSourceKind { MediaSource.kind(of: sourceURL) }
@@ -31,165 +40,189 @@ struct MediaState: Equatable {
     }
 }
 
-/// Breaks the retain cycle that `add(_:name:)` would otherwise create.
+/// Where the playing video sits in the viewport, in CSS pixels (== points).
+struct MediaFrame: Decodable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+
+    var rect: CGRect { CGRect(x: x, y: y, width: width, height: height) }
+}
+
+/// The media domain of the page agent.
 ///
-/// The user content controller retains its handler strongly, and the tab owns
-/// the web view which owns the controller — so handing it the tab directly
-/// would keep every tab alive forever.
-final class WeakScriptMessageProxy: NSObject, WKScriptMessageHandler {
-    weak var target: (any WKScriptMessageHandler)?
+/// Registered in the PAGE world: `navigator.mediaSession.metadata` is set by
+/// the site's own scripts, and an isolated world would have its own
+/// `navigator` with nothing in it.
+///
+/// Listeners are registered on `document` in the capture phase, so they see
+/// every media element including ones created later.
+enum MediaBridge {
 
-    init(target: any WKScriptMessageHandler) {
-        self.target = target
-    }
+    static var domainScript: String {
+        """
+        (function () {
+          const agent = window['\(PageRuntime.handle)'];
+          if (!agent) { return; }
 
-    func userContentController(
-        _ controller: WKUserContentController,
-        didReceive message: WKScriptMessage
-    ) {
-        target?.userContentController(controller, didReceive: message)
+          function describe() {
+            const el = agent.state.media;
+            if (!el) {
+              return { playing: false, title: '', artist: '', hasVideo: false,
+                       duration: 0, currentTime: 0, src: '' };
+            }
+            const meta = navigator.mediaSession && navigator.mediaSession.metadata;
+            return {
+              playing: !el.paused && !el.ended,
+              title: (meta && meta.title) || document.title || '',
+              artist: (meta && meta.artist) || location.hostname,
+              hasVideo: el.tagName === 'VIDEO' && el.videoWidth > 0,
+              duration: isFinite(el.duration) ? el.duration : 0,
+              currentTime: el.currentTime || 0,
+              // `currentSrc` is the resolved source, including <source>
+              // children. A blob: URL means Media Source Extensions — a
+              // segmented stream with no single fetchable file behind it.
+              src: el.currentSrc || el.src || ''
+            };
+          }
+
+          const report = () => agent.emit('media', 'state', describe());
+
+          function track(event) {
+            const el = event.target;
+            if (!(el instanceof HTMLMediaElement)) { return; }
+            // The most recently started element is the one the user means.
+            agent.state.media = el;
+            report();
+          }
+
+          document.addEventListener('play', track, true);
+          document.addEventListener('pause', (e) => {
+            if (e.target === agent.state.media) { report(); }
+          }, true);
+          document.addEventListener('ended', (e) => {
+            if (e.target === agent.state.media) { report(); }
+          }, true);
+
+          // Position updates for the scrubber. `timeupdate` fires ~4x a
+          // second, which is far more traffic than a progress bar needs.
+          setInterval(() => {
+            const el = agent.state.media;
+            if (el && !el.paused) { report(); }
+          }, 1000);
+
+          // A method that needs the element and hasn't got one has nothing to
+          // report — which is not the same as having failed.
+          const withElement = (fn) => (params) => {
+            const el = agent.state.media;
+            if (!el) { return null; }
+            return fn(el, params);
+          };
+
+          agent.define('media.toggle', withElement((el) => {
+            if (el.paused) { el.play(); } else { el.pause(); }
+            return true;
+          }));
+
+          agent.define('media.seek', withElement((el, { time }) => {
+            const limit = isFinite(el.duration) ? el.duration : time;
+            el.currentTime = Math.max(0, Math.min(limit, time));
+            return true;
+          }));
+
+          agent.define('media.skip', withElement((el, { delta }) => {
+            const target = el.currentTime + delta;
+            el.currentTime = isFinite(el.duration)
+              ? Math.max(0, Math.min(el.duration, target))
+              : Math.max(0, target);
+            return true;
+          }));
+
+          // The entire site-specific surface of the lens approach: one
+          // rectangle. No styling is injected into the player, so there is no
+          // stacking-context or containing-block fight to lose.
+          agent.define('media.frame', withElement((el) => {
+            if (!el.isConnected) { return null; }
+            const r = el.getBoundingClientRect();
+            if (r.width < 10 || r.height < 10) { return null; }
+            return { x: r.x, y: r.y, width: r.width, height: r.height };
+          }));
+
+          // Stops wheel events from scrolling the page under the lens, which
+          // would slide the video out of the cropped region.
+          agent.define('media.lockScroll', () => {
+            if (!document.getElementById('__glass_lens')) {
+              const s = document.createElement('style');
+              s.id = '__glass_lens';
+              // `pointer-events` is inherited, but sites set it explicitly on
+              // their own overlays, so the universal selector and !important
+              // are both doing work here. This is what actually keeps the
+              // pointer off the page: covering a view with another one doesn't
+              // stop it, because tracking areas fire on geometry and know
+              // nothing about what's drawn on top.
+              s.textContent = 'html, body { overflow: hidden !important; }' +
+                'html, html * { pointer-events: none !important; }';
+              document.documentElement.appendChild(s);
+            }
+            // Native controls don't auto-hide reliably when the pointer never
+            // arrives, so switch them off outright. Custom players hide
+            // themselves once the page stops seeing hover at all.
+            const el = agent.state.media;
+            if (el) {
+              el.dataset.glassControls = el.controls ? '1' : '0';
+              el.controls = false;
+            }
+            return true;
+          });
+
+          agent.define('media.unlockScroll', () => {
+            document.getElementById('__glass_lens')?.remove();
+            const el = agent.state.media;
+            if (el && el.dataset.glassControls !== undefined) {
+              el.controls = el.dataset.glassControls === '1';
+              delete el.dataset.glassControls;
+            }
+            return true;
+          });
+        })();
+        """
     }
 }
 
-enum MediaBridge {
-    static let handlerName = "glassMedia"
+/// The find domain — also the page world, because the selection it clears is
+/// the document's own.
+enum FindBridge {
 
-    /// Injected in the PAGE world: `navigator.mediaSession.metadata` is set by
-    /// the page's own scripts, and an isolated world would have its own
-    /// `navigator` with nothing in it.
-    ///
-    /// Listeners are registered on `document` in the capture phase, so they see
-    /// every media element including ones created later.
-    static let script = """
-    (function () {
-      const send = (p) => window.webkit.messageHandlers.\(handlerName).postMessage(p);
-      let current = null;
+    static var domainScript: String {
+        """
+        (function () {
+          const agent = window['\(PageRuntime.handle)'];
+          if (!agent) { return; }
 
-      function describe() {
-        if (!current) return { playing: false, title: '', artist: '', hasVideo: false,
-                               duration: 0, currentTime: 0 };
-        const meta = navigator.mediaSession && navigator.mediaSession.metadata;
-        return {
-          playing: !current.paused && !current.ended,
-          title: (meta && meta.title) || document.title || '',
-          artist: (meta && meta.artist) || location.hostname,
-          hasVideo: current.tagName === 'VIDEO' && current.videoWidth > 0,
-          duration: isFinite(current.duration) ? current.duration : 0,
-          currentTime: current.currentTime || 0,
-          // `currentSrc` is the resolved source, including <source> children.
-          // A blob: URL means Media Source Extensions — a segmented stream with
-          // no single fetchable file behind it.
-          src: current.currentSrc || current.src || ''
-        };
-      }
+          // `innerText` rather than the DOM: it already excludes hidden
+          // elements and flattens across element boundaries, so a phrase split
+          // by markup still counts once. WebKit's find API reports only
+          // whether it landed on something, so the tally has to come from
+          // somewhere.
+          agent.define('find.count', ({ query }) => {
+            const needle = (query || '').toLowerCase();
+            if (!needle) { return 0; }
+            const text = (document.body?.innerText ?? '').toLowerCase();
+            let total = 0;
+            let index = text.indexOf(needle);
+            while (index !== -1) {
+              total += 1;
+              index = text.indexOf(needle, index + needle.length);
+            }
+            return total;
+          });
 
-      function track(event) {
-        const el = event.target;
-        if (!(el instanceof HTMLMediaElement)) return;
-        // The most recently started element is the one the user means.
-        current = el;
-        window.__glassMedia = el;
-        send(describe());
-      }
-
-      document.addEventListener('play', track, true);
-      document.addEventListener('pause', (e) => { if (e.target === current) send(describe()); }, true);
-      document.addEventListener('ended', (e) => { if (e.target === current) send(describe()); }, true);
-
-      // Position updates for the scrubber. `timeupdate` fires ~4x a second,
-      // which is far more traffic than a progress bar needs.
-      setInterval(() => { if (current && !current.paused) send(describe()); }, 1000);
-    })();
-    """
-
-    /// Toggling has to run in the page world, where `__glassMedia` lives.
-    static let toggleScript = """
-    const el = window.__glassMedia;
-    if (!el) { return false; }
-    if (el.paused) { el.play(); } else { el.pause(); }
-    return true;
-    """
-
-    /// Seeks to an absolute position. `time` arrives as a call argument rather
-    /// than interpolated into the source, so page content can never become script.
-    static let seekScript = """
-    const el = window.__glassMedia;
-    if (!el) { return false; }
-    const limit = isFinite(el.duration) ? el.duration : time;
-    el.currentTime = Math.max(0, Math.min(limit, time));
-    return true;
-    """
-
-    /// Jumps relative to the current position, clamped to the media's bounds.
-    static let skipScript = """
-    const el = window.__glassMedia;
-    if (!el) { return false; }
-    const target = el.currentTime + delta;
-    el.currentTime = isFinite(el.duration)
-      ? Math.max(0, Math.min(el.duration, target))
-      : Math.max(0, target);
-    return true;
-    """
-
-    /// Where the playing video sits in the viewport, in CSS pixels.
-    ///
-    /// This is the entire site-specific surface of the lens approach: one
-    /// rectangle. No styling is injected into the player, so there is no
-    /// stacking-context or containing-block fight to lose.
-    static let measureScript = """
-    const el = window.__glassMedia;
-    if (!el || !el.isConnected) { return null; }
-    const r = el.getBoundingClientRect();
-    if (r.width < 10 || r.height < 10) { return null; }
-    return JSON.stringify([r.x, r.y, r.width, r.height]);
-    """
-
-    /// Stops wheel events from scrolling the page under the lens, which would
-    /// slide the video out of the cropped region.
-    static let lockScrollScript = """
-    if (!document.getElementById('__glass_lens')) {
-      const s = document.createElement('style');
-      s.id = '__glass_lens';
-      // `pointer-events` is inherited, but sites set it explicitly on their
-      // own overlays, so the universal selector and !important are both doing
-      // work here. This is what actually keeps the pointer off the page:
-      // covering a view with another one doesn't stop it, because tracking
-      // areas fire on geometry and know nothing about what's drawn on top.
-      s.textContent = 'html, body { overflow: hidden !important; }' +
-        'html, html * { pointer-events: none !important; }';
-      document.documentElement.appendChild(s);
-    }
-    // Native controls don't auto-hide reliably when the pointer never arrives,
-    // so switch them off outright. Custom players hide themselves once the
-    // page stops seeing hover at all.
-    const el = window.__glassMedia;
-    if (el) {
-      el.dataset.glassControls = el.controls ? '1' : '0';
-      el.controls = false;
-    }
-    return true;
-    """
-
-    static let unlockScrollScript = """
-    document.getElementById('__glass_lens')?.remove();
-    const el = window.__glassMedia;
-    if (el && el.dataset.glassControls !== undefined) {
-      el.controls = el.dataset.glassControls === '1';
-      delete el.dataset.glassControls;
-    }
-    return true;
-    """
-
-    static func decode(_ body: Any) -> MediaState? {
-        guard let dict = body as? [String: Any] else { return nil }
-        return MediaState(
-            isPlaying: dict["playing"] as? Bool ?? false,
-            title: dict["title"] as? String ?? "",
-            artist: dict["artist"] as? String ?? "",
-            hasVideo: dict["hasVideo"] as? Bool ?? false,
-            duration: dict["duration"] as? Double ?? 0,
-            currentTime: dict["currentTime"] as? Double ?? 0,
-            sourceURL: dict["src"] as? String ?? ""
-        )
+          agent.define('find.clearSelection', () => {
+            window.getSelection()?.removeAllRanges();
+            return true;
+          });
+        })();
+        """
     }
 }
