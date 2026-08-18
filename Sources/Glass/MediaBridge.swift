@@ -65,20 +65,41 @@ enum MediaBridge {
 
       function track(event) {
         const el = event.target;
-        if (!(el instanceof HTMLMediaElement)) return;
+        if (!(el instanceof HTMLMediaElement)) return false;
         // The most recently started element is the one the user means.
         current = el;
         window.__glassMedia = el;
         send(describe());
+        return true;
       }
 
-      document.addEventListener('play', track, true);
-      document.addEventListener('pause', (e) => { if (e.target === current) send(describe()); }, true);
-      document.addEventListener('ended', (e) => { if (e.target === current) send(describe()); }, true);
-
       // Position updates for the scrubber. `timeupdate` fires ~4x a second,
-      // which is far more traffic than a progress bar needs.
-      setInterval(() => { if (current && !current.paused) send(describe()); }, 1000);
+      // which is far more traffic than a progress bar needs — so it's a timer,
+      // but one that only exists while something is actually playing.
+      //
+      // This script is injected into every frame of every tab, so an
+      // unconditional interval meant every tab you had open owned a timer per
+      // frame, waking its content process once a second to discover there was
+      // nothing to report. The overwhelming majority of tabs never play
+      // anything at all.
+      let ticker = null;
+      function startTicker() {
+        if (ticker) { return; }
+        ticker = setInterval(() => {
+          if (current && !current.paused) { send(describe()); } else { stopTicker(); }
+        }, 1000);
+      }
+      function stopTicker() {
+        if (ticker) { clearInterval(ticker); ticker = null; }
+      }
+
+      document.addEventListener('play', (e) => { if (track(e)) { startTicker(); } }, true);
+      document.addEventListener('pause', (e) => {
+        if (e.target === current) { stopTicker(); send(describe()); }
+      }, true);
+      document.addEventListener('ended', (e) => {
+        if (e.target === current) { stopTicker(); send(describe()); }
+      }, true);
     })();
     """
 

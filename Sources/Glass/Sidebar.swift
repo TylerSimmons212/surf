@@ -5,6 +5,15 @@ import SwiftUI
 ///
 /// Everything that used to sit in a toolbar lives here, so the window itself is
 /// nothing but page.
+///
+/// Every part below is a `View` struct rather than a method or computed
+/// property on this one, and that is a performance decision rather than a
+/// stylistic one. Under `@Observable`, a dependency read while a body runs is
+/// attributed to *that body* — so a helper method returning a row makes the
+/// whole sidebar depend on the row's tab. Written that way, one tab reporting
+/// load progress re-evaluated the navigation bar, every visible row, both
+/// buttons in each of them, and the new-tab button. Split like this, each piece
+/// depends only on what it actually reads.
 struct Sidebar: View {
     let session: BrowserSession
     @Binding var isPinned: Bool
@@ -14,31 +23,105 @@ struct Sidebar: View {
     let isFloating: Bool
     /// Lets the sidebar's own transient UI keep it on screen.
     let hold: SidebarHold
-    @State private var hoveredTab: Tab.ID?
+
     @State private var isHoveringNewTab = false
-    @State private var copiedTab: Tab.ID?
 
     /// Wide enough that the roomier rows don't buy their height back out of
     /// the title: taller rows with the same width would just truncate sooner.
     static let width: CGFloat = 264
     /// Two 21pt controls and the gap between them.
-    private static let actionsWidth: CGFloat = 44
+    static let actionsWidth: CGFloat = 44
 
     var body: some View {
         VStack(spacing: 0) {
-            navigationBar
+            SidebarNavigationBar(session: session, isPinned: $isPinned, hold: hold)
             tabList
-            if !session.mediaTabs.isEmpty {
+            SidebarMediaSection(session: session)
+        }
+        .frame(width: Sidebar.width)
+    }
+
+    // MARK: - Tabs
+
+    private var tabList: some View {
+        ScrollView {
+            LazyVStack(spacing: 4) {
+                ForEach(session.tabs) { tab in
+                    TabRow(
+                        tab: tab,
+                        isSelected: tab.id == session.selectedTabID,
+                        onSelect: { session.select(tab) },
+                        onClose: { session.close(tab) }
+                    )
+                }
+                newTabButton
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private var newTabButton: some View {
+        Button {
+            // A new tab is a request to go somewhere, so ask where immediately
+            // rather than presenting a screen that asks the same thing.
+            session.openNewTabAndPrompt()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 16, height: 16)
+                    .rotationEffect(.degrees(isHoveringNewTab ? 90 : 0))
+                    .scaleEffect(isHoveringNewTab ? 1.15 : 1)
+                Text("New Tab")
+                    .font(.system(size: 13))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(isHoveringNewTab ? 0.07 : 0))
+        }
+        .animation(.spring(response: 0.32, dampingFraction: 0.65), value: isHoveringNewTab)
+        .onHover { isHoveringNewTab = $0 }
+        .help("New Tab (⌘T)")
+    }
+}
+
+// MARK: - Media
+
+/// Its own view purely so that reading `mediaTabs` — which touches the media
+/// state of *every* tab in the session — doesn't make the whole sidebar depend
+/// on all of it. A playing tab reports its position about once a second.
+private struct SidebarMediaSection: View {
+    let session: BrowserSession
+
+    var body: some View {
+        let mediaTabs = session.mediaTabs
+        Group {
+            if !mediaTabs.isEmpty {
                 MediaPlayerStack(session: session)
             }
         }
-        .frame(width: Sidebar.width)
-        .animation(.spring(response: 0.32, dampingFraction: 0.8), value: session.mediaTabs.count)
+        .animation(.spring(response: 0.32, dampingFraction: 0.8), value: mediaTabs.count)
     }
+}
 
-    // MARK: - Navigation
+// MARK: - Navigation
 
-    private var navigationBar: some View {
+/// The back/forward/reload row. Separated because it reads the selected tab's
+/// `progress`, which `WKWebView` reports many times per load.
+private struct SidebarNavigationBar: View {
+    let session: BrowserSession
+    @Binding var isPinned: Bool
+    let hold: SidebarHold
+
+    var body: some View {
         let tab = session.selectedTab
 
         return HStack(spacing: 2) {
@@ -59,22 +142,7 @@ struct Sidebar: View {
             // While loading, the arrow spins and a ring around it fills with
             // real progress; it only becomes a stop button under the pointer.
             // The control reports state at rest and offers the action on hover.
-            ZStack {
-                IconButton(
-                    systemName: "arrow.clockwise",
-                    hoverSymbol: tab.isLoading ? "xmark" : nil,
-                    isEnabled: tab.mode == .browsing,
-                    isSpinning: tab.isLoading,
-                    help: tab.isLoading ? "Stop" : "Reload (⌘R)"
-                ) {
-                    tab.isLoading ? tab.stop() : tab.reload()
-                }
-
-                if tab.isLoading {
-                    progressRing(tab.progress)
-                }
-            }
-            .animation(.easeOut(duration: 0.2), value: tab.isLoading)
+            ReloadControl(tab: tab)
 
             Spacer()
 
@@ -117,6 +185,34 @@ struct Sidebar: View {
         .padding(.bottom, 6)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
     }
+}
+
+/// The reload button and its progress ring.
+///
+/// Split out from the navigation bar for the same reason the bar is split from
+/// the sidebar: `progress` changes continuously while a page loads, and this is
+/// the only thing that reads it. Now that is all it re-renders.
+private struct ReloadControl: View {
+    let tab: Tab
+
+    var body: some View {
+        ZStack {
+            IconButton(
+                systemName: "arrow.clockwise",
+                hoverSymbol: tab.isLoading ? "xmark" : nil,
+                isEnabled: tab.mode == .browsing,
+                isSpinning: tab.isLoading,
+                help: tab.isLoading ? "Stop" : "Reload (⌘R)"
+            ) {
+                tab.isLoading ? tab.stop() : tab.reload()
+            }
+
+            if tab.isLoading {
+                progressRing(tab.progress)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: tab.isLoading)
+    }
 
     /// Load progress drawn around the reload button, so the control *is* the
     /// indicator and no separate bar is needed.
@@ -137,29 +233,30 @@ struct Sidebar: View {
             // Purely decorative: clicks belong to the button underneath.
             .allowsHitTesting(false)
     }
+}
 
-    // MARK: - Tabs
+// MARK: - Rows
 
-    private var tabList: some View {
-        ScrollView {
-            LazyVStack(spacing: 4) {
-                ForEach(session.tabs) { tab in
-                    row(for: tab)
-                }
-                newTabButton
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
-        }
-    }
+/// One tab in the list.
+///
+/// Its own struct so that a tab's title arriving, favicon loading, or spinner
+/// starting re-renders that row and nothing else. Hover and the momentary
+/// "copied" tick are local `@State` for the same reason — held on the sidebar,
+/// moving the pointer down the list re-evaluated every row on every row change.
+private struct TabRow: View {
+    let tab: Tab
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
 
-    private func row(for tab: Tab) -> some View {
-        let isSelected = tab.id == session.selectedTabID
-        let isHovered = hoveredTab == tab.id
-        let showsActions = isHovered || copiedTab == tab.id
+    @State private var isHovered = false
+    @State private var didCopy = false
 
-        return HStack(spacing: 10) {
-            statusIcon(for: tab)
+    private var showsActions: Bool { isHovered || didCopy }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            StatusIcon(tab: tab)
                 .scaleEffect(isHovered ? 1.12 : 1)
                 .animation(.spring(response: 0.3, dampingFraction: 0.65), value: isHovered)
 
@@ -173,50 +270,16 @@ struct Sidebar: View {
         }
         // The controls sit on top of the end of the title, so the text is faded
         // out beneath them rather than left to collide with them.
-        .mask { titleFade(clearingActions: showsActions) }
+        .mask { titleFade }
         // Selection belongs to the title area, and is attached *before* the
         // controls are overlaid so they sit above it and take their own clicks.
         .contentShape(Rectangle())
-        .onTapGesture { session.select(tab) }
+        .onTapGesture(perform: onSelect)
         // Overlaid rather than laid out, so the title gets the full width of
         // the row until the controls are actually wanted. Reserving their space
         // permanently made every tab name truncate early for the sake of two
         // buttons that are hidden most of the time.
-        .overlay(alignment: .trailing) {
-            HStack(spacing: 2) {
-                // Momentary checkmark: copying is invisible otherwise, and a
-                // silent copy leaves you unsure it worked.
-                IconButton(
-                    systemName: copiedTab == tab.id ? "checkmark" : "link",
-                    size: 10,
-                    weight: .bold,
-                    width: 21,
-                    height: 21,
-                    cornerRadius: 6,
-                    tint: copiedTab == tab.id ? .green : nil,
-                    help: "Copy Link"
-                ) {
-                    copyURL(of: tab)
-                }
-                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: copiedTab == tab.id)
-
-                IconButton(
-                    systemName: "xmark",
-                    size: 10,
-                    weight: .bold,
-                    width: 21,
-                    height: 21,
-                    cornerRadius: 6,
-                    help: "Close Tab (⌘W)"
-                ) {
-                    session.close(tab)
-                }
-            }
-            .opacity(showsActions ? 1 : 0)
-            .scaleEffect(showsActions ? 1 : 0.7, anchor: .trailing)
-            .allowsHitTesting(showsActions)
-            .animation(.spring(response: 0.26, dampingFraction: 0.7), value: showsActions)
-        }
+        .overlay(alignment: .trailing) { actions }
         .padding(.horizontal, 9)
         .padding(.vertical, 9)
         .background {
@@ -225,10 +288,44 @@ struct Sidebar: View {
                 .animation(.easeOut(duration: 0.16), value: isHovered)
                 .animation(.easeOut(duration: 0.2), value: isSelected)
         }
-        .onHover { hovering in
-            hoveredTab = hovering ? tab.id : (hoveredTab == tab.id ? nil : hoveredTab)
-        }
+        .onHover { isHovered = $0 }
         .help(tab.displayTitle)
+    }
+
+    private var actions: some View {
+        HStack(spacing: 2) {
+            // Momentary checkmark: copying is invisible otherwise, and a
+            // silent copy leaves you unsure it worked.
+            IconButton(
+                systemName: didCopy ? "checkmark" : "link",
+                size: 10,
+                weight: .bold,
+                width: 21,
+                height: 21,
+                cornerRadius: 6,
+                tint: didCopy ? .green : nil,
+                help: "Copy Link"
+            ) {
+                copyURL()
+            }
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: didCopy)
+
+            IconButton(
+                systemName: "xmark",
+                size: 10,
+                weight: .bold,
+                width: 21,
+                height: 21,
+                cornerRadius: 6,
+                help: "Close Tab (⌘W)"
+            ) {
+                onClose()
+            }
+        }
+        .opacity(showsActions ? 1 : 0)
+        .scaleEffect(showsActions ? 1 : 0.7, anchor: .trailing)
+        .allowsHitTesting(showsActions)
+        .animation(.spring(response: 0.26, dampingFraction: 0.7), value: showsActions)
     }
 
     /// Full-width by default; on hover, dissolves the tail of the title into
@@ -236,7 +333,7 @@ struct Sidebar: View {
     ///
     /// Sized in points rather than as a gradient across the whole row, because
     /// the clear part has to line up exactly with the buttons over it.
-    private func titleFade(clearingActions: Bool) -> some View {
+    private var titleFade: some View {
         HStack(spacing: 0) {
             Rectangle()
             LinearGradient(
@@ -244,66 +341,34 @@ struct Sidebar: View {
                 startPoint: .leading,
                 endPoint: .trailing
             )
-            .frame(width: clearingActions ? 18 : 0)
+            .frame(width: showsActions ? 18 : 0)
             Color.clear
-                .frame(width: clearingActions ? Sidebar.actionsWidth : 0)
+                .frame(width: showsActions ? Sidebar.actionsWidth : 0)
         }
-        .animation(.easeOut(duration: 0.2), value: clearingActions)
+        .animation(.easeOut(duration: 0.2), value: showsActions)
     }
 
-    private var newTabButton: some View {
-        Button {
-            // A new tab is a request to go somewhere, so ask where immediately
-            // rather than presenting a screen that asks the same thing.
-            session.openNewTabAndPrompt()
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 16, height: 16)
-                    .rotationEffect(.degrees(isHoveringNewTab ? 90 : 0))
-                    .scaleEffect(isHoveringNewTab ? 1.15 : 1)
-                Text("New Tab")
-                    .font(.system(size: 13))
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 9)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .background {
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(Color.primary.opacity(isHoveringNewTab ? 0.07 : 0))
-        }
-        .animation(.spring(response: 0.32, dampingFraction: 0.65), value: isHoveringNewTab)
-        .onHover { isHoveringNewTab = $0 }
-        .help("New Tab (⌘T)")
-    }
-
-    // MARK: - Actions
-
-    private func copyURL(of tab: Tab) {
-        let url = tab.webView.url?.absoluteString ?? tab.addressText
+    private func copyURL() {
+        let url = tab.currentURL ?? tab.addressText
         guard !url.isEmpty else { return }
 
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
 
-        copiedTab = tab.id
+        didCopy = true
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.4))
-            if copiedTab == tab.id { copiedTab = nil }
+            didCopy = false
         }
     }
+}
 
-    // MARK: - Pieces
+/// Loading spinner > real favicon > generic placeholder. The spinner wins so
+/// a cached icon can't make a loading tab look finished.
+private struct StatusIcon: View {
+    let tab: Tab
 
-    /// Loading spinner > real favicon > generic placeholder. The spinner wins so
-    /// a cached icon can't make a loading tab look finished.
-    @ViewBuilder
-    private func statusIcon(for tab: Tab) -> some View {
+    var body: some View {
         if tab.isLoading {
             ProgressView()
                 .controlSize(.small)
@@ -322,5 +387,4 @@ struct Sidebar: View {
                 .frame(width: 16, height: 16)
         }
     }
-
 }

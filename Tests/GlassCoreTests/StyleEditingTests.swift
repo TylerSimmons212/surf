@@ -225,15 +225,15 @@ struct CascadeEscalationTests {
     }
 }
 
-@Suite("CSS colour")
-struct CSSColorTests {
+@Suite("Resolved colour")
+struct ResolvedColorTests {
 
     /// The page's own parser answers, so nothing here needs to know the 148
     /// named colours or what `oklch()` means — only how to read four bytes.
     @Test("A resolved colour decodes from the page's four bytes")
     func decode() {
         let color = CSSWire.decodeColor([0, 170, 255, 255])
-        #expect(color == CSSColor(red: 0, green: 170, blue: 255))
+        #expect(color == ResolvedColor(red: 0, green: 170, blue: 255))
         #expect(color?.hex == "#00aaff")
         #expect(color?.isOpaque == true)
     }
@@ -278,7 +278,7 @@ struct CSSColorTests {
 
     @Test("Out-of-range bytes are clamped rather than trusted")
     func clamps() {
-        let color = CSSColor(red: 300, green: -20, blue: 128, alpha: 999)
+        let color = ResolvedColor(red: 300, green: -20, blue: 128, alpha: 999)
         #expect(color.red == 255)
         #expect(color.green == 0)
         #expect(color.alpha == 255)
@@ -286,21 +286,21 @@ struct CSSColorTests {
 }
 
 @Suite("Picked colour notation")
-struct CSSColorNotationTests {
+struct ResolvedColorNotationTests {
 
     /// Picking a colour shouldn't quietly rewrite the notation around it. The
     /// diff you take back to your editor is meant to read as a change of
     /// colour, not a change of colour *and* a change of style.
     @Test("A value written as rgb() comes back as rgb()")
     func keepsFunctional() {
-        let color = CSSColor(red: 0, green: 170, blue: 255)
+        let color = ResolvedColor(red: 0, green: 170, blue: 255)
         #expect(color.css(matching: "rgb(1, 2, 3)") == "rgb(0, 170, 255)")
         #expect(color.css(matching: "rgba(1, 2, 3, 0.5)") == "rgb(0, 170, 255)")
     }
 
     @Test("A value written as hex comes back as hex")
     func keepsHex() {
-        let color = CSSColor(red: 0, green: 170, blue: 255)
+        let color = ResolvedColor(red: 0, green: 170, blue: 255)
         #expect(color.css(matching: "#123456") == "#00aaff")
         #expect(color.css(matching: "red") == "#00aaff")
     }
@@ -309,21 +309,21 @@ struct CSSColorNotationTests {
     /// out of an sRGB panel, so it becomes hex rather than pretending.
     @Test("Modern syntax becomes hex rather than pretending to survive")
     func modernSyntaxFallsBack() {
-        let color = CSSColor(red: 255, green: 0, blue: 0)
+        let color = ResolvedColor(red: 255, green: 0, blue: 0)
         #expect(color.css(matching: "oklch(0.65 0.19 24)") == "#ff0000")
         #expect(color.css(matching: "color-mix(in oklab, red, blue)") == "#ff0000")
     }
 
     @Test("Alpha survives into both notations")
     func alpha() {
-        let color = CSSColor(red: 0, green: 0, blue: 0, alpha: 128)
+        let color = ResolvedColor(red: 0, green: 0, blue: 0, alpha: 128)
         #expect(color.css(matching: "#000") == "#00000080")
         #expect(color.css(matching: "rgb(0, 0, 0)") == "rgba(0, 0, 0, 0.5)")
     }
 
     @Test("A fully opaque colour never emits a pointless alpha")
     func noRedundantAlpha() {
-        let color = CSSColor(red: 17, green: 34, blue: 51)
+        let color = ResolvedColor(red: 17, green: 34, blue: 51)
         #expect(color.css(matching: "#000") == "#112233")
         #expect(color.css(matching: "rgb(0,0,0)") == "rgb(17, 34, 51)")
     }

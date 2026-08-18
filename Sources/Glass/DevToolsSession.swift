@@ -296,7 +296,7 @@ final class DevToolsSession: Identifiable {
     private(set) var stylePayload: MatchedStylesPayload?
     private(set) var computed: [String: String] = [:]
     /// Resolved by the page, so `oklch()` and `color-mix()` need no parser here.
-    private(set) var computedColors: [String: CSSColor] = [:]
+    private(set) var computedColors: [String: ResolvedColor] = [:]
     private(set) var isLoadingStyles = false
 
     /// Which box the pane is resolving: the element, or one of its
@@ -551,7 +551,7 @@ final class DevToolsSession: Identifiable {
     /// in `2px solid red` must not turn the whole value into a colour, and
     /// picking on the second stop of a gradient must leave the first standing.
     func setColor(
-        _ color: CSSColor,
+        _ color: ResolvedColor,
         segment index: Int,
         of declaration: CSSDeclaration,
         in rule: MatchedRule,
@@ -1593,7 +1593,14 @@ final class DevToolsSession: Identifiable {
         }
     }
 
-    var pageURL: String { tab?.webView.url?.absoluteString ?? "" }
+    /// Deliberately `currentURL` rather than `webView.url`.
+    ///
+    /// Reading `webView` *builds* one when the tab is asleep, and this is read
+    /// on every render of the panel header — so describing a tab through it
+    /// would resurrect a reclaimed tab as a blank view with no agents in it,
+    /// leaving `isLive` true and every command failing. Measured, not guessed:
+    /// that is exactly what happened the first time this merge was tested.
+    var pageURL: String { tab?.currentURL ?? "" }
 
     // MARK: - Lifecycle
 
@@ -1839,6 +1846,7 @@ final class DevToolsSession: Identifiable {
         bridge.send(.runtimeReleaseObject, ["objectIds": ids])
     }
 
+    /// TEMP seam for the merge check.
     private func refreshStatus() async {
         let issued = generation
         do {

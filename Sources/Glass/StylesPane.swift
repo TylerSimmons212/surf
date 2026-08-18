@@ -725,7 +725,7 @@ private struct DeclarationRow: View {
 
     /// Absent for a rule that isn't applying or a declaration switched off —
     /// picking a colour you can't see the effect of is a trap, not a feature.
-    private var colorPicker: ((Int, CSSColor) -> Void)? {
+    private var colorPicker: ((Int, ResolvedColor) -> Void)? {
         guard rule.isActive, !isOff else { return nil }
         return { segment, current in pickColor(segment, current) }
     }
@@ -736,7 +736,7 @@ private struct DeclarationRow: View {
     /// because the whole point of picking against a live page is seeing it —
     /// and a colour you have to commit before you can look at is just a text
     /// field with extra steps.
-    private func pickColor(_ segment: Int, _ current: CSSColor) {
+    private func pickColor(_ segment: Int, _ current: ResolvedColor) {
         ColorPanelController.shared.present(startingAt: current) { picked in
             Task { @MainActor in
                 await session.setColor(

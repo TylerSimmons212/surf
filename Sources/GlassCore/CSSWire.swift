@@ -77,9 +77,9 @@ public enum CSSWire {
     }
 
     /// `[r, g, b, a]`, as the page's own colour parser resolved it.
-    public static func decodeColor(_ value: Any?) -> CSSColor? {
+    public static func decodeColor(_ value: Any?) -> ResolvedColor? {
         guard let parts = value as? [Int], parts.count == 4 else { return nil }
-        return CSSColor(red: parts[0], green: parts[1], blue: parts[2], alpha: parts[3])
+        return ResolvedColor(red: parts[0], green: parts[1], blue: parts[2], alpha: parts[3])
     }
 
     public static func decodeSegments(_ value: Any?) -> [CSSValueSegment] {
@@ -93,7 +93,7 @@ public enum CSSWire {
     }
 
     /// The computed map's colours, by property.
-    public static func decodeComputedColors(_ body: [String: Any]) -> [String: CSSColor] {
+    public static func decodeComputedColors(_ body: [String: Any]) -> [String: ResolvedColor] {
         guard let raw = body["colors"] as? [String: Any] else { return [:] }
         return raw.compactMapValues { decodeColor($0) }
     }

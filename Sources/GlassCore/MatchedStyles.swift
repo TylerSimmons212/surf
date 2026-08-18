@@ -220,11 +220,18 @@ public enum CSSInheritance {
 
 /// A colour, already resolved to sRGB bytes by the page's own parser.
 ///
+/// Distinct from `ResolvedColor`, and deliberately so. That one parses stylesheet
+/// text and *declines* what it can't fully understand — `color-mix()`,
+/// `var()`, `currentColor` all return nil — because a theme engine that
+/// rewrites a page must never transform a colour it guessed at. This one is
+/// the opposite end: the engine has already done the resolving, so it handles
+/// every syntax there is and carries no parser at all.
+///
 /// Resolved there rather than here because the alternative is reimplementing
 /// CSS colour: the 148 named colours, hex in three lengths, two syntaxes each
 /// for `rgb()` and `hsl()` — and that still wouldn't cover `oklch()`, which
 /// Tailwind v4 emits by default, or `color-mix()`, or `light-dark()`.
-public struct CSSColor: Sendable, Equatable {
+public struct ResolvedColor: Sendable, Equatable {
     /// 0–255.
     public var red: Int
     public var green: Int
@@ -285,11 +292,11 @@ public struct CSSColor: Sendable, Equatable {
 public struct CSSValueSegment: Sendable, Equatable, Identifiable {
     public var index: Int
     public var text: String
-    public var color: CSSColor?
+    public var color: ResolvedColor?
 
     public var id: Int { index }
 
-    public init(index: Int, text: String, color: CSSColor? = nil) {
+    public init(index: Int, text: String, color: ResolvedColor? = nil) {
         self.index = index
         self.text = text
         self.color = color

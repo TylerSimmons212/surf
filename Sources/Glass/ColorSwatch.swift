@@ -7,7 +7,7 @@ import SwiftUI
 /// precise that nobody reads off the page. A six-point square answers it before
 /// the text has been parsed by eye, which is most of why it's worth the space.
 struct ColorSwatch: View {
-    let color: CSSColor
+    let color: ResolvedColor
     var size: CGFloat = 9
     /// When present the swatch becomes a control that opens the picker.
     var action: (() -> Void)?
@@ -91,7 +91,7 @@ struct ColoredValue: View {
     var isStruck = false
     /// Opens the picker for one colour in the value. Absent where the value
     /// isn't editable — a computed value has no declaration to write back to.
-    var onPick: ((Int, CSSColor) -> Void)?
+    var onPick: ((Int, ResolvedColor) -> Void)?
     /// Drag on a number. Reports the offset of the number grabbed and the
     /// replacement text, so the rest of a compound value is untouched.
     var onScrub: ((Int, String) -> Void)?
@@ -186,7 +186,7 @@ struct ColoredValue: View {
 private struct ValuePiece: Identifiable {
     let id: Int
     let text: String
-    let color: CSSColor?
+    let color: ResolvedColor?
     let number: CSSNumber?
     let segment: Int
 }

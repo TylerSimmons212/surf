@@ -19,6 +19,10 @@ struct GlassApp: App {
     /// same preference.
     @AppStorage(PreferenceKeys.sidebarPinned) private var isSidebarPinned = false
 
+    /// Also mirrored in Settings. Both write the same key, and both re-apply on
+    /// change, so whichever the user reaches for the other agrees immediately.
+    @AppStorage(PreferenceKeys.appearanceMode) private var appearanceMode = AppearanceMode.default
+
     var body: some Scene {
         WindowGroup("Glass") {
             ContentView(session: session)
@@ -127,6 +131,21 @@ struct GlassApp: App {
 
             Divider()
 
+            // A submenu with checkmarks, which is what a Picker becomes in a
+            // menu. No keyboard shortcut: every free ⌘-key near this is already
+            // spoken for somewhere in the browser, and a scheme is not
+            // something anyone flips often enough to need one.
+            Picker("Appearance", selection: $appearanceMode) {
+                ForEach(AppearanceMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .onChange(of: appearanceMode) { _, mode in
+                AppearanceController.apply(mode)
+            }
+
+            Divider()
+
             // ⌘1–⌘9 jump by position; ⌘9 means "last", per convention.
             ForEach(1...9, id: \.self) { index in
                 Button("Show Tab \(index)") { session.selectTab(atOneBasedIndex: index) }
@@ -175,6 +194,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // Here rather than in `GlassApp.init`, which runs before `NSApp`
+        // exists. Everything inherits from the application object, so this one
+        // line reaches every window and every tab's web view.
+        AppearanceController.apply()
 
         // Returns immediately unless a week has passed, and never blocks
         // anything the user can see.

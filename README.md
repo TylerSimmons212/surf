@@ -41,6 +41,111 @@ only unless you turn on "Remember browsing history". Tabs, window size, and wind
 all restore on relaunch — including each tab's back/forward history and scroll
 position.
 
+### Appearance
+
+Settings (`⌘,`) and the View menu carry one three-way choice: System, Light,
+Dark. System follows the Mac, including when it switches at sunset; the other
+two stay put, which is the whole point of an override.
+
+There is no colour-scheme API on `WKWebView` — nothing in `WKWebView.h`,
+`WKWebViewConfiguration.h`, or `WKWebpagePreferences.h`. What WebKit reads is
+the view's `effectiveAppearance`, which it maps onto the `prefers-color-scheme`
+media query and re-evaluates live. So the setting writes one property on
+`NSApplication` and lets AppKit inheritance carry it to every window, the
+chrome, and every tab's web view — including tabs opened later, since a
+`WKWebView` sets no appearance of its own. The per-tab lever is the same
+property one level down, which is where per-site exceptions will hook in.
+
+That much is free and exact: a site with a dark mode of its own renders in the
+design its authors drew, not an approximation of it. A site without one is
+currently left alone — Glass doesn't yet invent a dark theme for it.
+
+"Restyle sites that don't offer it" builds one for the rest. It is off by
+default, because restyling a page is a far larger intervention than telling it
+which scheme you want.
+
+The transform works in OKLCH, where lightness is the theme axis and hue and
+chroma are the identity axis. Surfaces and text invert along lightness. A
+site's brand colours keep their hue *exactly* and move only as far as
+legibility demands — a red button becomes a lighter red, never an orange one —
+so a page comes back recognisably itself rather than recognisably processed.
+Scale decides the rest: the same blue is preserved on a badge and calmed on a
+masthead, because a saturated wall is fatiguing at that size and inverting its
+hue would be worse.
+
+Every colour meant to be read is then re-seated against the thing immediately
+behind it, not against the page — a label on a brand-coloured button is judged
+on that button. Both WCAG's ratio and a perceptual floor have to be satisfied;
+the second exists because the ratio flatters equiluminant chromatic pairs, and
+a theme that preserves brand colours produces those on purpose.
+
+Borders are judged on separation rather than on colour. What a rule means is
+how far it stands from what it sits on, so that gap is measured against the old
+background and re-established against the new one — a deliberate heavy divider
+stays heavy, a decorative hairline stays faint, and neither is dragged to a
+uniform minimum that would make them the same line.
+
+Gradients move as one body rather than stop by stop: transforming each stop
+alone reverses the direction the light falls from, which reads as broken rather
+than as dark.
+
+Images are left alone unless a mark on transparency would be lost on the new
+background — a logo drawn for a white page, invisible on a dark one. Then it is
+inverted, which touches only the pixels already being drawn: transparency stays
+transparent, and no box appears around the artwork.
+
+Colourless marks flip outright, since there is no hue to lose. Marks carrying
+colour flip their lightness while *holding* their hue, through a colour matrix
+rather than the usual `invert(1) hue-rotate(180deg)` — that shorthand is a
+linear approximation which drifts, and light blue reliably comes out brown. So
+Wikipedia's wordmark comes back with white letters beside a lighter blue badge,
+where plain inversion would have made the badge orange. Anything already
+legible is left untouched: a logo that reads is not improved by being turned
+inside out.
+
+Colourlessness is judged per pixel and weighted by alpha. A logo of a red
+circle beside a green one averages to grey and would fool any test of its mean;
+and sampled pixels arrive unpremultiplied, so the soft edge of a black wordmark
+reads as scattered navy unless the faint pixels are given proportionally little
+say.
+
+An inline `<svg>` is a different thing wearing the same clothes. It is DOM
+rather than pixels, and it is how most sites now ship their icons, so its paint
+is remapped like any other colour and by the same rules: a neutral mark inverts
+as text does, and a chromatic one is brand and keeps its hue exactly. A black
+chevron comes back light; a green logotype comes back the same green.
+
+A holding colour is painted at document start, before the page's own styles
+arrive, so there is no flash of the light version on the way to the dark one —
+the flash is a frame the page was always going to draw, and the only cure is to
+have an answer in place before it draws one. It works by removing colour rather
+than imposing it: backgrounds go transparent so everything shows the one dark
+ground beneath, which leaves overlays overlaying instead of turning them into
+opaque blocks.
+
+The walk crosses the two boundaries `querySelectorAll` stops at: an open shadow
+root, and a same-origin iframe. Between them they hold most of the web's
+design-system components and embedded widgets. Shadow DOM needs more than
+reaching, because encapsulation runs both ways — a sheet injected into the
+document never applies inside one, so marking those elements alone would change
+nothing. Each root adopts a single constructed stylesheet carrying the same
+rules instead. A cross-origin frame is a document nothing in the page can reach
+into, and is left exactly as it is.
+
+Pages don't hold still, so the theme is swept again whenever one changes under
+it — a section revealed on scroll, a lazily loaded list, a subtree re-rendered
+with our properties torn off, a sticky header that turns opaque. Each sweep
+switches our own styles off before reading, so what it sees is always the
+site's palette rather than the last answer we gave: that is what lets an
+element whose colour changed *in place* be noticed at all, and it means a sweep
+can be repeated safely rather than having to skip whatever it already touched.
+
+Which sites need this is measured rather than asked. A page is examined after
+it paints, and one already showing the requested scheme is left alone. Declared
+signals — a meta tag, a `prefers-color-scheme` rule — say what a site claims;
+reading what it painted says what it did, and cross-origin stylesheets can't
+hide it.
+
 ### Privacy
 
 Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
@@ -139,6 +244,21 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/FaviconPicker.swift` — chooses which declared icon to fetch
 - `Sources/GlassCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
 - `Sources/GlassCore/HistorySearch.swift` — autocomplete ranking
+- `Sources/GlassCore/AppearanceMode.swift` — the three-way scheme setting and
+  what it resolves to against the OS
+- `Sources/GlassCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
+- `Sources/GlassCore/OKLCH.swift` — the perceptual colour space and hue-preserving
+  gamut mapping
+- `Sources/GlassCore/Contrast.swift` — WCAG ratio, plus the perceptual floor that
+  catches the pairs it flatters
+- `Sources/GlassCore/CSSColor.swift` — the colour syntaxes stylesheets actually use
+- `Sources/GlassCore/CSSGradient.swift` — gradient parsing and whole-value rewriting
+- `Sources/GlassCore/ThemeTransform.swift` — surface, text, and accent remapping
+- `Sources/GlassCore/ContrastRepair.swift` — re-seats a colour against its new background
+- `Sources/GlassCore/ThemePlan.swift` — classifies each colour's role and builds
+  the page's substitutions
+- `Sources/GlassCore/ImageAnalysis.swift` — decides which artwork would vanish,
+  and what to back it with
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
@@ -153,6 +273,9 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/HistoryStore.swift` — in-memory visit history
 - `Sources/Glass/SettingsView.swift` — the Settings window
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
+- `Sources/Glass/Appearance.swift` — maps the setting onto `NSAppearance`
+- `Sources/Glass/ThemeBridge.swift` — measures a page's colours and writes the
+  plan back onto it
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
@@ -185,4 +308,6 @@ State lives in `~/Library/Application Support/Glass/session.json`.
 - History and a back/forward menu on long-press
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
 - Tab reordering by drag, and ⌘⇧T to reopen a closed tab
-- Downloads, find-in-page, bookmarks
+- Bookmarks
+- Cross-origin iframes, which are a separate document nothing in the page can
+  reach into — theming one means running the whole pass inside it

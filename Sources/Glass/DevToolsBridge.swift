@@ -118,19 +118,34 @@ final class DevToolsBridge {
         isAttached = false
         defer { tab.detachDevTools() }
 
-        // Back to buffering-only: with no handler its `post` throws, which the
-        // agent catches by flipping itself out of live mode.
-        Task { @MainActor [weak tab] in
-            _ = try? await tab?.webView.callAsyncJavaScript(
-                ConsoleAgent.dispatchScript,
-                arguments: ["method": DevToolsMethod.consoleSetLive.rawValue,
-                            "params": ["live": false]],
-                in: nil,
-                contentWorld: .page
-            )
+        // A local reference, captured while the view is still there, and never
+        // `tab.webView` from inside the task.
+        //
+        // That property *builds* a view when the tab has none — so when detach
+        // is called from `releaseWebView`, this trailing task would run after
+        // the view was released and resurrect it: a blank view, with no agents
+        // and no page, while `isLive` reported true and every command failed.
+        // Measured, not theorised; it is the same trap `releaseWebView` guards
+        // itself against, reintroduced one layer up.
+        let live: WKWebView? = tab.isLive ? tab.webView : nil
+        if let live {
+            // Back to buffering-only: with no handler its `post` throws, which
+            // the agent catches by flipping itself out of live mode.
+            Task { @MainActor in
+                _ = try? await live.callAsyncJavaScript(
+                    ConsoleAgent.dispatchScript,
+                    arguments: ["method": DevToolsMethod.consoleSetLive.rawValue,
+                                "params": ["live": false]],
+                    in: nil,
+                    contentWorld: .page
+                )
+            }
         }
 
-        let controller = tab.webView.configuration.userContentController
+        // Nothing further to unregister on a tab that no longer holds a view —
+        // its whole content controller went with it.
+        guard let live else { return }
+        let controller = live.configuration.userContentController
         controller.removeScriptMessageHandler(
             forName: DevToolsAgent.eventHandlerName,
             contentWorld: DevToolsAgent.world
@@ -146,7 +161,7 @@ final class DevToolsBridge {
         // Drops the agent from the document-start set. The copy in the *current*
         // document stays resident until navigation, but with its handler gone it
         // can no longer speak, and its `post` swallows the resulting throw.
-        tab.reinstallUserScripts()
+        if tab.isLive { tab.reinstallUserScripts() }
     }
 
     // MARK: - Commands

@@ -82,3 +82,33 @@ public enum SessionFile {
         try data.write(to: url, options: .atomic)
     }
 }
+
+/// Serializes session writes so they can happen off the main thread.
+///
+/// An actor rather than a bare `Task`: saves are triggered by whatever the
+/// browser happens to be doing, so two can easily be in flight at once, and two
+/// atomic writes racing to the same path would leave whichever finished last —
+/// not necessarily the newer one. Serializing them keeps last-scheduled and
+/// last-written the same thing.
+public actor SessionWriter {
+    public static let shared = SessionWriter()
+
+    private init() {}
+
+    public func write(_ session: PersistedSession, to url: URL = SessionFile.url) {
+        Self.writeSynchronously(session, to: url)
+    }
+
+    /// The same write, on the caller's thread — for quitting, where there is no
+    /// later turn of the run loop to finish on.
+    public static func writeSynchronously(
+        _ session: PersistedSession,
+        to url: URL = SessionFile.url
+    ) {
+        do {
+            try SessionFile.save(session, to: url)
+        } catch {
+            fputs("[glass] session save failed: \(error)\n", stderr)
+        }
+    }
+}

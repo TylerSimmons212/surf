@@ -13,6 +13,8 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.clearTracesOnQuit) private var clearTracesOnQuit = true
 
     @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
+    @AppStorage(PreferenceKeys.appearanceMode) private var appearanceMode = AppearanceMode.default
+    @AppStorage(PreferenceKeys.synthesizeTheme) private var synthesizeTheme = false
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
@@ -29,6 +31,48 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Appearance", selection: $appearanceMode) {
+                    ForEach(AppearanceMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appearanceMode) { _, mode in
+                    AppearanceController.apply(mode)
+                }
+                explain("""
+                System follows the Mac, including when it switches at sunset. \
+                Light and Dark stay put.
+                """)
+                explain("""
+                This tells sites which scheme you want. Sites that have a dark \
+                mode of their own will use it — the site's own design, rather \
+                than an approximation of it.
+                """)
+
+                Toggle("Restyle sites that don't offer it", isOn: $synthesizeTheme)
+                    .onChange(of: synthesizeTheme) { _, _ in
+                        // Takes effect on the pages already open, not just the
+                        // next one — a setting that needs a reload to be
+                        // believed reads as broken.
+                        AppearanceController.notifyChanged()
+                    }
+                explain("""
+                For the sites that have no dark mode, Glass builds one. Each \
+                site's own colours are kept: backgrounds and text are moved \
+                between light and dark, while brand colours hold their hue and \
+                shift only as far as legibility needs. Images are never recoloured.
+                """)
+                explain("""
+                This is a real change to how a page looks, and some sites will \
+                come out wrong. Turn it off and they go back to exactly as \
+                their authors drew them.
+                """, isCaveat: true)
+            } header: {
+                Text("Appearance")
+            }
+
             Section {
                 Toggle("Remember browsing history", isOn: $rememberHistory)
                     .onChange(of: rememberHistory) { _, isOn in

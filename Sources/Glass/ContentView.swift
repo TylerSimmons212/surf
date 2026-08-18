@@ -171,9 +171,12 @@ struct ContentView: View {
             chromeInset: (!isPinned && isRevealed) ? Sidebar.width + 8 : 0,
             onOpenAddressBar: { session.requestAddressFocus() }
         )
-            // Identity tied to the tab, so switching rebuilds the subtree and
-            // mounts the correct web view instead of reusing the previous one.
-            .id(session.selectedTab.id)
+        // Deliberately *no* `.id(tab.id)` here. Tying identity to the tab is
+        // the obvious way to make a switch mount the right page, and it made
+        // every switch destroy the whole subtree — rebuilding the container and
+        // pulling a live web view out of the window on its way past. The
+        // container tracks the current tab itself, and keeps the last few pages
+        // mounted so going back to one is a visibility flip.
     }
 
     private var floatingSidebar: some View {
@@ -296,7 +299,13 @@ private struct TabContent: View {
             }
         }
         // A restored tab loads the first time it's actually shown, not at launch.
-        .onAppear { tab.activateRestoreIfNeeded() }
+        //
+        // Keyed on the tab rather than on appearance: this view is no longer
+        // rebuilt per tab, so `onAppear` would fire once for whichever tab was
+        // selected at launch and leave every other restored tab blank forever.
+        .onChange(of: tab.id, initial: true) { _, _ in
+            tab.activateRestoreIfNeeded()
+        }
     }
 }
 

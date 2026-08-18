@@ -43,6 +43,7 @@ final class BrowserSession {
     private(set) var addressFocusCreatesTab = false
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
+    @ObservationIgnored private var reclaimTimer: Task<Void, Never>?
     /// Suppresses saves while restoring, so a half-built session can't
     /// overwrite the file we're still reading from.
     @ObservationIgnored private var isRestoring = false
@@ -55,16 +56,25 @@ final class BrowserSession {
                 tab.prepareRestore(from: persisted)
                 return tab
             }
+            let selected = tabs[min(restored.selectedIndex, tabs.count - 1)]
             self.tabs = tabs
-            self.selectedTabID = tabs[min(restored.selectedIndex, tabs.count - 1)].id
+            self.selectedTab = selected
+            self.selectedTabID = selected.id
             tabs.forEach { $0.session = self }
             isRestoring = false
+            // The one selection that doesn't go through `adoptSelection`, so
+            // the starting tab is told it's on screen by hand.
+            selected.didBecomeVisible()
         } else {
             let first = Tab()
             self.tabs = [first]
+            self.selectedTab = first
             self.selectedTabID = first.id
             first.session = self
+            first.didBecomeVisible()
         }
+
+        startReclaimTimer()
 
         // Quitting doesn't give the debounced save time to fire, so flush.
         NotificationCenter.default.addObserver(
@@ -72,7 +82,11 @@ final class BrowserSession {
             object: nil,
             queue: .main
         ) { _ in
-            MainActor.assumeIsolated { self.saveNow() }
+            // Blocking, and with fresh interaction state: this is the last
+            // chance to write, so it must finish before the process goes, and
+            // it's the one save where an exact scroll position is worth paying
+            // for.
+            MainActor.assumeIsolated { self.saveNow(blocking: true) }
         }
     }
 
@@ -86,17 +100,28 @@ final class BrowserSession {
 
     /// Coalesces the many save triggers (every title change, every navigation)
     /// into one write.
+    ///
+    /// A throttle rather than a debounce, deliberately. Restarting the timer on
+    /// each trigger sounds equivalent, and isn't: pages that rewrite their own
+    /// title on a loop — unread counts, a playing video's countdown — retrigger
+    /// faster than the delay, so the save was pushed back forever and the
+    /// session was never written at all while such a tab was open. Letting an
+    /// already-scheduled save run bounds the work to one write per interval and
+    /// removes the starvation.
     func scheduleSave() {
         guard !isRestoring else { return }
-        saveTask?.cancel()
+        guard saveTask == nil else { return }
         saveTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(1))
+            saveTask = nil
             guard !Task.isCancelled else { return }
             saveNow()
         }
     }
 
-    func saveNow() {
+    /// `blocking` writes on this thread instead of handing off — for quitting,
+    /// where there's no later turn of the run loop to finish the job on.
+    func saveNow(blocking: Bool = false) {
         let settings = PrivacySettings.current
 
         // Tab restore turned off: leave nothing behind, and delete anything a
@@ -108,7 +133,7 @@ final class BrowserSession {
         }
 
         let snapshot = PersistedSession(
-            tabs: tabs.map { $0.snapshot() },
+            tabs: tabs.map { $0.snapshot(refreshingState: blocking) },
             selectedIndex: tabs.firstIndex { $0.id == selectedTabID } ?? 0
         )
         // Strips each tab's back/forward blob when history is off.
@@ -116,10 +141,18 @@ final class BrowserSession {
 
         // A session of only home tabs sanitizes to nil — write it as empty so
         // closing everything and quitting doesn't resurrect old tabs.
-        do {
-            try SessionFile.save(redacted.sanitized() ?? PersistedSession(tabs: [], selectedIndex: 0))
-        } catch {
-            fputs("[glass] session save failed: \(error)\n", stderr)
+        let toWrite = redacted.sanitized() ?? PersistedSession(tabs: [], selectedIndex: 0)
+
+        // Reading the tabs has to happen here, on the main actor. Encoding and
+        // writing do not — and they're the expensive half, since every
+        // interaction-state blob is base64'd on the way into JSON. Handing them
+        // to the writer keeps a save off the frame that triggered it.
+        guard !blocking else {
+            SessionWriter.writeSynchronously(toWrite)
+            return
+        }
+        Task.detached(priority: .utility) {
+            await SessionWriter.shared.write(toWrite)
         }
     }
 
@@ -137,10 +170,85 @@ final class BrowserSession {
         return [primary] + holding.filter { $0.id != primary.id }
     }
 
-    var selectedTab: Tab {
-        // Safe by the invariant; the fallback keeps a corrupted state from
-        // crashing the app mid-session.
-        tabs.first { $0.id == selectedTabID } ?? tabs[0]
+    /// The selected tab, held rather than searched for.
+    ///
+    /// This was `tabs.first { $0.id == selectedTabID }`, which is correct but
+    /// reads the whole `tabs` array — so under `@Observable` every view that
+    /// asked for the selected tab became an observer of the array itself, and
+    /// adding or closing any tab invalidated the window chrome, the sidebar,
+    /// and the entire menu-bar command tree together. The menu commands alone
+    /// ask fifteen times per evaluation.
+    ///
+    /// Kept honest by `setSelection`, which is the one path selection changes
+    /// through, and by `close`/`reopenClosedTab` for the cases that replace the
+    /// array wholesale.
+    private(set) var selectedTab: Tab
+
+    /// Restores the invariant after a mutation, and is the only writer of the
+    /// selection pair — the two must never disagree.
+    ///
+    /// Also the one place tabs are told whether they're being looked at. A tab
+    /// that isn't on screen has no business restyling itself or sampling its
+    /// own colours, and telling it here means the rule can't be forgotten at a
+    /// call site.
+    private func adoptSelection(_ tab: Tab) {
+        let outgoing = selectedTab
+        selectedTab = tab
+        selectedTabID = tab.id
+        if outgoing !== tab { outgoing.didResignVisible() }
+        tab.didBecomeVisible()
+        reclaimIdleTabs()
+    }
+
+    // MARK: - Reclaiming
+
+    /// Puts idle background tabs to sleep, returning their web content
+    /// processes.
+    ///
+    /// The decision itself is `TabHibernation`, which is pure and tested; this
+    /// only gathers the facts and carries out the verdict. What counts as
+    /// untouchable is decided here because only the session knows it: the tab
+    /// on screen, anything playing, anything popped out, and anything being
+    /// inspected.
+    ///
+    /// Dev tools has to be on that list precisely because its panels are
+    /// per-tab: inspecting one page while looking at another is the normal way
+    /// to use them, so an inspected tab is in use even when it isn't visible.
+    /// Reclaiming it takes the web view out from under the panel, and every
+    /// injected agent with it — the console stops, the tree freezes, and
+    /// nothing says why.
+    private func reclaimIdleTabs() {
+        let now = Date()
+        let candidates = tabs.map { tab in
+            TabHibernation.Candidate(
+                id: tab.id,
+                lastViewedAt: tab.lastViewedAt,
+                isLive: tab.isLive,
+                isProtected: tab.id == selectedTabID
+                    || tab.media?.isPlaying == true
+                    || PopOutController.shared.isPoppedOut(tab)
+                    || DevToolsController.shared.isOpen(for: tab)
+            )
+        }
+
+        let doomed = Set(TabHibernation.tabsToSleep(among: candidates, now: now))
+        guard !doomed.isEmpty else { return }
+        for tab in tabs where doomed.contains(tab.id) {
+            tab.sleep()
+        }
+    }
+
+    /// Idle tabs go stale on the clock, not on interaction, so something has to
+    /// look while nothing is happening — otherwise a session left open all
+    /// afternoon holds every process until the next time you touch a tab.
+    private func startReclaimTimer() {
+        reclaimTimer = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled, let self else { return }
+                self.reclaimIdleTabs()
+            }
+        }
     }
 
     // MARK: - Lifecycle
@@ -188,14 +296,14 @@ final class BrowserSession {
             let fresh = Tab()
             fresh.session = self
             tabs = [fresh]
-            selectedTabID = fresh.id
+            adoptSelection(fresh)
             scheduleSave()
             return
         }
 
         // Only move the selection if the closed tab was the selected one.
         if tab.id == selectedTabID {
-            selectedTabID = tabs[nextIndex].id
+            adoptSelection(tabs[nextIndex])
         }
         scheduleSave()
     }
@@ -226,21 +334,21 @@ final class BrowserSession {
     private func setSelection(to id: Tab.ID) {
         guard id != selectedTabID else { return }
 
-        let outgoing = tabs.first { $0.id == selectedTabID }
-        let incoming = tabs.first { $0.id == id }
+        let outgoing = selectedTab
+        guard let incoming = tabs.first(where: { $0.id == id }) else { return }
 
         // Coming back to a popped-out tab folds it back into the window.
-        if let incoming, PopOutController.shared.isPoppedOut(incoming) {
+        if PopOutController.shared.isPoppedOut(incoming) {
             PopOutController.shared.restore()
         }
 
         // Leaving a tab mid-video pops it out so it stays watchable. Measured
         // before the selection changes, while the web view is still laid out.
-        if let outgoing, shouldAutoPopOut(outgoing) {
+        if shouldAutoPopOut(outgoing) {
             PopOutController.shared.popOut(outgoing)
         }
 
-        selectedTabID = id
+        adoptSelection(incoming)
         scheduleSave()
     }
 

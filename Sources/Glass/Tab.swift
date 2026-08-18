@@ -61,7 +61,34 @@ final class Tab: NSObject, Identifiable {
     /// site doesn't refetch and navigating away clears a now-wrong icon.
     @ObservationIgnored private var faviconHost: String?
 
-    @ObservationIgnored let webView: WKWebView
+    /// The web view, built the first time it's genuinely needed.
+    ///
+    /// A `WKWebView` costs a web content process from the moment it exists, so
+    /// building one per tab up front meant restoring a session of fifty tabs
+    /// spawned fifty processes before anything was on screen — for tabs whose
+    /// pages hadn't loaded and, in most cases, never would that session.
+    ///
+    /// Touching this property *creates* the view. Anything that only wants to
+    /// describe a tab — its address, its title, what to write to disk — must go
+    /// through `currentURL` / `snapshot()` instead, or it will quietly wake
+    /// every sleeping tab it looks at.
+    @ObservationIgnored private var liveWebView: WKWebView?
+
+    /// Whether the tab is currently holding a web view.
+    var isLive: Bool { liveWebView != nil }
+
+    var webView: WKWebView {
+        if let liveWebView { return liveWebView }
+        return buildWebView()
+    }
+
+    /// WebKit's own configuration, for a popup or `target="_blank"` link.
+    ///
+    /// Consumed on first use and dropped: it ties the new view to its opener,
+    /// which is right for the view WebKit asked for and wrong for any
+    /// replacement built later, after the tab has been asleep.
+    @ObservationIgnored private var providedConfiguration: WKWebViewConfiguration?
+
     /// Weak: the session owns its tabs, so a strong link back would retain-cycle.
     @ObservationIgnored weak var session: BrowserSession?
 
@@ -70,11 +97,28 @@ final class Tab: NSObject, Identifiable {
     /// `configuration` is non-nil only when WebKit hands us one for a popup or
     /// `target="_blank"` link — those must use the configuration WebKit supplies.
     init(configuration: WKWebViewConfiguration? = nil) {
-        let config = configuration ?? WKWebViewConfiguration()
-        if configuration == nil {
+        providedConfiguration = configuration
+
+        super.init()
+
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: .glassAppearanceChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.appearanceSettingsChanged() }
+        }
+    }
+
+    /// Builds the web view and everything that hangs off it.
+    ///
+    /// Assigns `liveWebView` before wiring anything up, because the helpers
+    /// below reach for `webView` — and would otherwise re-enter this and build
+    /// a second one.
+    @discardableResult
+    private func buildWebView() -> WKWebView {
+        let config = providedConfiguration ?? WKWebViewConfiguration()
+        if providedConfiguration == nil {
             // Shared by default, so cookies and logins carry across tabs.
             config.websiteDataStore = .default()
-            // UA TEST
             // Left at the default (false): scripted `window.open` without a
             // user gesture is blocked, while real link clicks still open tabs.
             // This is the popup blocker.
@@ -84,10 +128,13 @@ final class Tab: NSObject, Identifiable {
             // WKWebView; Safari has it on.
             config.preferences.isElementFullscreenEnabled = true
         }
+        providedConfiguration = nil
 
-        webView = WKWebView(frame: .zero, configuration: config)
-        webView.allowsBackForwardNavigationGestures = true
-        webView.allowsMagnification = true
+        let created = WKWebView(frame: .zero, configuration: config)
+        created.allowsBackForwardNavigationGestures = true
+        created.allowsMagnification = true
+        created.navigationDelegate = self
+        created.uiDelegate = self
         // Advertises this web view to Safari's Develop menu. That's the only
         // route to a JavaScript debugger — page scripts run in the WebContent
         // process, and the inspector protocol is private — so it stays on
@@ -95,22 +142,46 @@ final class Tab: NSObject, Identifiable {
         //
         // Set outside the `configuration == nil` block deliberately: popup and
         // `target="_blank"` tabs skip that branch, and they need this too.
-        webView.isInspectable = true
+        created.isInspectable = true
 
-        super.init()
+        liveWebView = created
 
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
         installBridgeHandlers()
         reinstallUserScripts()
         observeWebViewState()
+
+        // Zoom is per-tab and outlives a sleep, so a woken tab comes back at
+        // the magnification it was left at.
+        if !ZoomSteps.isStandard(zoomLevel) { created.pageZoom = zoomLevel }
+
+        return created
+    }
+
+    @ObservationIgnored private var appearanceObserver: (any NSObjectProtocol)?
+
+    /// The page's address as a string.
+    ///
+    /// Everything outside the tab should ask for this rather than reaching
+    /// through to `webView.url`: a tab that hasn't been opened yet — restored
+    /// from disk, or asleep — knows perfectly well where it points without
+    /// having a web view to ask.
+    var currentURL: String? {
+        if let url = liveWebView?.url { return url.absoluteString }
+        if let pending = pendingRestore?.url { return pending }
+        guard mode == .browsing, !addressText.isEmpty else { return nil }
+        return addressText
     }
 
     /// The label shown on the tab chip, degrading gracefully before a title lands.
+    ///
+    /// Careful not to reach for the web view: this is read for *every* row in
+    /// the sidebar, so asking a sleeping tab for its title would wake the whole
+    /// session the moment the list drew.
     var displayTitle: String {
         if !pageTitle.isEmpty { return pageTitle }
         if mode == .home { return "New Tab" }
-        return webView.url?.host ?? "Loading…"
+        if let host = currentURL.flatMap(URL.init(string:))?.host { return host }
+        return "Loading…"
     }
 
     // MARK: - Restore
@@ -260,6 +331,73 @@ final class Tab: NSObject, Identifiable {
                 )
             )
         }
+
+        // The theme's preflight, last — and deliberately not behind an early
+        // return. Returning here when theming is off would skip every dev tools
+        // script above it, which is precisely the silent, one-owner failure the
+        // whole function exists to prevent.
+        guard ThemePreferences.isEnabled else {
+            liveWebView?.underPageBackgroundColor = nil
+            return
+        }
+
+        let target = AppearanceController.resolved
+        controller.addUserScript(
+            WKUserScript(
+                source: ThemeBridge.preflightScript(for: target),
+                injectionTime: .atDocumentStart,
+                // Main frame only: an iframe is a document we don't theme, and
+                // painting a holding colour over one we then leave alone would
+                // be a flash of our own making.
+                forMainFrameOnly: true,
+                in: .defaultClient
+            )
+        )
+        // What shows between pages, before the next document exists at all.
+        liveWebView?.underPageBackgroundColor = ThemeBridge.preflightGround(for: target).nsColor
+    }
+
+    /// The scheme, or the decision to synthesise one, has changed.
+    private func appearanceSettingsChanged() {
+        // Every tab in the session hears this. A sleeping one has no scripts to
+        // reinstall and no page to restyle — and reaching for its web view here
+        // would wake the entire session on a single flip of the scheme. It
+        // picks up the new setting when it's next built.
+        guard isLive else { return }
+        reinstallUserScripts()
+        if ThemePreferences.isEnabled {
+            // Every tab hears this at once. Sweeping them all together is what
+            // made flipping the scheme stall — the tab you're looking at had to
+            // queue behind every one you weren't. The rest catch up as you
+            // reach them.
+            scheduleThemeSynthesisIfVisible()
+        } else {
+            revertTheme()
+        }
+    }
+
+    /// The page has changed under us — content revealed on scroll, a lazily
+    /// loaded section, a subtree re-rendered — and wants sweeping again.
+    private func pageDidMutate() {
+        guard ThemePreferences.isEnabled else { return }
+        guard themeSweeps < Self.maxThemeSweeps else {
+            if themeSweeps == Self.maxThemeSweeps {
+                themeSweeps += 1  // so this is said once, not on every mutation
+                debugLog("theme: sweep limit reached — leaving later content alone")
+            }
+            return
+        }
+        scheduleThemeSynthesisIfVisible()
+    }
+
+    /// Puts the page back exactly as its authors drew it.
+    private func revertTheme() {
+        themeTask?.cancel()
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.revertScript, arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+        }
     }
 
     /// Prevents or restores page scrolling while the lens panel is showing.
@@ -316,16 +454,44 @@ final class Tab: NSObject, Identifiable {
     /// keeps its content process alive, so a closed tab can keep making noise
     /// long after it's gone from the sidebar.
     func teardown() {
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+        }
+        appearanceObserver = nil
+        releaseWebView()
+    }
+
+    /// Lets go of the web view without ending the tab.
+    ///
+    /// Everything here works from a local reference rather than through the
+    /// `webView` property: that property *builds* a view when there isn't one,
+    /// so the trailing async cleanup would otherwise resurrect the very thing
+    /// it was called to dispose of.
+    private func releaseWebView() {
         sampleTask?.cancel()
+        themeTask?.cancel()
         observations.forEach { $0.invalidate() }
         observations.removeAll()
 
+        // Before the view goes: the bridge holds handlers on this controller
+        // and a panel that kept talking to a released view would sit there
+        // showing a document that no longer exists.
         devToolsBridge?.detach()
 
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
-        webView.stopLoading()
-        webView.configuration.userContentController
+        guard let live = liveWebView else { return }
+        liveWebView = nil
+
+        live.navigationDelegate = nil
+        live.uiDelegate = nil
+        live.stopLoading()
+
+        // The window's container keeps recently shown pages mounted so
+        // switching back to them is free. A view being released is not coming
+        // back, so it leaves under its own steam rather than lingering there
+        // until it happens to be evicted.
+        live.isHidden = false
+        live.removeFromSuperview()
+        live.configuration.userContentController
             .removeScriptMessageHandler(forName: MediaBridge.handlerName)
 
         media = nil
@@ -333,10 +499,52 @@ final class Tab: NSObject, Identifiable {
         Task { @MainActor in
             // Pause first for an immediate stop, then navigate away to tear the
             // media elements down for good.
-            await webView.pauseAllMediaPlayback()
-            await webView.closeAllMediaPresentations()
-            webView.load(URLRequest(url: URL(string: "about:blank")!))
+            await live.pauseAllMediaPlayback()
+            await live.closeAllMediaPresentations()
+            live.load(URLRequest(url: URL(string: "about:blank")!))
         }
+    }
+
+    // MARK: - Sleep
+
+    /// Gives the web view back, keeping everything the sidebar draws.
+    ///
+    /// The tab keeps its title, icon, address, and history blob, so the row is
+    /// indistinguishable from a live one — what it loses is the web content
+    /// process. Waking goes through exactly the path a restored tab takes on
+    /// first view, which is why that machinery is reused rather than repeated.
+    func sleep() {
+        // Never the tab on screen, and never one with nothing to come back to.
+        guard isLive, !isVisible else { return }
+        let persisted = snapshot(refreshingState: true)
+        guard persisted.isRestorable else { return }
+
+        releaseWebView()
+
+        pendingRestore = persisted
+        // A tab that was navigated to explicitly has this set, and it is what
+        // stops a pending restore from overwriting deliberate navigation.
+        // Going to sleep makes the restore *the* deliberate outcome, so the
+        // flag has to be cleared or the tab would wake up blank.
+        hasNavigatedExplicitly = false
+
+        // State that belonged to the page that just went away. Left behind, it
+        // would describe a document this tab no longer has: a spinner that
+        // never stops, a back button for history it can't reach yet.
+        isLoading = false
+        progress = 0
+        canGoBack = false
+        canGoForward = false
+        lastError = nil
+        sampledTopColor = nil
+        themeColor = nil
+        underPageColor = nil
+        establishedGround = nil
+        themeSweeps = 0
+        needsThemeSweep = false
+        needsTopColorSample = false
+
+        debugLog("slept \(persisted.url ?? "?")")
     }
 
     // MARK: - Top colour sampling
@@ -373,9 +581,94 @@ final class Tab: NSObject, Identifiable {
     })();
     """
 
+    // MARK: - Visibility
+
+    /// Whether this is the tab currently on screen.
+    ///
+    /// Not observable: nothing renders from it, and publishing it would invite
+    /// a re-render on every switch for a fact the views already know from the
+    /// selection. `BrowserSession.adoptSelection` is its only writer.
+    @ObservationIgnored private(set) var isVisible = false
+
+    /// When the tab was last on screen, for deciding what to reclaim.
+    ///
+    /// Nil means never shown — which makes it the first thing worth sleeping,
+    /// since it holds a web view that has displayed nothing.
+    @ObservationIgnored private(set) var lastViewedAt: Date?
+
+    /// Work deferred because the tab wasn't being looked at when it came up.
+    @ObservationIgnored private var needsThemeSweep = false
+    @ObservationIgnored private var needsTopColorSample = false
+
+    func didBecomeVisible() {
+        guard !isVisible else { return }
+        isVisible = true
+        lastViewedAt = Date()
+
+        // A page that changed while backgrounded has been left alone until
+        // now; catch it up before it's seen rather than after.
+        resumeThemeObserver()
+        if needsTopColorSample {
+            needsTopColorSample = false
+            scheduleTopColorSampling()
+        }
+        if needsThemeSweep {
+            needsThemeSweep = false
+            scheduleThemeSynthesis()
+        }
+    }
+
+    func didResignVisible() {
+        guard isVisible else { return }
+        isVisible = false
+        // Stamped on the way out, so the clock starts when you stop looking.
+        lastViewedAt = Date()
+
+        // Nothing off screen is worth restyling or measuring, and both are
+        // expensive enough to be worth stopping mid-flight.
+        sampleTask?.cancel()
+        themeTask?.cancel()
+        pauseThemeObserver()
+    }
+
+    /// Stops the page reporting its own mutations while nobody is watching.
+    ///
+    /// The observer is subtree-wide and attribute-level, so a page that
+    /// animates class names — a carousel, a sticky header, an SPA router —
+    /// posts to native every 250ms forever, and each post costs a full theme
+    /// sweep. In a background tab that is pure waste.
+    private func pauseThemeObserver() {
+        guard isLive, ThemePreferences.isEnabled else { return }
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.pauseObserverScript, arguments: [:],
+                in: nil, contentWorld: .defaultClient
+            )
+        }
+    }
+
+    private func resumeThemeObserver() {
+        guard isLive, ThemePreferences.isEnabled else { return }
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.resumeObserverScript, arguments: [:],
+                in: nil, contentWorld: .defaultClient
+            )
+        }
+    }
+
+    // MARK: - Top colour sampling (continued)
+
     /// SPAs repaint well after `didFinish`, so sampling is retried on a short
     /// ladder rather than once.
     private func scheduleTopColorSampling() {
+        // Only the selected tab's colour is ever read — `topColor` tints the
+        // title strip above the page you're looking at. Sampling a background
+        // tab runs a DOM walk to produce a value nothing will ask for.
+        guard isVisible else {
+            needsTopColorSample = true
+            return
+        }
         sampleTask?.cancel()
         sampleTask = Task { @MainActor in
             for delay in [0, 400, 1200] {
@@ -402,6 +695,216 @@ final class Tab: NSObject, Identifiable {
             blue: rgb[2] / 255,
             alpha: 1
         )
+    }
+
+    // MARK: - Theme synthesis
+
+    @ObservationIgnored private var themeTask: Task<Void, Never>?
+
+    /// The ground this page settled on, kept so later sweeps don't re-derive it
+    /// from whatever they happen to find still untouched.
+    ///
+    /// Not cleared on a URL change, deliberately. A route change swaps the
+    /// content without replacing the document, so the theme — and its ground —
+    /// are still there; clearing here would let each sweep re-derive a slightly
+    /// lighter ground than the last and walk the page away from where it
+    /// started. A real navigation is covered already: the new document carries
+    /// no theme, reports itself unthemed, and the ground is derived afresh.
+    @ObservationIgnored private var establishedGround: CSSColor?
+
+    /// How many times this page has been swept.
+    ///
+    /// A page that rewrites itself in response to being rewritten would
+    /// otherwise sweep forever. The observer is disconnected while we write, so
+    /// this should never be reached in practice — it is the backstop for the
+    /// page that manages it anyway, and it fails by leaving late content
+    /// untouched rather than by spinning.
+    @ObservationIgnored private var themeSweeps = 0
+    private static let maxThemeSweeps = 60
+
+    /// Restyles a page that doesn't offer the scheme the user asked for.
+    ///
+    /// Debounced, and cancelled on every navigation: a page mid-load reports
+    /// half a palette, and theming that would mean re-theming a moment later.
+    /// A re-sweep prompted by the page changing under us, rather than by a
+    /// navigation.
+    ///
+    /// These are the ones worth deferring while a tab is off screen. A sweep is
+    /// two walks of up to 4000 elements, each calling `getComputedStyle` and
+    /// `getBoundingClientRect` — a forced style and layout flush per element —
+    /// and a page that animates class names re-arms it every few hundred
+    /// milliseconds for as long as it's open. Paid for a tab nobody is looking
+    /// at, that is the most expensive thing a background tab can do.
+    ///
+    /// The *first* sweep of a page is deliberately not deferred: it's one per
+    /// navigation, and skipping it would leave the tab showing the preflight
+    /// holding colour until you arrived, turning a switch into a wait.
+    private func scheduleThemeSynthesisIfVisible() {
+        guard isVisible else {
+            needsThemeSweep = true
+            return
+        }
+        scheduleThemeSynthesis()
+    }
+
+    private func scheduleThemeSynthesis() {
+        themeTask?.cancel()
+        guard ThemePreferences.isEnabled else { return }
+        themeTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            await synthesizeTheme()
+        }
+    }
+
+    private func synthesizeTheme() async {
+        let target = AppearanceController.resolved
+
+        guard let json = try? await webView.callAsyncJavaScript(
+            ThemeBridge.collectScript, arguments: [:], in: nil, contentWorld: .defaultClient
+        ) as? String,
+            let survey = try? JSONDecoder().decode(
+                ThemeBridge.Survey.self, from: Data(json.utf8))
+        else { return }
+
+        // Measured, not asked. A site that already paints in the scheme the
+        // user wants needs nothing from us, and restyling it would swap its
+        // designers' work for an approximation of it. Declared signals —
+        // a meta tag, a media query — say what a site claims; this says what it
+        // did, and cross-origin stylesheets can't hide it.
+        debugLog("""
+            theme: target=\(target.rawValue) ground=\(survey.ground) \
+            themed=\(survey.themed) colours=\(survey.colors.count)
+            """)
+
+        guard survey.ready else {
+            debugLog("theme: document still parsing — waiting")
+            return
+        }
+
+        let observations = ThemeBridge.observations(from: survey)
+
+        // What the decision gets made on.
+        //
+        // `survey.ground` is the declared background of body or html, and is
+        // very often transparent — plenty of sites never set one and simply
+        // show the browser's canvas. Read literally, `rgba(0, 0, 0, 0)` parses
+        // as black and satisfies "already dark", which would leave every such
+        // site in light mode forever. But treating transparent as *light* is
+        // just as wrong: a page caught mid-load hasn't painted its background
+        // yet, and GitHub — which has a perfectly good dark mode — was being
+        // restyled on the strength of a background that simply hadn't arrived.
+        //
+        // Neither reading of "undeclared" is safe, so the declared value is
+        // abandoned and the largest thing the page actually paints is used
+        // instead. That is what the eye takes for the background, and a page
+        // with nothing painted yet has none — which is the signal to wait
+        // rather than to guess.
+        let decisionGround = SchemeDecision.decisionGround(
+            declared: survey.ground, observations: observations
+        )
+
+        guard let decisionGround else {
+            debugLog("theme: nothing painted yet — waiting")
+            return
+        }
+
+        if !survey.themed,
+           SchemeDecision.alreadySatisfies(target, ground: decisionGround) {
+            let lightness = OKLCH(decisionGround.rgb).l
+            debugLog("theme: site already \(target.rawValue) (L=\(rounded(lightness))) — left alone")
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.dismissPreflightScript,
+                arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+            return
+        }
+
+        var plan = ThemePlan.build(
+            from: observations,
+            target: target,
+            establishedGround: survey.themed ? establishedGround : nil
+        )
+
+        // Gradients are values rather than single colours, so they take their
+        // own path — stops move together, or the light comes from the wrong
+        // side afterwards.
+        for reading in survey.colors where reading.property == "gradient" {
+            let transformed = CSSGradient.transformValue(reading.value, to: target)
+            guard transformed != reading.value else { continue }
+            plan.replacements["gradient|" + reading.value] = transformed
+        }
+
+        // Artwork is not recoloured, with one exception narrow enough to be
+        // safe: a mark carrying no colour at all, which would otherwise vanish.
+        // A black wordmark becomes a white one — what its designers drew for
+        // their own dark mode — and there is no hue to lose by flipping it.
+        var inverts: [String: String] = [:]
+        var hueInverts: [String: String] = [:]
+        for reading in survey.images {
+            guard let data = Data(base64Encoded: reading.pixels),
+                  let verdict = ImageAnalysis.verdict(rgba: [UInt8](data))
+            else { continue }
+
+            // What it will be sitting on once the theme lands, not what it sits
+            // on now: the surface behind it is about to move too.
+            let surface: SRGB = {
+                if let themed = plan.replacements["background|" + reading.backdrop]
+                    .flatMap(CSSColor.init(css:)) {
+                    return themed.rgb
+                }
+                if let backdrop = CSSColor(css: reading.backdrop), backdrop.alpha > 0.5 {
+                    return backdrop.rgb
+                }
+                return plan.pageBackground.rgb
+            }()
+
+            if ImageAnalysis.shouldInvert(verdict, on: surface) {
+                inverts[reading.key] = "1"
+            } else if ImageAnalysis.shouldInvertPreservingHue(verdict, on: surface) {
+                hueInverts[reading.key] = "1"
+            }
+        }
+
+        if !inverts.isEmpty || !hueInverts.isEmpty {
+            debugLog("""
+                theme: inverting \(inverts.count) colourless and \
+                \(hueInverts.count) coloured mark(s)
+                """)
+        }
+
+        guard !plan.isEmpty || !inverts.isEmpty || !hueInverts.isEmpty else {
+            debugLog("theme: nothing to change — left alone")
+            _ = try? await webView.callAsyncJavaScript(
+                ThemeBridge.dismissPreflightScript,
+                arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+            return
+        }
+
+        _ = try? await webView.callAsyncJavaScript(
+            ThemeBridge.applyScript,
+            arguments: [
+                "plan": plan.replacements,
+                "inverts": inverts,
+                "hueInverts": hueInverts,
+                "ground": plan.pageBackground.css,
+                "scheme": target.rawValue,
+            ],
+            in: nil, contentWorld: .defaultClient
+        )
+
+        debugLog("""
+            theme: applied \(plan.replacements.count) substitutions, \
+            ground \(plan.pageBackground.css)
+            """)
+
+        establishedGround = plan.pageBackground
+        themeSweeps += 1
+
+        // Public API, and the fix for the white band that rubber-band scrolling
+        // would otherwise reveal under a darkened page.
+        webView.underPageBackgroundColor = plan.pageBackground.rgb.nsColor
     }
 
     // MARK: - Favicon
@@ -448,14 +951,50 @@ final class Tab: NSObject, Identifiable {
         faviconHost = host
     }
 
-    func snapshot() -> PersistedTab {
-        // A tab restored but never opened still has an empty web view; hand
-        // back what we loaded so its history survives another quit.
+    /// WebKit's back/forward + scroll blob, kept between saves.
+    ///
+    /// Reading `interactionState` is a full synchronous serialization of the
+    /// tab's history, and the session is saved for reasons that have nothing to
+    /// do with history — a title landing, most often. Every such save was
+    /// re-serializing *every* tab, so a page that animates its own title
+    /// ("(3) Inbox", a video's countdown) had the whole window paying for it
+    /// once a second. The blob only changes when the tab navigates or scrolls,
+    /// so it is re-read then, and on the way out.
+    @ObservationIgnored private var cachedInteractionState: Data?
+    @ObservationIgnored private var interactionStateIsStale = true
+
+    /// Marks the blob as worth re-reading. Cheap, and called from the KVO
+    /// observers that already fire on navigation.
+    private func invalidateInteractionState() {
+        interactionStateIsStale = true
+    }
+
+    /// `refreshingState` forces a re-read regardless — used when quitting,
+    /// where an exact scroll position is worth the cost that a routine
+    /// debounced save is not.
+    func snapshot(refreshingState: Bool = false) -> PersistedTab {
+        // A tab restored but never opened — or one that has been put back to
+        // sleep — has no web view to ask. Hand back what we were holding, so
+        // its history survives another quit.
         if let pendingRestore { return pendingRestore }
+
+        guard let live = liveWebView else {
+            return PersistedTab(
+                url: currentURL,
+                title: pageTitle,
+                interactionState: cachedInteractionState
+            )
+        }
+
+        if refreshingState || interactionStateIsStale {
+            cachedInteractionState = live.interactionState as? Data
+            interactionStateIsStale = false
+        }
+
         return PersistedTab(
-            url: webView.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
+            url: live.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
             title: pageTitle,
-            interactionState: webView.interactionState as? Data
+            interactionState: cachedInteractionState
         )
     }
 
@@ -496,10 +1035,18 @@ final class Tab: NSObject, Identifiable {
                 MainActor.assumeIsolated {
                     guard let self, let url = webView.url else { return }
                     self.addressText = url.absoluteString
+                    // The history blob is only worth re-reading once the tab
+                    // has actually gone somewhere.
+                    self.invalidateInteractionState()
                     // Covers SPA route changes, which never fire didFinish.
                     // Clear first so a stale colour doesn't linger on the new page.
                     self.sampledTopColor = nil
                     self.scheduleTopColorSampling()
+                    // A route change replaces the content without a load, so
+                    // the new markup needs sweeping too — when it's on screen.
+                    // A single-page app left in a background tab can route on a
+                    // timer, and each route would otherwise buy a full sweep.
+                    self.scheduleThemeSynthesisIfVisible()
                     // The old page's media is gone the moment we navigate.
                     self.media = nil
                     // A popup tab starts in .home but is loaded by WebKit
@@ -553,7 +1100,9 @@ final class Tab: NSObject, Identifiable {
     /// everything that depends on the zoom — the reset menu item's enabled
     /// state, the sidebar's indicator — silently keeps whatever it saw first.
     private(set) var zoomLevel: Double = ZoomSteps.standard {
-        didSet { webView.pageZoom = zoomLevel }
+        // Only if there's a view to zoom — a sleeping tab records the level and
+        // applies it when it's rebuilt.
+        didSet { liveWebView?.pageZoom = zoomLevel }
     }
 
     var isZoomed: Bool { !ZoomSteps.isStandard(zoomLevel) }
@@ -644,9 +1193,13 @@ extension Tab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
+        invalidateInteractionState()
         session?.scheduleSave()
+        // A new document gets its own sweep budget.
+        themeSweeps = 0
         Task { await refreshFavicon() }
         scheduleTopColorSampling()
+        scheduleThemeSynthesis()
         if let url = webView.url {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }
@@ -744,6 +1297,9 @@ extension Tab: WKScriptMessageHandler {
                 // Media that never started isn't worth showing in the player.
                 if state.isPlaying || media != nil { media = state }
 
+            case ThemeBridge.handlerName:
+                pageDidMutate()
+
             case DevToolsAgent.eventHandlerName, ConsoleAgent.eventHandlerName,
                  NetworkAgent.eventHandlerName:
                 // Forwarded rather than handled by the bridge directly, so a tab
@@ -782,6 +1338,11 @@ extension Tab: WKUIDelegate {
     func webViewDidClose(_ webView: WKWebView) {
         session?.close(self)
     }
+}
+
+/// Two decimal places, for log lines where more would be noise.
+private func rounded(_ value: Double) -> String {
+    String((value * 100).rounded() / 100)
 }
 
 /// stderr, so it survives output redirection unbuffered. Gated on the dev

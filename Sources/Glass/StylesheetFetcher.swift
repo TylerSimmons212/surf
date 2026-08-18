@@ -44,7 +44,8 @@ enum StylesheetFetcher {
         request.setValue("text/css,*/*;q=0.1", forHTTPHeaderField: "Accept")
         // Some CDNs vary on these, and a stylesheet fetched without them can
         // come back as something else entirely.
-        if let page = tab.webView.url?.absoluteString {
+        // `currentURL`, which describes without building — see `pageURL`.
+        if let page = tab.currentURL {
             request.setValue(page, forHTTPHeaderField: "Referer")
         }
         let cookies = CookieMatching.cookies(for: href, from: await RequestReplayer.jar(for: tab))

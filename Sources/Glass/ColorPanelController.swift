@@ -1,7 +1,7 @@
 import AppKit
 import GlassCore
 
-extension CSSColor {
+extension ResolvedColor {
     /// Whatever space the panel hands back, converted to the one CSS means.
     ///
     /// The picker will happily return Display P3, and writing those components
@@ -38,7 +38,7 @@ extension CSSColor {
 final class ColorPanelController: NSObject {
     static let shared = ColorPanelController()
 
-    private var onChange: ((CSSColor) -> Void)?
+    private var onChange: ((ResolvedColor) -> Void)?
     private var onFinish: (() -> Void)?
     private var closeObserver: NSObjectProtocol?
 
@@ -47,12 +47,12 @@ final class ColorPanelController: NSObject {
     /// Dragging in the wheel fires continuously, and each one is a write into
     /// the page. At full rate that's hundreds of round trips for one gesture;
     /// at a frame's cadence it still looks live and costs almost nothing.
-    private var pending: CSSColor?
+    private var pending: ResolvedColor?
     private var throttle: Task<Void, Never>?
 
     func present(
-        startingAt color: CSSColor,
-        onChange: @escaping (CSSColor) -> Void,
+        startingAt color: ResolvedColor,
+        onChange: @escaping (ResolvedColor) -> Void,
         onFinish: @escaping () -> Void
     ) {
         finishIfNeeded()
@@ -75,7 +75,7 @@ final class ColorPanelController: NSObject {
     }
 
     @objc private func colorChanged(_ sender: NSColorPanel) {
-        guard let color = CSSColor(sender.color) else { return }
+        guard let color = ResolvedColor(sender.color) else { return }
         pending = color
         guard throttle == nil else { return }
 

@@ -22,7 +22,7 @@ public struct StyleChange: Sendable, Equatable, Identifiable {
     public var isImportant: Bool
     /// Filled in after the edit lands, from what the page resolved the new
     /// value to — the colour of `oklch(...)` isn't knowable until then.
-    public var updatedColor: CSSColor?
+    public var updatedColor: ResolvedColor?
 
     public var id: String { "\(ruleId).\(property)" }
 
@@ -37,7 +37,7 @@ public struct StyleChange: Sendable, Equatable, Identifiable {
         updated: String?,
         wasImportant: Bool = false,
         isImportant: Bool = false,
-        updatedColor: CSSColor? = nil
+        updatedColor: ResolvedColor? = nil
     ) {
         self.ruleId = ruleId
         self.selector = selector
