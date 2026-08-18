@@ -19,9 +19,16 @@ struct StylesPane: View {
     @Bindable var session: DevToolsSession
 
     enum Mode: String, CaseIterable, Identifiable {
-        case rules, computed
+        case rules, computed, changes
         var id: String { rawValue }
-        var label: String { self == .rules ? "Rules" : "Computed" }
+
+        var label: String {
+            switch self {
+            case .rules: "Rules"
+            case .computed: "Computed"
+            case .changes: "Changes"
+            }
+        }
     }
 
     @State private var mode: Mode = .rules
@@ -51,7 +58,16 @@ struct StylesPane: View {
     private var toolbar: some View {
         HStack(spacing: 8) {
             Picker("Mode", selection: $mode) {
-                ForEach(Mode.allCases) { Text($0.label).tag($0) }
+                ForEach(Mode.allCases) { option in
+                    // The count rides in the label because a segmented control
+                    // has nowhere to hang a badge — and an unlabelled tab is
+                    // exactly what nobody thinks to click.
+                    Text(
+                        option == .changes && !session.changeset.isEmpty
+                            ? "Changes (\(session.changeset.count))"
+                            : option.label
+                    ).tag(option)
+                }
             }
             .pickerStyle(.segmented)
             .controlSize(.small)
@@ -126,7 +142,16 @@ struct StylesPane: View {
 
     @ViewBuilder
     private var content: some View {
-        if session.selectedNode == nil {
+        if mode == .changes {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    ChangesList(session: session)
+                }
+                .padding(.horizontal, DevToolsTheme.unit * 2)
+                .padding(.vertical, DevToolsTheme.unit * 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else if session.selectedNode == nil {
             DevToolsPlaceholder(
                 symbol: "paintbrush",
                 title: "Nothing selected",
@@ -145,6 +170,10 @@ struct StylesPane: View {
                             session: session, styles: styles,
                             filter: filter, authoredOnly: authoredOnly
                         )
+                    case .changes:
+                        // Handled above, where it can render without a
+                        // selection — changes outlive the element you made them on.
+                        EmptyView()
                     }
                 }
                 .padding(.horizontal, DevToolsTheme.unit * 2)
@@ -414,6 +443,9 @@ private struct DeclarationRow: View {
 
     @State private var isHovering = false
     @State private var isTracing = false
+    @State private var isEditing = false
+    @State private var draft = ""
+    @FocusState private var isFocused: Bool
 
     private var status: DeclarationStatus {
         styles.status(of: declaration, in: rule)
@@ -443,60 +475,193 @@ private struct DeclarationRow: View {
     }
 
     private var row: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text(declaration.name)
-                .foregroundStyle(nameColor)
-                .strikethrough(status == .overridden, color: .secondary)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                enableBox
 
-            Text(": ")
-                .foregroundStyle(.secondary)
+                Text(declaration.name)
+                    .foregroundStyle(nameColor)
+                    .strikethrough(isStruck, color: .secondary)
 
-            Text(declaration.value)
-                .foregroundStyle(valueColor)
-                .strikethrough(status == .overridden, color: .secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
+                Text(": ")
+                    .foregroundStyle(.secondary)
 
-            if declaration.isImportant {
-                Text(" !important")
-                    .foregroundStyle(StylesStyle.important)
+                value
+
+                if declaration.isImportant {
+                    Text(" !important")
+                        .foregroundStyle(isStruck ? .secondary : StylesStyle.important)
+                }
+
+                Text(";")
+                    .foregroundStyle(.secondary)
+
+                if let resolved = resolvedVariable, !isEditing {
+                    // `var(--brand)` on its own tells you nothing. What it came
+                    // out as is the thing you opened the pane to find out.
+                    Text(" \u{2192} \(resolved)")
+                        .foregroundStyle(.tertiary)
+                }
+
+                Spacer(minLength: 6)
+
+                if case .partiallyOverridden(let lost) = status, !isEditing {
+                    partialBadge(lost)
+                }
+                if trace?.isContested == true, !isEditing {
+                    whyButton
+                }
             }
+            .font(DevToolsTheme.mono)
 
-            Text(";")
-                .foregroundStyle(.secondary)
-
-            if let resolved = resolvedVariable {
-                // `var(--brand)` on its own tells you nothing. What it came out
-                // as is the thing you're looking at the pane to find out.
-                Text(" → \(resolved)")
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer(minLength: 6)
-
-            if case .partiallyOverridden(let lost) = status {
-                partialBadge(lost)
-            }
-            if trace?.isContested == true {
-                whyButton
-            }
+            if isEditing { editingFooter }
         }
-        .font(DevToolsTheme.mono)
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
         .background {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(isHovering ? DevToolsTheme.hoverFill : .clear)
+                .fill(isHovering && !isEditing ? DevToolsTheme.hoverFill : .clear)
         }
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
-        .onTapGesture { toggleTrace() }
         .contextMenu {
             Button("Copy Declaration") { copy(declaration.text) }
             Button("Copy Value") { copy(declaration.value) }
             if let rule = ruleText { Button("Copy Rule") { copy(rule) } }
+            Divider()
+            Button(declaration.isImportant ? "Remove !important" : "Mark !important") {
+                Task { @MainActor in
+                    await session.setImportant(!declaration.isImportant, of: declaration, in: rule)
+                }
+            }
+            if session.editedRuleIds.contains(rule.id) {
+                Button("Revert This Rule") {
+                    Task { @MainActor in await session.revert(rule) }
+                }
+            }
         }
         .help(helpText)
+    }
+
+    private var isStruck: Bool { status == .overridden || isOff }
+    private var isOff: Bool { session.isDisabled(declaration, in: rule) }
+
+    /// Switching a declaration off is the fastest question you can ask a page:
+    /// "what does this actually do?" It's a checkbox because that's what it is.
+    @ViewBuilder
+    private var enableBox: some View {
+        if rule.isActive {
+            Button {
+                Task { @MainActor in await session.setEnabled(isOff, declaration, in: rule) }
+            } label: {
+                Image(systemName: isOff ? "square" : "checkmark.square.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(isOff ? Color.secondary : Color.accentColor.opacity(0.75))
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // Reserved even when hidden, so nothing shifts under the pointer
+            // as you move down a block.
+            .opacity(isHovering || isOff ? 1 : 0)
+            .help(isOff ? "Turn this declaration back on" : "Turn this declaration off")
+        } else {
+            Color.clear.frame(width: 14, height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var value: some View {
+        if isEditing {
+            TextField("", text: $draft)
+                .textFieldStyle(.plain)
+                .font(DevToolsTheme.mono)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                .onExitCommand { cancel() }
+                .padding(.horizontal, 3)
+                .background {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(DevToolsTheme.inputFill)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 0.5)
+                }
+        } else {
+            Text(declaration.value)
+                .foregroundStyle(valueColor)
+                .strikethrough(isStruck, color: .secondary)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .onTapGesture { beginEditing() }
+        }
+    }
+
+    /// What the edit is up against, shown while the field is open rather than
+    /// discovered afterwards by the page not moving.
+    @ViewBuilder
+    private var editingFooter: some View {
+        let escalation = session.escalation(for: declaration, in: rule)
+
+        HStack(spacing: 6) {
+            if session.rejectedEdit == DeclarationRef(ruleId: rule.id, index: declaration.index) {
+                Label("Not a value \(declaration.name) accepts", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+            } else {
+                switch escalation {
+                case .addImportant:
+                    Label("This won't take effect", systemImage: "eye.slash")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    Button("Make it win") {
+                        Task { @MainActor in
+                            await session.setImportant(true, of: declaration, in: rule)
+                        }
+                    }
+                    .buttonStyle(.link)
+                    .font(.system(size: 10))
+
+                case .editTheWinner(let selector, _):
+                    Label(
+                        "Overridden by \(selector) — nothing here can win",
+                        systemImage: "eye.slash"
+                    )
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                case .alreadyWins, .none:
+                    Text("\u{21A9} to apply \u{00B7} esc to cancel")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.leading, 14)
+    }
+
+    private func beginEditing() {
+        guard rule.isActive, !isOff else { return }
+        draft = declaration.value
+        isEditing = true
+        isFocused = true
+    }
+
+    private func commit() {
+        let value = draft
+        isEditing = false
+        isFocused = false
+        guard value != declaration.value else { return }
+        Task { @MainActor in await session.setValue(value, of: declaration, in: rule) }
+    }
+
+    private func cancel() {
+        isEditing = false
+        isFocused = false
     }
 
     private func toggleTrace() {
@@ -534,17 +699,25 @@ private struct DeclarationRow: View {
     }
 
     private var nameColor: Color {
+        // A switched-off declaration is still in the page's source but not in
+        // its styles, so it reads like anything else that isn't in force.
+        if isOff { return .secondary }
         switch status {
-        case .active: declaration.isCustomProperty ? StylesStyle.variable : ElementsStyle.attributeColor
-        case .overridden, .inactive: .secondary
-        case .partiallyOverridden: ElementsStyle.attributeColor
+        case .active:
+            return declaration.isCustomProperty
+                ? StylesStyle.variable : ElementsStyle.attributeColor
+        case .overridden, .inactive:
+            return .secondary
+        case .partiallyOverridden:
+            return ElementsStyle.attributeColor
         }
     }
 
     private var valueColor: Color {
+        if isOff { return .secondary }
         switch status {
-        case .active, .partiallyOverridden: ElementsStyle.valueColor
-        case .overridden, .inactive: .secondary
+        case .active, .partiallyOverridden: return ElementsStyle.valueColor
+        case .overridden, .inactive: return .secondary
         }
     }
 

@@ -344,7 +344,9 @@ final class DevToolsSession: Identifiable {
                 styles = nil
                 return
             }
-            stylePayload = CSSWire.decodeMatchedStyles(reply)
+            var payload = CSSWire.decodeMatchedStyles(reply)
+            payload.rules = reinstateDisabled(payload.rules)
+            stylePayload = payload
             // A pseudo-element the previous selection had is very unlikely to
             // exist on this one, and resolving against a box that isn't there
             // shows an empty pane rather than the element's own styles.
@@ -380,6 +382,207 @@ final class DevToolsSession: Identifiable {
     /// A `var()` reference resolved to what it actually evaluates to.
     func resolvedVariable(_ name: String) -> String? {
         stylePayload?.variables[name]
+    }
+
+    // MARK: - Editing
+
+    /// Everything altered this session, as a net difference rather than a log.
+    private(set) var changeset = StyleChangeset()
+    private(set) var editedRuleIds: Set<Int> = []
+
+    /// Declarations switched off.
+    ///
+    /// Held here because they are genuinely gone from the page — a disabled
+    /// declaration isn't in the rule any more, so no re-read can bring it back.
+    /// Re-injecting them at their original index on every load is also what
+    /// keeps declaration indices stable, and therefore what stops a later edit
+    /// addressing the wrong line.
+    @ObservationIgnored private var disabled: [DeclarationRef: CSSDeclaration] = [:]
+
+    /// The rules those declarations came from, kept because a rule whose last
+    /// declaration is switched off has an empty block — and an empty rule isn't
+    /// reported at all, so the row would vanish and take the only means of
+    /// switching it back on with it.
+    @ObservationIgnored private var disabledRules: [Int: MatchedRule] = [:]
+
+    /// A value the engine refused, so the row can say so instead of showing an
+    /// edit that silently didn't happen.
+    private(set) var rejectedEdit: DeclarationRef?
+
+    func isDisabled(_ declaration: CSSDeclaration, in rule: MatchedRule) -> Bool {
+        disabled[DeclarationRef(ruleId: rule.id, index: declaration.index)] != nil
+    }
+
+    /// What it would take to make this declaration actually apply.
+    func escalation(for declaration: CSSDeclaration, in rule: MatchedRule) -> StyleEscalation? {
+        guard let payload = stylePayload,
+              let property = declaration.longhands.first
+        else { return nil }
+        return CascadeEscalation.escalation(
+            for: DeclarationRef(ruleId: rule.id, index: declaration.index),
+            property: property,
+            rules: payload.rules,
+            layerOrder: payload.layerOrder,
+            pseudoElement: stylePseudo
+        )
+    }
+
+    func setValue(_ value: String, of declaration: CSSDeclaration, in rule: MatchedRule) async {
+        var edited = declaration
+        edited.value = value.trimmingCharacters(in: .whitespaces)
+        await apply(edited, replacing: declaration, in: rule)
+    }
+
+    func setImportant(_ important: Bool, of declaration: CSSDeclaration, in rule: MatchedRule) async {
+        var edited = declaration
+        edited.isImportant = important
+        await apply(edited, replacing: declaration, in: rule)
+    }
+
+    func setEnabled(_ enabled: Bool, _ declaration: CSSDeclaration, in rule: MatchedRule) async {
+        let ref = DeclarationRef(ruleId: rule.id, index: declaration.index)
+        if enabled {
+            disabled.removeValue(forKey: ref)
+            if !disabled.keys.contains(where: { $0.ruleId == rule.id }) {
+                disabledRules.removeValue(forKey: rule.id)
+            }
+        } else {
+            disabled[ref] = declaration
+            var shell = rule
+            shell.declarations = []
+            disabledRules[rule.id] = shell
+        }
+        await apply(declaration, replacing: declaration, in: rule, enabled: enabled)
+    }
+
+    private func apply(
+        _ edited: CSSDeclaration,
+        replacing original: CSSDeclaration,
+        in rule: MatchedRule,
+        enabled: Bool = true
+    ) async {
+        let ref = DeclarationRef(ruleId: rule.id, index: original.index)
+        rejectedEdit = nil
+
+        // The whole block, recomposed. Setting properties one at a time moves a
+        // re-enabled declaration to the end, which changes the cascade inside
+        // the rule without anyone asking for it.
+        let text = rule.declarations
+            .map { $0.index == original.index ? edited : $0 }
+            .filter { disabled[DeclarationRef(ruleId: rule.id, index: $0.index)] == nil }
+            .map(\.text)
+            .joined(separator: "; ")
+
+        var params: [String: any Sendable] = ["text": text]
+        // The style attribute has no CSSOM rule to address, so it's carried as
+        // the node it sits on — negated to keep the two id spaces apart.
+        if rule.isStyleAttribute {
+            params["nodeId"] = -rule.id
+        } else {
+            params["ruleId"] = rule.id
+        }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssSetRuleText, params),
+              issued == generation
+        else { return }
+
+        // A value the engine can't parse is dropped without complaint. Catching
+        // it here is the difference between "that isn't a colour" and an edit
+        // that appears to have worked and didn't.
+        let applied = Set(reply["applied"] as? [String] ?? [])
+        if enabled, !applied.isEmpty,
+           !edited.longhands.contains(where: { applied.contains($0) }) {
+            rejectedEdit = ref
+        } else {
+            changeset.record(StyleChange(
+                ruleId: rule.id,
+                selector: rule.isStyleAttribute ? "element.style" : rule.selector,
+                sourceLabel: rule.isStyleAttribute ? "element" : rule.sourceLabel,
+                layer: rule.layer,
+                conditions: rule.conditions,
+                property: original.name,
+                original: original.value,
+                updated: enabled ? edited.value : nil,
+                wasImportant: original.isImportant,
+                isImportant: edited.isImportant
+            ))
+            editedRuleIds.insert(rule.id)
+        }
+        loadStyles()
+    }
+
+    /// Puts one rule back exactly as the page shipped it.
+    func revert(_ rule: MatchedRule) async {
+        await revertRule(id: rule.id)
+    }
+
+    /// Addressed by id, because the changes list holds ids rather than rules —
+    /// it outlives the element the edits were made on.
+    func revertRule(id ruleId: Int) async {
+        var params: [String: any Sendable] = [:]
+        // A negative id is an element's style attribute, carried as its node.
+        if ruleId < 0 { params["nodeId"] = -ruleId } else { params["ruleId"] = ruleId }
+        _ = try? await bridge.call(.cssRevert, params)
+
+        disabled = disabled.filter { $0.key.ruleId != ruleId }
+        disabledRules.removeValue(forKey: ruleId)
+        changeset.clear(ruleId: ruleId)
+        editedRuleIds.remove(ruleId)
+        loadStyles()
+    }
+
+    func revertAll() async {
+        for ruleId in editedRuleIds {
+            var params: [String: any Sendable] = [:]
+            if ruleId < 0 { params["nodeId"] = -ruleId } else { params["ruleId"] = ruleId }
+            _ = try? await bridge.call(.cssRevert, params)
+        }
+        disabled.removeAll()
+        disabledRules.removeAll()
+        changeset.clear()
+        editedRuleIds.removeAll()
+        loadStyles()
+    }
+
+    /// Puts switched-off declarations back into the rules the page reported.
+    ///
+    /// They aren't in the page any more, so a re-read can't return them — but
+    /// they still have to be drawn, and their indices still have to line up, or
+    /// the next edit addresses the wrong line.
+    private func reinstateDisabled(_ rules: [MatchedRule]) -> [MatchedRule] {
+        guard !disabled.isEmpty else { return rules }
+
+        // A rule emptied by switching off its last declaration is gone from the
+        // page's report. Put the shell back so the row — and its checkbox —
+        // stay where they were.
+        var all = rules
+        let reported = Set(rules.map(\.id))
+        for (id, shell) in disabledRules where !reported.contains(id) {
+            all.append(shell)
+        }
+
+        return all.map { rule in
+            let missing = disabled
+                .filter { $0.key.ruleId == rule.id }
+                .values
+                .sorted { $0.index < $1.index }
+            guard !missing.isEmpty else { return rule }
+
+            var copy = rule
+            var list = rule.declarations
+            for declaration in missing {
+                let at = min(declaration.index, list.count)
+                list.insert(declaration, at: at)
+            }
+            // Renumbered so the positions match what is drawn.
+            copy.declarations = list.enumerated().map { index, declaration in
+                var renumbered = declaration
+                renumbered.index = index
+                return renumbered
+            }
+            return copy
+        }
     }
 
     var unreadableSheets: [String] { stylePayload?.unreadableSheets ?? [] }
@@ -664,6 +867,15 @@ final class DevToolsSession: Identifiable {
         stylePayload = nil
         computed = [:]
         stylePseudo = nil
+        // Every rule handle belonged to the old document, and the page has
+        // reloaded its own stylesheets — so the edits are gone whether we like
+        // it or not, and pretending otherwise would offer a patch for a state
+        // that no longer exists.
+        disabled.removeAll()
+        disabledRules.removeAll()
+        changeset.clear()
+        editedRuleIds.removeAll()
+        rejectedEdit = nil
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
         refreshConsoleView()
         releaseEvictedObjects()

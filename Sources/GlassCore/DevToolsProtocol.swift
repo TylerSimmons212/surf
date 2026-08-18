@@ -28,6 +28,10 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
 
     case cssGetMatchedStyles = "CSS.getMatchedStyles"
     case cssGetComputed = "CSS.getComputedStyleForNode"
+    /// Replaces a declaration block wholesale — the only CSSOM surface that
+    /// preserves authored order, so it covers editing, disabling and adding.
+    case cssSetRuleText = "CSS.setRuleText"
+    case cssRevert = "CSS.revert"
 
     case overlaySetInspectMode = "Overlay.setInspectMode"
 }
@@ -54,7 +58,7 @@ extension DevToolsMethod {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
-             .cssGetMatchedStyles, .cssGetComputed,
+             .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
              .overlaySetInspectMode:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,

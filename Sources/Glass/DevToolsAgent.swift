@@ -168,6 +168,10 @@ enum DevToolsAgent {
       // ---- Mutations ------------------------------------------------------
 
       let observer = null;
+      // Nodes whose next `style` attribute change was made by us. Without this,
+      // editing an inline declaration reports itself back as a page mutation,
+      // the panel reloads, and the row being typed into is rebuilt mid-edit.
+      const selfStyleEdits = new Set();
       let queued = [];
       let scheduled = false;
       let sequence = 0;
@@ -217,6 +221,10 @@ enum DevToolsAgent {
 
             if (record.type === 'attributes') {
               const name = record.attributeName;
+              if (name === 'style' && selfStyleEdits.has(record.target)) {
+                selfStyleEdits.delete(record.target);
+                continue;
+              }
               queueMutation({
                 kind: 'attribute', id: known, name: name,
                 value: record.target.getAttribute ? record.target.getAttribute(name) : null
@@ -257,6 +265,56 @@ enum DevToolsAgent {
       const MAX_VALUE = 400;
       const MAX_ANCESTORS = 10;
       const MAX_RULES = 500;
+
+      // ---- Editable rule handles ------------------------------------------
+
+      // Rules are addressed by a minted id, never by their index in the sheet.
+      // Inserting a rule shifts every index after it, so an index captured
+      // during one read edits a *different* rule on the next one — which is a
+      // silent, page-corrupting kind of wrong. CSSOM wrapper objects keep their
+      // identity, so a WeakMap survives exactly what an index doesn't.
+      const ruleIds = new WeakMap();
+      const ruleRefs = new Map();
+      // The authored text, captured the first time a rule is touched, so any
+      // edit can be taken back without reloading the page.
+      const ruleOriginals = new Map();
+      let nextRuleId = 1;
+
+      function idForRule(rule) {
+        let id = ruleIds.get(rule);
+        if (id === undefined) {
+          id = nextRuleId++;
+          ruleIds.set(rule, id);
+          ruleRefs.set(id, new WeakRef(rule));
+        }
+        return id;
+      }
+
+      function ruleFor(id) {
+        const ref = ruleRefs.get(id);
+        if (!ref) { return null; }
+        const rule = ref.deref();
+        if (!rule) { ruleRefs.delete(id); return null; }
+        return rule;
+      }
+
+      /// Replaces a declaration block wholesale.
+      ///
+      /// One operation for editing, disabling, adding and reordering, because
+      /// `cssText` is the only CSSOM surface that preserves authored order.
+      /// Setting properties one by one moves a re-enabled declaration to the
+      /// end of the block, which quietly changes the cascade within the rule.
+      function applyStyleText(style, text, owner) {
+        const before = new Set();
+        for (let i = 0; i < style.length; i++) { before.add(style.item(i)); }
+        style.cssText = text;
+        // What the engine actually accepted. A value it can't parse is dropped
+        // silently, and the panel needs to say so rather than show an edit that
+        // didn't happen.
+        const applied = [];
+        for (let i = 0; i < style.length; i++) { applied.push(style.item(i)); }
+        return { ok: true, applied: applied, owner: owner };
+      }
 
       function isNameChar(ch) {
         return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
@@ -451,7 +509,6 @@ enum DevToolsAgent {
         const layers = [];
         const unreadable = [];
         let order = 0;
-        let ruleId = 1;
 
         function noteLayer(name) {
           if (name && layers.indexOf(name) < 0) { layers.push(name); }
@@ -488,7 +545,7 @@ enum DevToolsAgent {
               try { hit = target.matches(parsed.clean); } catch (e) { hit = false; }
               if (!hit) { continue; }
               rules.push({
-                id: ruleId++,
+                id: idForRule(rule),
                 selector: selectorText,
                 matched: list[i],
                 origin: 'author',
@@ -583,7 +640,8 @@ enum DevToolsAgent {
         const inline = readDeclarations(node.style);
         if (inline.length) {
           rules.push({
-            id: ruleId++,
+            // Negative, so an inline block can never collide with a rule id.
+            id: -idFor(node),
             selector: 'style attribute', matched: '', origin: 'author',
             layer: '', conditions: [], href: '', label: 'element',
             order: order + 1, declarations: inline,
@@ -843,6 +901,45 @@ enum DevToolsAgent {
                   out[name] = style.getPropertyValue(name);
                 }
                 return JSON.stringify({ computed: out });
+              }
+
+              case 'CSS.setRuleText': {
+                const text = (params && params.text) || '';
+                if (params && params.nodeId !== undefined) {
+                  const node = nodeFor(params.nodeId);
+                  if (!node || !node.style) { return JSON.stringify({ error: 'no element' }); }
+                  const key = 'node:' + params.nodeId;
+                  if (!ruleOriginals.has(key)) {
+                    ruleOriginals.set(key, node.style.cssText || '');
+                  }
+                  selfStyleEdits.add(node);
+                  return JSON.stringify(applyStyleText(node.style, text, key));
+                }
+                const rule = ruleFor(params && params.ruleId);
+                if (!rule || !rule.style) { return JSON.stringify({ error: 'no rule' }); }
+                const key = 'rule:' + params.ruleId;
+                if (!ruleOriginals.has(key)) {
+                  ruleOriginals.set(key, rule.style.cssText || '');
+                }
+                return JSON.stringify(applyStyleText(rule.style, text, key));
+              }
+
+              case 'CSS.revert': {
+                const key = (params && params.nodeId !== undefined)
+                  ? 'node:' + params.nodeId
+                  : 'rule:' + (params && params.ruleId);
+                if (!ruleOriginals.has(key)) { return JSON.stringify({ ok: true }); }
+                const original = ruleOriginals.get(key);
+                ruleOriginals.delete(key);
+                if (params && params.nodeId !== undefined) {
+                  const node = nodeFor(params.nodeId);
+                  if (!node || !node.style) { return JSON.stringify({ error: 'no element' }); }
+                  selfStyleEdits.add(node);
+                  return JSON.stringify(applyStyleText(node.style, original, key));
+                }
+                const rule = ruleFor(params.ruleId);
+                if (!rule || !rule.style) { return JSON.stringify({ error: 'no rule' }); }
+                return JSON.stringify(applyStyleText(rule.style, original, key));
               }
 
               case 'Overlay.setInspectMode': {
