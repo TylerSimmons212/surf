@@ -24,7 +24,14 @@ enum BlockBridge {
 
     /// Built rather than stored, so the words the sweep matches on come from
     /// `AdSlot` — one list, tested in Swift, rather than two that drift.
-    static var script: String {
+    ///
+    /// `collapsing` is off when the reader has turned element hiding off, and it
+    /// has to reach in here as well as into the rules. Reclaiming a container's
+    /// space is a change to the page's layout, which means it is a change a page
+    /// can *measure* — and a switch that stopped the filter list hiding things
+    /// while leaving this running would leave exactly the same fingerprint, on a
+    /// page that has just been told there is nothing to find.
+    static func script(collapsing: Bool) -> String {
         """
     (function () {
       if (window.__glassBlockInstalled) { return; }
@@ -326,6 +333,7 @@ enum BlockBridge {
       // height open collapses while it is empty and grows again if something
       // real arrives.
 
+      const COLLAPSING = \(collapsing);
       const SLOT_NAMES = new Set(\(AdSlot.slotNamesJSArray));
       const HEIGHT_FLOOR = \(Int(AdSlot.reservedHeightFloor));
       const MAX_SWEEPS = 12;
@@ -392,6 +400,7 @@ enum BlockBridge {
       // *this* element is safe in a way that hiding a slot is not: there is
       // nothing in it and nothing coming.
       function collapseFailed(element) {
+        if (!COLLAPSING) { return; }
         if (!element || !element.style || element.hasAttribute('data-glass-collapsed')) { return; }
         const box = element.getBoundingClientRect();
         element.style.setProperty('display', 'none', 'important');
@@ -405,6 +414,7 @@ enum BlockBridge {
       // forever. Three conditions together, never any one alone: it is named
       // as an ad container, it is reserving real height, and it is empty.
       function sweepSlots() {
+        if (!COLLAPSING) { return; }
         if (sweeps++ > MAX_SWEEPS) { return; }
         let candidates;
         try {

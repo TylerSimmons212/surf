@@ -106,12 +106,13 @@ struct SettingsView: View {
                 look like a page rather than a page with holes in it.
                 """)
                 explain("""
-                Hiding is also the one thing a blocker does that a site can see \
-                from the inside: it puts an element on its own page, measures it, \
-                and knows. A few video players do exactly that and stop playing \
-                when the measurement comes back wrong. Turn this off and they \
-                have nothing to measure — every ad request is still refused, and \
-                the space is still reclaimed, but nothing is hidden outright.
+                Changing a page's layout is also the one thing a blocker does \
+                that a site can see from the inside: it puts an element on its \
+                own page, measures it, and knows. A few video players do exactly \
+                that and stop playing when the measurement comes back wrong. \
+                Turn this off and Glass leaves the page's layout exactly as its \
+                authors wrote it — every ad request is still refused, but the \
+                empty frames stay where they are, holes and all.
                 """, isCaveat: true)
                 if ContentBlocker.shared.blockedDomainCount > 0 {
                     explain("""

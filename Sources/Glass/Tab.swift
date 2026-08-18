@@ -337,7 +337,9 @@ final class Tab: NSObject, Identifiable {
         if ContentBlocker.isEnabled {
             controller.addUserScript(
                 WKUserScript(
-                    source: BlockBridge.script,
+                    source: BlockBridge.script(
+                        collapsing: ContentBlocker.hidesAdContainers
+                    ),
                     injectionTime: .atDocumentStart,
                     // Every frame: a third-party iframe is where much of an ad
                     // stack does its work, and a panel blind to it would report

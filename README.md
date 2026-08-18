@@ -256,8 +256,12 @@ inside*. A player puts an element on its own page, measures it, finds it hidden,
 and stops playing — and it is right, in the sense that the measurement is
 correct. So element hiding can be switched off on its own, in Settings, without
 giving up a single refused request. The lists are compiled a second way with the
-hiding rules left out, the space an ad would have taken is still reclaimed, and
-the page has nothing left to measure.
+hiding rules left out — and the switch reaches the reclaiming pass too, because
+closing a hole is as measurable as hiding one, and a switch that stopped the
+list hiding things while leaving that running would leave the same fingerprint
+on a page that had just been told there was nothing to find. With it off, the
+layout is exactly what the site's authors wrote, holes and all, and every request
+is still refused.
 
 Some pages check less directly, and two of those ways are worth naming because
 between them they account for a video that starts and then stops.
