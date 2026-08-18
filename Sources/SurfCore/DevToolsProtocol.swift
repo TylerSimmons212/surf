@@ -72,7 +72,7 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
 /// from a prefix put evaluation in the wrong world and it failed as an
 /// "unknown method", which reads like a missing feature rather than a
 /// misrouted call.
-public enum DevToolsTarget: Sendable, Equatable {
+public enum DevToolsTarget: String, Sendable, Equatable, CaseIterable {
     /// The isolated world: DOM, styles, overlay.
     case agent
     /// The page's own world: console capture, evaluation, object handles.

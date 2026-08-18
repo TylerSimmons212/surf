@@ -524,11 +524,21 @@ Every web view is inspectable, so Safari's Develop menu opens a full Web
 Inspector on any tab. Safari ships with that menu hidden, so it costs nothing
 until someone goes looking for it.
 
-The agent's contract has two halves in two languages — a case in
-`PageProtocol.Method`, and an `agent.define` in a domain script — and the
-compiler only sees the first. `./scripts/check-js.sh` closes that gap: it dumps
-the real scripts, installs them in a real JavaScript engine, and asks whether
-they answer to everything the enum claims. Needs `node` on `PATH`.
+An injected contract has two halves in two languages — a case in an enum, and
+a registration in a script — and the compiler only sees the first.
+`./scripts/check-js.sh` closes that gap: it dumps the real scripts, installs
+them in a real JavaScript engine, and asks whether they answer to everything
+the enums claim. Needs `node` on `PATH`.
+
+Both contracts are checked: `PageProtocol.Method` against the always-resident
+page agent, and `DevToolsMethod` against the three scripts dev tools installs
+while attached. Dev tools also gets a routing check, because that is where this
+has already gone wrong once — `Runtime.evaluate` sent to the inspection agent
+instead of the page fails as "unknown method", which reads like a missing
+feature rather than a misroute. So every method is asked of the two targets it
+*doesn't* belong to as well, and answering there is a failure. The dispatch
+sources are the real ones, dumped from Swift rather than restated in the
+checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 

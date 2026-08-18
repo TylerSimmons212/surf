@@ -210,6 +210,31 @@ extension PageScripts {
             ["name": $0.rawValue, "world": $0.world.rawValue]
         }
 
+        // Dev tools is the same contract at four times the size, and its
+        // routing is the part that has already gone wrong: `DevToolsTarget`
+        // carries a comment about evaluation being sent to the wrong world and
+        // failing as "unknown method", which reads like a missing feature
+        // rather than a misroute. So the dispatch sources go out too, and the
+        // checker calls the real ones rather than a re-description of them.
+        let devTools: [String: Any] = [
+            "methods": DevToolsMethod.allCases.map {
+                ["name": $0.rawValue, "target": $0.target.rawValue]
+            },
+            "dispatch": [
+                DevToolsTarget.agent.rawValue: DevToolsAgent.dispatchScript,
+                DevToolsTarget.page.rawValue: ConsoleAgent.dispatchScript,
+                DevToolsTarget.network.rawValue: NetworkAgent.dispatchScript,
+            ],
+            // Which dumped file installs each target's dispatcher. The one
+            // mapping the checker can't derive, kept beside the table above so
+            // the two move together.
+            "scripts": [
+                DevToolsTarget.agent.rawValue: "devtools.js",
+                DevToolsTarget.page.rawValue: "console.js",
+                DevToolsTarget.network.rawValue: "network.js",
+            ],
+        ]
+
         do {
             let url = URL(fileURLWithPath: directory)
             try FileManager.default.createDirectory(
@@ -222,6 +247,8 @@ extension PageScripts {
             }
             try JSONSerialization.data(withJSONObject: methods)
                 .write(to: url.appendingPathComponent("methods.json"))
+            try JSONSerialization.data(withJSONObject: devTools)
+                .write(to: url.appendingPathComponent("devtools.json"))
         } catch {
             FileHandle.standardError.write(Data("dump failed: \(error)\n".utf8))
             exit(1)
