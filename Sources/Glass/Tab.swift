@@ -527,7 +527,42 @@ final class Tab: NSObject, Identifiable {
             plan.replacements["gradient|" + reading.value] = transformed
         }
 
-        guard !plan.isEmpty else {
+        // Images are never recoloured. The only intervention available is a
+        // plate painted behind artwork that would otherwise vanish — dark ink
+        // drawn for a white page, floating on transparency over a dark one.
+        var plates: [String: String] = [:]
+        for reading in survey.images {
+            guard let data = Data(base64Encoded: reading.pixels),
+                  let verdict = ImageAnalysis.verdict(rgba: [UInt8](data))
+            else { continue }
+
+            // What it will be sitting on once the theme lands, not what it sits
+            // on now: the surface behind it is about to move too, and judging
+            // against the old one would answer a question nobody asked.
+            let surface: SRGB = {
+                if let themed = plan.replacements["background|" + reading.backdrop]
+                    .flatMap(CSSColor.init(css:)) {
+                    return themed.rgb
+                }
+                // A backdrop the plan left alone keeps the colour it already
+                // has — a preserved brand header, most often.
+                if let backdrop = CSSColor(css: reading.backdrop), backdrop.alpha > 0.5 {
+                    return backdrop.rgb
+                }
+                return plan.pageBackground.rgb
+            }()
+
+            guard ImageAnalysis.needsPlate(verdict, on: surface) else { continue }
+            plates[reading.key] = CSSColor(
+                rgb: ImageAnalysis.plate(for: verdict, on: surface)
+            ).css
+        }
+
+        if !plates.isEmpty {
+            debugLog("theme: backing \(plates.count) image(s) that would have vanished")
+        }
+
+        guard !plan.isEmpty || !plates.isEmpty else {
             debugLog("theme: nothing to change — left alone")
             _ = try? await webView.callAsyncJavaScript(
                 ThemeBridge.dismissPreflightScript,
@@ -540,6 +575,7 @@ final class Tab: NSObject, Identifiable {
             ThemeBridge.applyScript,
             arguments: [
                 "plan": plan.replacements,
+                "plates": plates,
                 "ground": plan.pageBackground.css,
                 "scheme": target.rawValue,
             ],

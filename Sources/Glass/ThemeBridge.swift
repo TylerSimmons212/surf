@@ -133,6 +133,58 @@ enum ThemeBridge {
       }
     }
 
+    // Sample any image that might be a logo.
+    //
+    // Pixels are never altered — this only asks whether the artwork would
+    // survive on a dark page, and the answer, when it is no, is a plate painted
+    // behind it. A 16x16 reduction is plenty for "is this broadly dark ink on
+    // nothing", and keeps the message small.
+    //
+    // getImageData throws for a cross-origin image loaded without CORS, which
+    // is most images on most sites. That is left as a refusal rather than
+    // worked around: an image we cannot inspect is one we leave exactly alone,
+    // which is the safe outcome anyway.
+    if (!window.__glassSeenImages) { window.__glassSeenImages = new Set(); }
+    const sampled = [];
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const images = document.querySelectorAll('img');
+
+    for (let i = 0; i < Math.min(images.length, 40) && sampled.length < 16; i++) {
+      const image = images[i];
+      const source = image.currentSrc || image.src;
+      if (!source || window.__glassSeenImages.has(source)) { continue; }
+      if (!image.complete || !image.naturalWidth) { continue; }
+
+      const box = image.getBoundingClientRect();
+      // Too small to matter, or far too large to be a mark rather than a
+      // picture — and a picture is opaque and was never at risk.
+      if (box.width < 8 || box.height < 8) { continue; }
+      if (box.width > 512 || box.height > 512) { continue; }
+
+      let data;
+      try {
+        context.clearRect(0, 0, 16, 16);
+        context.drawImage(image, 0, 0, 16, 16);
+        data = context.getImageData(0, 0, 16, 16).data;
+      } catch (error) {
+        // Tainted canvas. Remember it so we don't try again every sweep.
+        window.__glassSeenImages.add(source);
+        continue;
+      }
+
+      let binary = '';
+      for (let j = 0; j < data.length; j++) { binary += String.fromCharCode(data[j]); }
+      window.__glassSeenImages.add(source);
+      sampled.push({
+        key: source,
+        pixels: btoa(binary),
+        backdrop: backdrops.get(image) || ''
+      });
+    }
+
     // What the page is actually sitting on, which decides whether it needs us
     // at all. Walked up from the body because a transparent body shows the
     // html element's paint, and that's what the eye sees.
@@ -148,7 +200,7 @@ enum ThemeBridge {
 
     return JSON.stringify({
       ground: ground || '', themed: themed, ready: true,
-      colors: Array.from(found.values())
+      colors: Array.from(found.values()), images: sampled
     });
 
     } finally {
@@ -191,6 +243,9 @@ enum ThemeBridge {
       [data-glass-bd] { border-color: var(--glass-bd) !important; }
       [data-glass-ol] { outline-color: var(--glass-ol) !important; }
       [data-glass-gr] { background-image: var(--glass-gr) !important; }
+      /* Behind the artwork, never over it. The image itself is untouched;
+         its transparent areas simply show this instead of the dark page. */
+      [data-glass-plate] { background-color: var(--glass-plate) !important; }
     }`;
 
     // Read the site's colours, not ours — the plan is keyed on what the author
@@ -229,6 +284,16 @@ enum ThemeBridge {
       }
     } finally {
       ourSheets.forEach(function (each) { each.disabled = false; });
+    }
+
+    const images = document.querySelectorAll('img');
+    for (let i = 0; i < Math.min(images.length, 64); i++) {
+      const image = images[i];
+      const plate = plates[image.currentSrc || image.src];
+      if (plate) {
+        image.style.setProperty('--glass-plate', plate);
+        image.setAttribute('data-glass-plate', '');
+      }
     }
 
     // Last, so there is never a frame between the holding colour coming off and
@@ -326,12 +391,13 @@ enum ThemeBridge {
     static let revertScript = """
     window.__glassObserver?.disconnect();
     window.__glassObserver = null;
+    window.__glassSeenImages = null;
     document.getElementById('__glass_theme')?.remove();
     document.getElementById('__glass_preflight')?.remove();
     const attributes = ['data-glass-bg', 'data-glass-fg', 'data-glass-bd',
-                        'data-glass-ol', 'data-glass-gr'];
+                        'data-glass-ol', 'data-glass-gr', 'data-glass-plate'];
     const variables = ['--glass-bg', '--glass-fg', '--glass-bd',
-                       '--glass-ol', '--glass-gr'];
+                       '--glass-ol', '--glass-gr', '--glass-plate'];
     for (const attribute of attributes) {
       for (const element of document.querySelectorAll('[' + attribute + ']')) {
         element.removeAttribute(attribute);
@@ -354,6 +420,16 @@ enum ThemeBridge {
         var on: String?
     }
 
+    /// One image, reduced to something the analysis can read.
+    struct ImageReading: Decodable {
+        var key: String
+        /// Base64 of a 16x16 RGBA reduction.
+        var pixels: String
+        /// The site's own colour behind it, resolved through the plan to find
+        /// what it will actually be sitting on once the theme lands.
+        var backdrop: String
+    }
+
     struct Survey: Decodable {
         var ground: String
         /// True once this page has been themed. The ground reading is then our
@@ -363,6 +439,7 @@ enum ThemeBridge {
         /// is representative of the finished page.
         var ready: Bool
         var colors: [Reading]
+        var images: [ImageReading]
     }
 
     /// Turns the page's report into the observations `GlassCore` reasons about.

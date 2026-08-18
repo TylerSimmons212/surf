@@ -81,7 +81,17 @@ a theme that preserves brand colours produces those on purpose.
 
 Gradients move as one body rather than stop by stop: transforming each stop
 alone reverses the direction the light falls from, which reads as broken rather
-than as dark. Images are never recoloured.
+than as dark.
+
+Images are never recoloured — inverting a logo is the most visible damage this
+could do, and there is no recovering from a brand mark in the wrong colours.
+That leaves one casualty worth rescuing: artwork drawn as dark ink on
+transparency, which reads on the white page it was made for and disappears on a
+dark one. It gets a plate painted *behind* it instead, so every pixel of the
+artwork stays exactly as its designer drew it. Only that case is touched — an
+opaque image carries its own background and was never at risk, light artwork is
+already visible, and an image that can't be inspected is left alone, because
+the cost of guessing wrong is so much higher than the cost of doing nothing.
 
 A holding colour is painted at document start, before the page's own styles
 arrive, so there is no flash of the light version on the way to the dark one —
@@ -216,6 +226,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/ContrastRepair.swift` — re-seats a colour against its new background
 - `Sources/GlassCore/ThemePlan.swift` — classifies each colour's role and builds
   the page's substitutions
+- `Sources/GlassCore/ImageAnalysis.swift` — decides which artwork would vanish,
+  and what to back it with
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
@@ -266,6 +278,8 @@ State lives in `~/Library/Application Support/Glass/session.json`.
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
 - Tab reordering by drag, and ⌘⇧T to reopen a closed tab
 - Bookmarks
-- Backing dark logos on transparency, which vanish on a dark surface
 - Reaching into shadow DOM and same-origin iframes, which the element walk
   doesn't cross
+- Inspecting cross-origin images, which taint a canvas and so can't be sampled
+  from the page — reading their bytes natively would need no permission we
+  don't already have
