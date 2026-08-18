@@ -478,6 +478,57 @@ enum NetworkAgent {
                 });
               }
 
+              case 'Tags.detect': {
+                // Page world, necessarily. An isolated world shares the DOM but
+                // not the page's globals, so `window.fbq` is invisible from
+                // there — which is exactly how the first version of this found
+                // nothing at all while looking like it worked.
+                // A tag that has loaded but not yet fired leaves a global
+                // behind, which is the only way to tell "installed and silent"
+                // — usually a tag that threw — from "not installed".
+                const wanted = (params && params.globals) || [];
+                const found = [];
+                for (let i = 0; i < wanted.length; i++) {
+                  const entry = wanted[i];
+                  const names = entry.names || [];
+                  const hits = [];
+                  for (let n = 0; n < names.length; n++) {
+                    try {
+                      if (typeof window[names[n]] !== 'undefined') {
+                        hits.push('window.' + names[n]);
+                      }
+                    } catch (e) { /* a getter that throws is not a detection */ }
+                  }
+                  if (hits.length) { found.push({ id: entry.id, evidence: hits }); }
+                }
+
+                // Consent managers, which decide whether the ordering of
+                // everything else is worth remarking on.
+                const consent = [];
+                const managers = [
+                  ['OneTrust', 'OneTrust'], ['Optanon', 'OneTrust'],
+                  ['Cookiebot', 'Cookiebot'], ['Osano', 'Osano'],
+                  ['UC_UI', 'Usercentrics'], ['Didomi', 'Didomi'],
+                  ['klaro', 'Klaro'], ['truste', 'TrustArc'],
+                  ['__tcfapi', 'IAB TCF'], ['CookieYes', 'CookieYes']
+                ];
+                for (let i = 0; i < managers.length; i++) {
+                  try {
+                    if (typeof window[managers[i][0]] !== 'undefined') {
+                      consent.push(managers[i][1]);
+                    }
+                  } catch (e) { /* ignore */ }
+                }
+
+                const generator = document.querySelector('meta[name="generator"]');
+                return JSON.stringify({
+                  found: found,
+                  consent: consent,
+                  generator: generator ? generator.getAttribute('content') : '',
+                  dataLayerLength: (window.dataLayer && window.dataLayer.length) || 0
+                });
+              }
+
               case 'Network.clear': {
                 records.clear();
                 pending = [];

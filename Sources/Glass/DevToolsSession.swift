@@ -15,7 +15,7 @@ import SwiftUI
 final class DevToolsSession: Identifiable {
 
     enum Pane: String, CaseIterable, Identifiable {
-        case elements, styles, network, storage, performance, console
+        case elements, styles, network, storage, tags, performance, console
 
         var id: String { rawValue }
 
@@ -25,6 +25,7 @@ final class DevToolsSession: Identifiable {
             case .styles: "Styles"
             case .network: "Network"
             case .storage: "Storage"
+            case .tags: "Tags"
             case .performance: "Speed"
             case .console: "Console"
             }
@@ -36,6 +37,7 @@ final class DevToolsSession: Identifiable {
             case .styles: "paintbrush"
             case .network: "arrow.up.arrow.down"
             case .storage: "externaldrive"
+            case .tags: "tag"
             case .performance: "gauge.with.needle"
             case .console: "terminal"
             }
@@ -1170,6 +1172,128 @@ final class DevToolsSession: Identifiable {
         await loadStorage()
     }
 
+    // MARK: - Tags
+
+    public enum TagSection: String, CaseIterable, Identifiable {
+        case detected, events, libraries
+        public var id: String { rawValue }
+        public var label: String {
+            switch self {
+            case .detected: "Detected"
+            case .events: "Events"
+            case .libraries: "Ad libraries"
+            }
+        }
+    }
+
+    var tagSection: TagSection = .detected
+    private(set) var tagEvents: [TagEvent] = []
+    private(set) var detectedTags: [DetectedTag] = []
+    private(set) var tagFindings: [TagFinding] = []
+    private(set) var consentManagers: [String] = []
+    private(set) var isLoadingTags = false
+
+    /// Bodies for the vendors that POST their payload, fetched only for
+    /// requests already known to be tags.
+    @ObservationIgnored private var tagBodies: [String: String] = [:]
+
+    var siteDomain: String {
+        URLComponents(string: pageURL)?.host ?? ""
+    }
+
+    /// Reads the tags off the page and out of the traffic already recorded.
+    ///
+    /// The events need no new capture: every pixel fire is a network request,
+    /// including the `<img>` and beacon ones most tags use, and those are
+    /// already in the buffer. This decodes what is there.
+    func loadTags() async {
+        isLoadingTags = true
+        defer { isLoadingTags = false }
+        let issued = generation
+
+        // Bodies first, for the vendors that POST — TikTok and GA4 batch that
+        // way, and without the body those events decode as empty.
+        let candidates = network.requests.filter {
+            TagDecoder.signature(for: $0.url) != nil && $0.hasRequestBody
+                && tagBodies[$0.id] == nil
+        }
+        for request in candidates.prefix(30) {
+            guard let reply = try? await bridge.call(.networkGetBody, ["id": request.id]),
+                  issued == generation
+            else { break }
+            if let body = NetworkWire.decodeBodies(reply).request?.text {
+                tagBodies[request.id] = body
+            }
+        }
+
+        let events = network.requests.compactMap {
+            TagDecoder.decode($0, body: tagBodies[$0.id])
+        }.sorted { $0.at < $1.at }
+
+        // What is installed, whether or not it has spoken.
+        let globals = TagDecoder.signatures.compactMap { signature -> [String: any Sendable]? in
+            guard !signature.globals.isEmpty else { return nil }
+            return ["id": signature.id, "names": signature.globals]
+        }
+        var evidenceByVendor: [String: [String]] = [:]
+        if let reply = try? await bridge.call(.tagsDetect, ["globals": globals]),
+           issued == generation {
+            for entry in reply["found"] as? [[String: Any]] ?? [] {
+                guard let id = entry["id"] as? String else { continue }
+                evidenceByVendor[id] = entry["evidence"] as? [String] ?? []
+            }
+            consentManagers = reply["consent"] as? [String] ?? []
+        }
+
+        // A vendor counts as present if it left a global *or* sent traffic —
+        // a tag loaded from a manager may leave no global at all.
+        var vendors: [String: DetectedTag] = [:]
+        for signature in TagDecoder.signatures {
+            let evidence = evidenceByVendor[signature.id] ?? []
+            let mine = events.filter { $0.vendorId == signature.id }
+            guard !evidence.isEmpty || !mine.isEmpty else { continue }
+
+            var accounts: [String] = []
+            for event in mine where !event.accountId.isEmpty {
+                if !accounts.contains(event.accountId) { accounts.append(event.accountId) }
+            }
+            vendors[signature.id] = DetectedTag(
+                vendorId: signature.id, name: signature.name, category: signature.category,
+                accountIds: accounts,
+                evidence: evidence + (mine.isEmpty ? [] : ["\(mine.count) requests"]),
+                eventCount: mine.count
+            )
+        }
+
+        guard issued == generation else { return }
+        tagEvents = events
+        detectedTags = vendors.values.sorted {
+            $0.category == $1.category
+                ? $0.name < $1.name
+                : $0.category.rawValue < $1.category.rawValue
+        }
+        tagFindings = TagValidation.findings(
+            events: events, detected: detectedTags,
+            hasConsentManager: !consentManagers.isEmpty,
+            // The moment a consent record first appears in the cookie jar is
+            // the closest thing to a timestamp for the visitor's choice.
+            consentSignalAt: nil
+        )
+    }
+
+    func adLibraries() -> [(vendor: String, library: AdLibrary, accountId: String, url: String)] {
+        TagDecoder.signatures.compactMap { signature in
+            guard let library = signature.adLibrary,
+                  let detected = detectedTags.first(where: { $0.vendorId == signature.id })
+            else { return nil }
+            let account = detected.accountIds.first ?? ""
+            return (
+                signature.name, library, account,
+                library.url(id: account, domain: siteDomain)
+            )
+        }
+    }
+
     // MARK: - Performance
 
     private(set) var performance = PerformanceReport()
@@ -1519,6 +1643,10 @@ final class DevToolsSession: Identifiable {
         computedColors = [:]
         stylePseudo = nil
         performance = PerformanceReport()
+        tagEvents = []
+        detectedTags = []
+        tagFindings = []
+        tagBodies.removeAll()
         cookies = []
         storageItems = []
         siteData = []

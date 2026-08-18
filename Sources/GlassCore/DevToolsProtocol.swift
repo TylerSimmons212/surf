@@ -58,6 +58,9 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// Fetched for one request at a time. Bodies are held in the page rather
     /// than pushed with every batch — see `NetworkAgent`.
     case networkGetBody = "Network.getBody"
+    /// Reads the page's tag globals. Page world, because that is the only place
+    /// a page's globals exist.
+    case tagsDetect = "Tags.detect"
 }
 
 /// Which injected script answers a command.
@@ -98,7 +101,8 @@ extension DevToolsMethod {
              .runtimeCompletions,
              .consoleDrain, .consoleSetLive, .consoleAck:
             .page
-        case .networkDrain, .networkSetLive, .networkAck, .networkClear, .networkGetBody:
+        case .networkDrain, .networkSetLive, .networkAck, .networkClear, .networkGetBody,
+             .tagsDetect:
             .network
         }
     }

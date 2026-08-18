@@ -16,6 +16,7 @@ struct DevToolsView: View {
                 case .styles: StylesPane(session: session)
                 case .network: NetworkPane(session: session)
                 case .storage: StoragePane(session: session)
+                case .tags: TagsPane(session: session)
                 case .performance: PerformancePane(session: session)
                 case .console: ConsolePane(session: session)
                 }
