@@ -16,10 +16,10 @@ OUT="$ROOT/.build/js-check"
 command -v node >/dev/null || { echo "check-js: needs node on PATH" >&2; exit 1; }
 
 swift build --package-path "$ROOT"
-BIN="$(swift build --package-path "$ROOT" --show-bin-path)/Glass"
+BIN="$(swift build --package-path "$ROOT" --show-bin-path)/Surf"
 
 rm -rf "$OUT"
-GLASS_DUMP_SCRIPTS="$OUT" "$BIN"
+SURF_DUMP_SCRIPTS="$OUT" "$BIN"
 
 # Every script has to parse before any of it can be asked anything.
 for f in "$OUT"/*.js; do node --check "$f"; done

@@ -1,4 +1,4 @@
-# Glass
+# Surf
 
 A web browser for macOS, built in Swift + SwiftUI.
 
@@ -58,7 +58,7 @@ property one level down, which is where per-site exceptions will hook in.
 
 That much is free and exact: a site with a dark mode of its own renders in the
 design its authors drew, not an approximation of it. A site without one is
-currently left alone — Glass doesn't yet invent a dark theme for it.
+currently left alone — Surf doesn't yet invent a dark theme for it.
 
 "Restyle sites that don't offer it" builds one for the rest. It is off by
 default, because restyling a page is a far larger intervention than telling it
@@ -148,7 +148,7 @@ hide it.
 
 ### Talking to a page
 
-Everything Glass wants from a page — the colours it painted, what it is
+Everything Surf wants from a page — the colours it painted, what it is
 playing, which icons it declares — goes through one resident agent per content
 world, installed at document start and addressed by method name.
 
@@ -179,10 +179,168 @@ for months looked exactly like a page with nothing to say.
 The agent hangs off a property name chosen fresh each launch. In the isolated
 world that is invisible either way; in the page world a fixed name is a
 reliable way for a site to tell which browser it is being read in.
+### Blocking
+
+Ads and trackers are blocked by default. The rules are WebKit's own content
+blockers — the same mechanism Safari extensions use — which match in the network
+process, so a blocked request is never made rather than made and discarded, and
+no script on the page can be first past the post.
+
+The lists are EasyList, EasyPrivacy and the Adblock Warning Removal List — the
+first is about advertising, the second about tracking, since a page can be free
+of ads while still reporting everything you do on it to a dozen people, and the
+third is about the sites that notice and put up a wall about it. That last one
+removes the wall rather than hiding from the thing that raised it, and Surf
+could only take it on once it converted lists itself: nobody publishes a WebKit
+build of it. Both are published in Adblock Plus
+filter syntax and converted here, which is the part Surf used to borrow.
+EasyList's publisher does build a WebKit version of that one list, and taking it
+worked until the second list made it untenable: EasyPrivacy is published in
+filter syntax only, and carrying one list through a converter and the other
+around it would mean two sets of rules behaving differently for reasons nobody
+could see. Converting also fixed what borrowing had cost — their rules are
+host-exact, so `||adnxs.com^` came out matching `adnxs.com` and not the
+`ib.adnxs.com` the ads actually come from.
+
+Between them the three lists convert to about 135,000 rules naming 89,000
+domains, with 1.5% of EasyList, 0.3% of EasyPrivacy and 0.2% of the warning list
+left behind as unconvertible. Each carries its own floor for what counts as a
+real download, because they are not the same size and one figure for all three
+would either wave a truncated EasyList through or refuse a healthy small list.
+Copies are bundled so a fresh install blocks on its first page, and they refresh
+weekly into Application Support from then on.
+
+There is no checksum to verify a list against — the publisher issues none — so
+the guarantee comes from what the payload *is*. It is filter syntax, never code:
+it is parsed into declarative rules that WebKit compiles and matches URLs
+against, and there is no path from it into Surf or into a page. What's left to
+guard is a truncated download or a captive portal's sign-in page arriving with a
+200 and quietly replacing a working list with nothing, and that is what
+converting it and counting what came out catches. A list that produces less than
+a real list's worth of rules is refused before it is installed, and the previous
+one stays in force.
+
+The two syntaxes don't fully meet, and the gap is handled in one direction only.
+A **block** rule that can't be expressed is dropped, and the cost is one ad
+getting through — the state the browser was in a moment ago. An **exception** is
+the dangerous one, because dropping it leaves a site blocked that the list says
+shouldn't be, so an exception is only ever dropped when its whole effect is on
+element hiding and never when it would leave a request refused. What's left out
+is counted rather than guessed at.
+
+Order matters more than it looks: WebKit applies rules in sequence and
+`ignore-previous-rules` cancels only what came *before* it, so every exception in
+a list is emitted after every block in it. An exception written above the block
+it exists to override does nothing at all.
+
+A few translations carry the weight. `||host^` becomes a filter with a subdomain
+group, which is what reaches `ib.adnxs.com` from a rule naming `adnxs.com`, and
+it ends at a boundary rather than at the host, or `||example.com^` would also
+match `example.community`. A rule with no type option is held away from
+top-level documents — Adblock Plus's own default, and the difference between an
+ad filter and a list that can block a site the user typed the address of. Regex
+literals are refused outright: WebKit's engine is a subset of the one they were
+written for, and a rule it rejects fails the entire list's compile, taking every
+other rule with it.
+
+`$subdocument` is where the asymmetry is easiest to see. It means a nested
+document — an iframe — and WebKit has no type for one; its only near-neighbour
+also covers the page the user typed the address of. So a *block* rule carrying
+it is dropped, at the cost of an ad iframe getting through, while an *exception*
+carrying it is kept and widened, because a broader exception un-blocks more than
+the list asked for where a dropped one would leave a request refused that the
+list said to allow.
+
+The shield in the sidebar carries the count for the page and opens the list
+behind it, in two parts. **Blocked** is what was refused, grouped by site with
+what each was doing and which rule caught it. **Also contacted** is every other
+third party the page reached, each with a button that blocks it everywhere —
+which is the half that makes the panel worth opening twice. A site that breaks
+under blocking is fixed by the switch in the panel's header, which pauses that
+site alone and leaves it on everywhere else.
+
+Windows a page opens are judged the same way. Surf already refused any window
+opened *without* a click — `javaScriptCanOpenWindowsAutomatically` is off, so a
+script that opens one unprompted gets nowhere. What that can't cover is the
+pop-under, which is opened *by* the click: the gesture is real, WebKit is right
+to allow it, and the destination is the only thing that gives it away. So the
+destination is what gets asked about, before the tab exists rather than after it
+appears — a window that opens and vanishes is still something that happened to
+the reader. Nothing is refused on a heuristic, because the cost of being wrong
+is a link someone clicked and never got.
+
+A window aimed somewhere unlisted whose *contents* are then blocked is a
+different case: WebKit hands the window over and fails the load afterwards,
+leaving a blank tab with no address and no title. That tab is an artefact of
+blocking rather than anything the reader asked for, so it closes itself — but
+only ever a tab a page opened, and only while nothing has committed in it. A tab
+you opened stays open however empty it is, because you opened it.
+
+Blocking the request is only half of a blocked ad. A page reserves the space
+before it knows what will fill it — a banner slot is a container given a height
+and nothing else — so refusing the ad leaves the reservation standing and the
+reader gets a blank band where the ad was. Blocked, but not gone.
+
+So the space is reclaimed too, by two passes that are deliberately timid. A
+subresource that failed is a box that will never be filled, and it is hidden
+outright along with any wrapper left holding space for it and nothing else. A
+slot that never requested anything — which is what happens when the script that
+would have filled it was itself blocked — is found by name instead, and only
+collapses when all three of a name that marks it as an ad container, a real
+height held open, and nothing visible inside are true at once. Names are matched
+as whole words, because a class called `download` contains "ad" and names
+nothing of the sort.
+
+What that second pass does is stop the container *reserving* space rather than
+hide it. `display: none` is a decision that can't be walked back if the site
+fills the slot a second later, while a container no longer holding a height open
+collapses while it's empty and grows again when something real arrives — which
+is what makes a heuristic safe enough to run at all. An ad slot that fills with
+something legitimate keeps its space; a heading, a download panel, and anything
+else with content in it is never touched.
+
+Assembling that list is the awkward part, because WebKit blocks the requests and
+then says nothing about it. The `notify` action that would report a match is
+private API, and `decidePolicyFor` is only ever called for frame navigations —
+it never sees an image, a script, or a beacon, which between them are the whole
+subject. So the panel can't be a readout of WebKit's decisions and is built from
+the page's own account instead, out of two sources that can't overlap: Resource
+Timing reports everything that completed, and the failure handlers report what
+didn't. The difference between them is the shape of what blocking did.
+
+Which rule caught a request is known from the conversion, and only rules that
+block a domain outright name one. A rule against one path on a shared host —
+`googleapis.com/dfh/`, on a host that also serves half the web's fonts — names a
+domain that isn't blocked, and treating it as one would turn every unrelated
+failure there into a reported block. Requests caught only by a path rule are
+therefore blocked correctly and go unnamed: the panel undercounts rather than
+inventing, and what it does name, it names correctly.
+
+One rule settles the disagreements: a request seen to complete was not blocked,
+whatever the filters say. The page's evidence outranks ours, which keeps a
+cached response from being reported as a block — and means pausing a site needs
+no special case anywhere in the panel, since with the rules off those requests
+simply load and are reported as contacted.
+
+Third-party is judged against the address in the address bar, not the frame that
+reported it, or an ad frame's own tracker would count as the ad's first party.
+Your own block rules are third-party only for the same reason in reverse: a rule
+that fired on the site you're actually on would take the page down along with
+the ad on it.
+
+Two lists are compiled rather than one, and the split is about time. EasyList is
+around forty-six thousand rules and compiling it costs seconds; your own rules
+are a handful and compile instantly. Sharing a list would mean recompiling
+EasyList to add one line, and the Block button would feel broken. The allowlist
+has to be in both, because `ignore-previous-rules` only cancels rules earlier in
+its own list and can't reach across into another — which is why pausing a site
+is the one action that pays the slow compile. Each compiled list is cached under
+a hash of the rules it was built from, so a list that hasn't changed since the
+last launch is never compiled twice.
 
 ### Privacy
 
-Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
+Surf is private by default and keeps no browsing history. Settings (`⌘,`) has
 four switches:
 
 | Setting | Default | Effect |
@@ -198,16 +356,16 @@ enforce it.
 
 ### Helpers
 
-Stream downloads are done by two binaries Glass runs but doesn't build: yt-dlp
+Stream downloads are done by two binaries Surf runs but doesn't build: yt-dlp
 resolves a page to its media, and ffmpeg merges separate video and audio
 streams. Neither is a user-visible feature. Settings shows one number — the
-Glass version — and nothing about what's inside it, because a version the user
-can't act on is noise, and "Glass is current" has to mean everything in it is
+Surf version — and nothing about what's inside it, because a version the user
+can't act on is noise, and "Surf is current" has to mean everything in it is
 current or the number means nothing.
 
 `UpdateManager` keeps them that way: a weekly check at launch, SHA-256 verified
 against the publisher's own checksums, installed atomically into
-`~/Library/Application Support/Glass/Components`, never prompting and never
+`~/Library/Application Support/Surf/Components`, never prompting and never
 reporting. A failed update leaves the previous copy alone and tries again next
 week. Resolution runs newest-first — managed copy, then the copy bundled in the
 app, then `PATH`, so `swift run` works without a bundle.
@@ -217,12 +375,12 @@ The two are handled differently, and the difference is licensing:
 | | yt-dlp | ffmpeg |
 |---|---|---|
 | Licence | Unlicense | GPLv3 — every prebuilt static macOS build |
-| Bundled in `Glass.app` | Yes, pinned + checksummed by `bundle.sh` | **No** |
+| Bundled in `Surf.app` | Yes, pinned + checksummed by `bundle.sh` | **No** |
 | Source | GitHub releases + `SHA2-256SUMS` | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) + `.sha256` sidecar |
 | Extra verification | — | Developer ID team pin (`KU3N25YGLU`) |
 
-Bundling an ffmpeg build would put Glass under GPLv3 along with it. Fetching it
-at runtime makes the user the recipient rather than Glass the redistributor,
+Bundling an ffmpeg build would put Surf under GPLv3 along with it. Fetching it
+at runtime makes the user the recipient rather than Surf the redistributor,
 which is the same arrangement yt-dlp itself and HandBrake use. If that ever
 needs to change, it means compiling an LGPL ffmpeg (`--disable-gpl
 --disable-version3`, minus the GPL codecs) — which would also cost the
@@ -258,7 +416,7 @@ swift run
 Or build a real app bundle (needed if you want to launch it from Finder):
 
 ```
-./scripts/bundle.sh && open Glass.app
+./scripts/bundle.sh && open Surf.app
 ```
 
 Tests:
@@ -269,81 +427,98 @@ swift test
 
 ## Layout
 
-Pure logic lives in `GlassCore` with no AppKit or WebKit imports, which is what
+Pure logic lives in `SurfCore` with no AppKit or WebKit imports, which is what
 makes it unit-testable — the UI targets can't be.
 
-- `Sources/GlassCore/URLResolver.swift` — decides address vs. search
-- `Sources/GlassCore/TabSelection.swift` — tab index math (close, cycle, ⌘N)
-- `Sources/GlassCore/PersistedSession.swift` — session file model and IO
-- `Sources/GlassCore/FaviconPicker.swift` — chooses which declared icon to fetch
-- `Sources/GlassCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
-- `Sources/GlassCore/HistorySearch.swift` — autocomplete ranking
-- `Sources/GlassCore/AppearanceMode.swift` — the three-way scheme setting and
+- `Sources/SurfCore/URLResolver.swift` — decides address vs. search
+- `Sources/SurfCore/TabSelection.swift` — tab index math (close, cycle, ⌘N)
+- `Sources/SurfCore/PersistedSession.swift` — session file model and IO
+- `Sources/SurfCore/FaviconPicker.swift` — chooses which declared icon to fetch
+- `Sources/SurfCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
+- `Sources/SurfCore/HistorySearch.swift` — autocomplete ranking
+- `Sources/SurfCore/AppearanceMode.swift` — the three-way scheme setting and
   what it resolves to against the OS
-- `Sources/GlassCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
-- `Sources/GlassCore/OKLCH.swift` — the perceptual colour space and hue-preserving
+- `Sources/SurfCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
+- `Sources/SurfCore/OKLCH.swift` — the perceptual colour space and hue-preserving
   gamut mapping
-- `Sources/GlassCore/Contrast.swift` — WCAG ratio, plus the perceptual floor that
+- `Sources/SurfCore/Contrast.swift` — WCAG ratio, plus the perceptual floor that
   catches the pairs it flatters
-- `Sources/GlassCore/CSSColor.swift` — the colour syntaxes stylesheets actually use
-- `Sources/GlassCore/CSSGradient.swift` — gradient parsing and whole-value rewriting
-- `Sources/GlassCore/ThemeTransform.swift` — surface, text, and accent remapping
-- `Sources/GlassCore/ContrastRepair.swift` — re-seats a colour against its new background
-- `Sources/GlassCore/ThemePlan.swift` — classifies each colour's role and builds
+- `Sources/SurfCore/CSSColor.swift` — the colour syntaxes stylesheets actually use
+- `Sources/SurfCore/CSSGradient.swift` — gradient parsing and whole-value rewriting
+- `Sources/SurfCore/ThemeTransform.swift` — surface, text, and accent remapping
+- `Sources/SurfCore/ContrastRepair.swift` — re-seats a colour against its new background
+- `Sources/SurfCore/ThemePlan.swift` — classifies each colour's role and builds
   the page's substitutions
-- `Sources/GlassCore/ImageAnalysis.swift` — decides which artwork would vanish,
+- `Sources/SurfCore/ImageAnalysis.swift` — decides which artwork would vanish,
   and what to back it with
-- `Sources/GlassCore/PageProtocol.swift` — the wire format Glass and the page
+- `Sources/SurfCore/PageProtocol.swift` — the wire format Surf and the page
   agree on: method names, which world each runs in, and the reply envelope
-- `Sources/Glass/PageAgent.swift` — Glass's side of one content world: typed
+- `Sources/Surf/PageAgent.swift` — Surf's side of one content world: typed
   calls out, decoded events back
-- `Sources/Glass/PageRuntime.swift` — the agent itself, and the only property
-  Glass adds to a page's globals
-- `Sources/Glass/PageScripts.swift` — the one place that decides what is
+- `Sources/Surf/PageRuntime.swift` — the agent itself, and the only property
+  Surf adds to a page's globals
+- `Sources/Surf/PageScripts.swift` — the one place that decides what is
   injected, and into which world
-- `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
-- `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
-- `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
-- `Sources/Glass/ContentView.swift` — tab bar + selected tab's content
-- `Sources/Glass/Sidebar.swift` — the vertical tab list
-- `Sources/Glass/HoverZone.swift` — click-through edge hover detection
-- `Sources/Glass/IconButton.swift` — shared icon button; hover/press feedback and
+- `Sources/Surf/SurfApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
+- `Sources/Surf/BrowserSession.swift` — owns the tabs and the selection
+- `Sources/Surf/Tab.swift` — one tab: its `WKWebView` and observed state
+- `Sources/Surf/ContentView.swift` — tab bar + selected tab's content
+- `Sources/Surf/Sidebar.swift` — the vertical tab list
+- `Sources/Surf/HoverZone.swift` — click-through edge hover detection
+- `Sources/Surf/IconButton.swift` — shared icon button; hover/press feedback and
   SF Symbols effects (spin, bounce, pulse, draw-in)
-- `Sources/Glass/FaviconStore.swift` — favicon fetch, memory + disk cache
-- `Sources/Glass/URLPalette.swift` — the floating address bar
-- `Sources/Glass/SuggestionList.swift` — autocomplete dropdown and keyboard state
-- `Sources/Glass/HistoryStore.swift` — in-memory visit history
-- `Sources/Glass/SettingsView.swift` — the Settings window
-- `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
-- `Sources/Glass/Appearance.swift` — maps the setting onto `NSAppearance`
-- `Sources/Glass/ThemeBridge.swift` — the theme domain: measures a page's
+- `Sources/Surf/FaviconStore.swift` — favicon fetch, memory + disk cache
+- `Sources/Surf/URLPalette.swift` — the floating address bar
+- `Sources/Surf/SuggestionList.swift` — autocomplete dropdown and keyboard state
+- `Sources/Surf/HistoryStore.swift` — in-memory visit history
+- `Sources/Surf/SettingsView.swift` — the Settings window
+- `Sources/Surf/Preferences.swift` — defaults keys and WebKit data clearing
+- `Sources/Surf/Appearance.swift` — maps the setting onto `NSAppearance`
+- `Sources/Surf/ThemeBridge.swift` — the theme domain: measures a page's
   colours and writes the plan back onto it
-- `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
-- `Sources/Glass/MediaBridge.swift` — the media and find domains of the agent
-- `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
-- `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes;
+- `Sources/Surf/EmptyTabView.swift` — the new-tab backdrop
+- `Sources/Surf/MediaBridge.swift` — the media and find domains of the agent
+- `Sources/Surf/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
+- `Sources/Surf/DownloadManager.swift` — download history, progress, and disk writes;
   routes each source to WebKit or to yt-dlp
-- `Sources/Glass/DownloadsPanel.swift` — toolbar button and downloads list
-- `Sources/Glass/MediaExtractor.swift` — resolves the helper, exports one site's
+- `Sources/Surf/DownloadsPanel.swift` — toolbar button and downloads list
+- `Sources/Surf/MediaExtractor.swift` — resolves the helper, exports one site's
   cookies, and runs the process
-- `Sources/Glass/UpdateManager.swift` — weekly check, checksum + signature
+- `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
-- `Sources/GlassCore/MediaSource.swift` — file vs manifest vs `blob:` classification
-- `Sources/GlassCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
-- `Sources/GlassCore/ComponentUpdate.swift` — version comparison, scheduling, and
+- `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
+  set matching that can't be fooled by a suffix
+- `Sources/SurfCore/FilterList.swift` — which lists are carried, and what makes
+  a payload one
+- `Sources/SurfCore/FilterConverter.swift` — Adblock Plus filter syntax into
+  WebKit's rules, and which way it fails when the two don't meet
+- `Sources/SurfCore/UserBlockRules.swift` — the user's two decisions and the
+  rules they compile to
+- `Sources/SurfCore/BlockLog.swift` — what a page requested, what caught it,
+  and how it groups
+- `Sources/Surf/ContentBlocker.swift` — compiles the rule lists, keeps the list
+  current, applies both to every tab
+- `Sources/SurfCore/AdSlots.swift` — what names an ad container, and what has
+  to be true before its space is reclaimed
+- `Sources/Surf/BlockBridge.swift` — the page-side account of what was
+  requested, and the two passes that close the hole a blocked ad leaves
+- `Sources/Surf/BlockPanel.swift` — the shield and the list behind it
+- `Sources/SurfCore/MediaSource.swift` — file vs manifest vs `blob:` classification
+- `Sources/SurfCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
+- `Sources/SurfCore/ComponentUpdate.swift` — version comparison, scheduling, and
   release discovery for both helpers
-- `Sources/Glass/PopOutChrome.swift` — the pop-out's hover controls and rounded frame
-- `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
+- `Sources/Surf/PopOutChrome.swift` — the pop-out's hover controls and rounded frame
+- `Sources/Surf/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
-- `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
+- `Sources/Surf/VisualEffectBackground.swift` — the transparent blurred window
 
 ## Dev
 
-`GLASS_URL=example.com swift run` boots straight to a page and logs load
+`SURF_URL=example.com swift run` boots straight to a page and logs load
 results to stderr — handy for exercising navigation without clicking.
-Comma-separate to open several tabs: `GLASS_URL=example.com,apple.com swift run`.
+Comma-separate to open several tabs: `SURF_URL=example.com,apple.com swift run`.
 
-State lives in `~/Library/Application Support/Glass/session.json`.
+State lives in `~/Library/Application Support/Surf/session.json`.
 
 Every web view is inspectable, so Safari's Develop menu opens a full Web
 Inspector on any tab. Safari ships with that menu hidden, so it costs nothing
