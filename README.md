@@ -160,6 +160,17 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/HistorySearch.swift` — autocomplete ranking
 - `Sources/GlassCore/AppearanceMode.swift` — the three-way scheme setting and
   what it resolves to against the OS
+- `Sources/GlassCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
+- `Sources/GlassCore/OKLCH.swift` — the perceptual colour space and hue-preserving
+  gamut mapping
+- `Sources/GlassCore/Contrast.swift` — WCAG ratio, plus the perceptual floor that
+  catches the pairs it flatters
+- `Sources/GlassCore/CSSColor.swift` — the colour syntaxes stylesheets actually use
+- `Sources/GlassCore/CSSGradient.swift` — gradient parsing and whole-value rewriting
+- `Sources/GlassCore/ThemeTransform.swift` — surface, text, and accent remapping
+- `Sources/GlassCore/ContrastRepair.swift` — re-seats a colour against its new background
+- `Sources/GlassCore/ThemePlan.swift` — classifies each colour's role and builds
+  the page's substitutions
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state

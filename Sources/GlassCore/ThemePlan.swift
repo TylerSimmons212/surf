@@ -1,0 +1,231 @@
+import Foundation
+
+/// Which CSS property a colour was found on.
+///
+/// The property is the cheapest and strongest evidence of what a colour is
+/// doing. Chroma alone can't tell a surface from an accent — the same hex is a
+/// background on a hero and a label on a badge — but `background-color` versus
+/// `color` settles half the question before anything else is measured.
+public enum ColorProperty: String, CaseIterable, Sendable {
+    case background
+    case text
+    case border
+    case outline
+    case shadow
+    case fill
+    case stroke
+
+    /// What the pair owes once transformed. Borders, outlines, and shadows are
+    /// structure rather than prose, and WCAG holds them to the lower bar.
+    public var requirement: Contrast.Requirement {
+        switch self {
+        case .text, .fill: .normalText
+        case .border, .outline, .shadow, .stroke, .background: .nonText
+        }
+    }
+
+    var isBackground: Bool { self == .background }
+    var isReadable: Bool { self == .text || self == .fill }
+}
+
+/// One sighting of a colour on the page, with the context that makes it
+/// classifiable.
+public struct ColorObservation: Equatable, Sendable {
+    public var color: CSSColor
+    public var property: ColorProperty
+    /// Painted area in CSS pixels, as a fraction of the viewport. Area is the
+    /// evidence that separates a masthead from a badge.
+    public var areaFraction: Double
+    /// Links, buttons, and anything with a button role — a strong accent signal
+    /// independent of how saturated the colour happens to be.
+    public var isInteractive: Bool
+    /// 24px, or 18.5px bold, per WCAG's large-text definition.
+    public var isLargeText: Bool
+
+    /// The colour exactly as the page wrote it.
+    ///
+    /// Kept because the plan is looked up *by the page*, using whatever
+    /// `getComputedStyle` hands back — `rgb(255, 255, 255)`, not `#ffffff`.
+    /// Keying on our own normalised spelling instead produces a plan whose
+    /// every entry is correct and whose every key misses.
+    public var source: String?
+
+    /// The colour this one is painted on top of.
+    ///
+    /// Legibility is a property of a pair, and the pair is the colour and what
+    /// is immediately behind it — a label on a brand-coloured button is judged
+    /// against that button, not against the page it happens to sit on. Without
+    /// this the guarantee holds for body copy and quietly fails everywhere a
+    /// surface has a colour of its own.
+    public var backdrop: CSSColor?
+
+    public init(
+        color: CSSColor,
+        property: ColorProperty,
+        areaFraction: Double = 0,
+        isInteractive: Bool = false,
+        isLargeText: Bool = false,
+        source: String? = nil,
+        backdrop: CSSColor? = nil
+    ) {
+        self.color = color
+        self.property = property
+        self.areaFraction = areaFraction
+        self.isInteractive = isInteractive
+        self.isLargeText = isLargeText
+        self.source = source
+        self.backdrop = backdrop
+    }
+
+    /// The key a colour is looked up by when the mapping is applied.
+    ///
+    /// Property and colour together, because the page hands both back at apply
+    /// time and neither alone is enough — the same grey is a surface behind a
+    /// card and a rule between rows, and those want different answers.
+    public var key: String { "\(property.rawValue)|\(source ?? color.css)" }
+}
+
+/// Decides what a colour is doing from the evidence around it.
+public enum RoleClassifier {
+
+    /// Above this share of the viewport, a coloured background is a wall rather
+    /// than a badge. Deliberately generous: a masthead is a band across the top,
+    /// not half the screen, and treating it as an accent leaves a saturated
+    /// stripe glowing over a dark page.
+    public static let largeSurfaceArea = 0.15
+
+    public static func role(for observation: ColorObservation) -> ColorRole {
+        let perceptual = OKLCH(observation.color.rgb)
+        let isChromatic = perceptual.c >= ThemeTransform.accentChroma
+
+        guard observation.property.isBackground else {
+            // Anything that isn't a background is either prose or structure.
+            // Chromatic prose is a brand colour — a link, a highlighted label —
+            // and keeps its hue; neutral prose is text and inverts.
+            if isChromatic { return .accent }
+            return observation.property.isReadable ? .text : .surface
+        }
+
+        guard isChromatic else { return .surface }
+        // A chromatic background: scale decides whether it reads as identity or
+        // as lighting. An interactive one is a button however big it is.
+        if observation.isInteractive { return .accent }
+        return observation.areaFraction >= largeSurfaceArea ? .brandSurface : .accent
+    }
+}
+
+/// The complete set of colour substitutions for one page.
+///
+/// Built in `GlassCore` from observations the page reports, so the decisions —
+/// which colour is a brand, what it becomes, whether it still reads — are all
+/// testable without a web view anywhere near them.
+public struct ThemePlan: Equatable, Sendable {
+    /// Keyed by `ColorObservation.key`; values are ready to write into CSS.
+    public var replacements: [String: String]
+    /// What the page's dominant background became. The page is painted with
+    /// this before anything else, so there is no white flash to sit through.
+    public var pageBackground: CSSColor
+
+    public var isEmpty: Bool { replacements.isEmpty }
+}
+
+extension ThemePlan {
+
+    /// Builds the plan.
+    ///
+    /// Colours are grouped by property and value, and each group is classified
+    /// once from its largest sighting. Grouping matters for consistency as much
+    /// as for speed: the same grey has to become the same dark grey everywhere
+    /// it appears, or the page comes back subtly striped.
+    public static func build(
+        from observations: [ColorObservation],
+        target: ColorSchemeTarget
+    ) -> ThemePlan {
+        // The dominant background sets the ground everything else is judged
+        // against. Falling back to the scheme we're leaving is the right guess:
+        // a page with no background declaration is showing the browser's, which
+        // is white on the way to dark.
+        let dominant = observations
+            .filter(\.property.isBackground)
+            .max { $0.areaFraction < $1.areaFraction }?
+            .color
+            ?? CSSColor(rgb: target == .dark ? .white : .black)
+
+        let surface = ThemeTransform.transform(
+            OKLCH(dominant.rgb), role: .surface, target: target
+        )
+
+        var groups: [String: ColorObservation] = [:]
+        for observation in observations {
+            // Keep the largest sighting of each colour-and-property pair: the
+            // biggest thing a colour paints is the best evidence of its job.
+            if let existing = groups[observation.key],
+               existing.areaFraction >= observation.areaFraction {
+                groups[observation.key] = ColorObservation(
+                    color: existing.color,
+                    property: existing.property,
+                    areaFraction: existing.areaFraction,
+                    isInteractive: existing.isInteractive || observation.isInteractive,
+                    isLargeText: existing.isLargeText || observation.isLargeText,
+                    source: existing.source,
+                    backdrop: existing.backdrop
+                )
+            } else {
+                groups[observation.key] = observation
+            }
+        }
+
+        var replacements: [String: String] = [:]
+
+        /// A colour that didn't move needs no rule written for it. Restating a
+        /// value is not free: it's a declaration injected over the author's, at
+        /// higher specificity, that has to go on being right.
+        func record(_ key: String, _ result: OKLCH, _ observation: ColorObservation) {
+            let replacement = CSSColor(rgb: result.displayable, alpha: observation.color.alpha)
+            guard replacement.css != observation.color.css else { return }
+            replacements[key] = replacement.css
+        }
+
+        // Backgrounds first, and keyed by their normalised spelling, so that
+        // anything painted on one can be judged against what it *became*
+        // rather than against what it was or against the page.
+        var grounds: [String: OKLCH] = [:]
+        for (key, observation) in groups where observation.property.isBackground {
+            let role = RoleClassifier.role(for: observation)
+            let result = ThemeTransform.transform(
+                OKLCH(observation.color.rgb), role: role, target: target
+            )
+            grounds[observation.color.css] = result
+            record(key, result, observation)
+        }
+
+        // Then everything painted on top of them.
+        for (key, observation) in groups where !observation.property.isBackground {
+            let role = RoleClassifier.role(for: observation)
+            var result = ThemeTransform.transform(
+                OKLCH(observation.color.rgb), role: role, target: target
+            )
+
+            // Its own backdrop where we know it — falling back to the page's
+            // ground, which is what it sits on when nothing else intervenes.
+            let ground = observation.backdrop.map {
+                grounds[$0.css] ?? ThemeTransform.transform(
+                    OKLCH($0.rgb), role: .surface, target: target
+                )
+            } ?? surface
+
+            let requirement: Contrast.Requirement = observation.isLargeText
+                ? .largeText : observation.property.requirement
+            result = ContrastRepair.repair(
+                foreground: result, background: ground, requirement: requirement
+            ).foreground
+
+            record(key, result, observation)
+        }
+
+        return ThemePlan(
+            replacements: replacements,
+            pageBackground: CSSColor(rgb: surface.displayable, alpha: 1)
+        )
+    }
+}
