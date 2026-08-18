@@ -35,6 +35,9 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// Hands back a stylesheet the page itself is forbidden to read, refetched
     /// natively. Parsed in the page so its selectors can be matched there.
     case cssAddRecoveredSheet = "CSS.addRecoveredSheet"
+    /// Locates rules with no element involved, for replaying edits after a
+    /// reload has cleared the selection.
+    case cssFindRules = "CSS.findRules"
 
     case storageRead = "Storage.read"
     case storageWrite = "Storage.write"
@@ -85,7 +88,7 @@ extension DevToolsMethod {
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
-             .cssAddRecoveredSheet,
+             .cssAddRecoveredSheet, .cssFindRules,
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
              .performanceRead, .performanceWatchLayout,

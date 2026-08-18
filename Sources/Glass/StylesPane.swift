@@ -639,8 +639,28 @@ private struct DeclarationRow: View {
                 color: valueColor,
                 isStruck: isStruck,
                 onPick: colorPicker,
+                onScrub: numberScrubber,
+                onScrubEnd: { session.commitLiveEdit() },
                 onEditText: beginEditing
             )
+            .contextMenu {
+                // A closed set of values is pure recall to type, and the sort
+                // of thing people misspell — so offer it rather than test them.
+                let options = CSSKeywords.options(for: declaration.name)
+                if !options.isEmpty, CSSKeywords.isSingleKeyword(declaration.value) {
+                    ForEach(options, id: \.self) { option in
+                        Button {
+                            Task { @MainActor in
+                                await session.setValue(option, of: declaration, in: rule)
+                            }
+                        } label: {
+                            // The current value is marked, so the menu says
+                            // what it is as well as what it could be.
+                            Text(option == declaration.value ? "✓ \(option)" : option)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -688,6 +708,19 @@ private struct DeclarationRow: View {
             Spacer(minLength: 4)
         }
         .padding(.leading, 14)
+    }
+
+    /// Live while dragging: the page moves under the pointer, and one read
+    /// settles it when the gesture ends.
+    private var numberScrubber: ((Int, String) -> Void)? {
+        guard rule.isActive, !isOff else { return nil }
+        return { offset, replacement in
+            Task { @MainActor in
+                await session.setNumber(
+                    replacement, at: offset, of: declaration, in: rule, live: true
+                )
+            }
+        }
     }
 
     /// Absent for a rule that isn't applying or a declaration switched off —

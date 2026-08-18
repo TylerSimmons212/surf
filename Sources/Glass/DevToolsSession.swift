@@ -421,6 +421,16 @@ final class DevToolsSession: Identifiable {
     /// edit that silently didn't happen.
     private(set) var rejectedEdit: DeclarationRef?
 
+    /// Off by default, like every browser. When on, the changeset is re-applied
+    /// after a reload of the same page — which Glass can do without any of the
+    /// setup Local Overrides needs, because it owns the browser.
+    var preservesStyleEditsOnReload = false
+    /// Edits that couldn't be put back, with why. Surfaced rather than dropped:
+    /// an edit that quietly failed to return is worse than one that never
+    /// claimed it would.
+    private(set) var replayMisses: [(property: String, selector: String, reason: String)] = []
+    private(set) var didReplayEdits = false
+
     func isDisabled(_ declaration: CSSDeclaration, in rule: MatchedRule) -> Bool {
         disabled[DeclarationRef(ruleId: rule.id, index: declaration.index)] != nil
     }
@@ -443,6 +453,94 @@ final class DevToolsSession: Identifiable {
         var edited = declaration
         edited.value = value.trimmingCharacters(in: .whitespaces)
         await apply(edited, replacing: declaration, in: rule)
+    }
+
+    /// Puts the collected edits back after a reload.
+    ///
+    /// Every rule handle was minted against a live CSSOM object, so none of
+    /// them survived — each change has to find its rule again by selector,
+    /// stylesheet and conditions.
+    private func replayStyleEdits() async {
+        guard preservesStyleEditsOnReload, !changeset.isEmpty else { return }
+        let issued = generation
+
+        // One descriptor per rule the changes touch. Rules are located by what
+        // they are — selector, stylesheet, conditions, layer — because every
+        // handle was minted against a CSSOM object the reload destroyed.
+        var descriptors: [[String: any Sendable]] = []
+        var groups: [[StyleChange]] = []
+        for change in changeset.changes where change.selector != "element.style" {
+            let key = [change.selector, change.sourceLabel, change.layer ?? ""]
+                + change.conditions
+            if let index = descriptors.indices.first(where: { position in
+                let existing = descriptors[position]
+                return (existing["selector"] as? String) == change.selector
+                    && (existing["label"] as? String) == change.sourceLabel
+                    && (existing["layer"] as? String) == (change.layer ?? "")
+                    && (existing["conditions"] as? [String]) == change.conditions
+            }) {
+                groups[index].append(change)
+            } else {
+                _ = key
+                descriptors.append([
+                    "selector": change.selector,
+                    "label": change.sourceLabel,
+                    "layer": change.layer ?? "",
+                    "conditions": change.conditions,
+                ])
+                groups.append([change])
+            }
+        }
+        guard !descriptors.isEmpty else { return }
+
+        guard let reply = try? await bridge.call(.cssFindRules, ["rules": descriptors]),
+              issued == generation
+        else { return }
+
+        var found: [Int: (id: Int, declarations: [CSSDeclaration])] = [:]
+        for entry in reply["matches"] as? [[String: Any]] ?? [] {
+            guard let index = entry["index"] as? Int, let id = entry["id"] as? Int
+            else { continue }
+            found[index] = (id, CSSWire.decodeDeclarations(entry["declarations"]))
+        }
+
+        var misses: [(property: String, selector: String, reason: String)] = []
+        var applied = 0
+
+        for (index, changes) in groups.enumerated() {
+            guard let match = found[index] else {
+                for change in changes {
+                    misses.append((
+                        property: change.property, selector: change.selector,
+                        reason: "its rule is no longer in the page"
+                    ))
+                }
+                continue
+            }
+            // A stand-in carrying the new document's declarations, so the block
+            // is rebuilt from what the page actually has rather than from what
+            // it had before the reload.
+            let rule = MatchedRule(
+                id: match.id, selector: changes[0].selector,
+                declarations: match.declarations
+            )
+            let text = StyleReplay.text(for: rule, applying: changes)
+            _ = try? await bridge.call(
+                .cssSetRuleText, ["ruleId": match.id, "text": text]
+            )
+            guard issued == generation else { return }
+            editedRuleIds.insert(match.id)
+            applied += changes.count
+        }
+
+        replayMisses = misses
+        didReplayEdits = applied > 0
+        if didReplayEdits, selectedNode != nil { loadStyles() }
+    }
+
+    func dismissReplayReport() {
+        replayMisses = []
+        didReplayEdits = false
     }
 
     /// Replaces one colour inside a value, leaving the rest of it alone.
@@ -479,6 +577,26 @@ final class DevToolsSession: Identifiable {
 
     /// How each picked colour was written before anyone touched it.
     @ObservationIgnored private var pickedNotation: [String: String] = [:]
+
+    /// Replaces one number inside a value, leaving the rest of it alone.
+    ///
+    /// The same rule as colours: a number belongs to its token, so scrubbing
+    /// the `8` in `8px 16px` must not disturb the `16`.
+    func setNumber(
+        _ replacement: String,
+        at offset: Int,
+        of declaration: CSSDeclaration,
+        in rule: MatchedRule,
+        live: Bool = false
+    ) async {
+        let numbers = CSSValueScrub.numbers(in: declaration.value)
+        guard let number = numbers.first(where: { $0.offset == offset }) else { return }
+        var edited = declaration
+        edited.value = CSSValueScrub.replacing(
+            declaration.value, number: number, with: replacement
+        )
+        await apply(edited, replacing: declaration, in: rule, live: live)
+    }
 
     func setImportant(_ important: Bool, of declaration: CSSDeclaration, in rule: MatchedRule) async {
         var edited = declaration
@@ -658,6 +776,9 @@ final class DevToolsSession: Identifiable {
     /// loops forever: recovering triggers a re-read, and a re-read reports the
     /// same unreadable sheets.
     @ObservationIgnored private var recoveryAttempted: Set<String> = []
+    /// Set when a navigation lands and the edits are meant to come back, so the
+    /// replay happens once the new document's rules have actually been read.
+    @ObservationIgnored private var pendingStyleReplay = false
 
     private func recoverUnreadableSheets() async {
         guard let tab, let payload = stylePayload else { return }
@@ -1406,16 +1527,23 @@ final class DevToolsSession: Identifiable {
         recoveredSheets.removeAll()
         failedRecoveries.removeAll()
         recoveryAttempted.removeAll()
-        // Every rule handle belonged to the old document, and the page has
-        // reloaded its own stylesheets — so the edits are gone whether we like
-        // it or not, and pretending otherwise would offer a patch for a state
-        // that no longer exists.
+        // Every rule handle belonged to the old document. What is dropped
+        // depends on whether the edits are meant to come back: without
+        // preservation the page has genuinely reloaded its own stylesheets and
+        // offering a patch for a state that no longer exists would be a lie,
+        // and with it the changeset is the only record of what to reapply.
         disabled.removeAll()
         disabledRules.removeAll()
         pickedNotation.removeAll()
-        changeset.clear()
         editedRuleIds.removeAll()
         rejectedEdit = nil
+        replayMisses = []
+        didReplayEdits = false
+        if preservesStyleEditsOnReload, !changeset.isEmpty {
+            pendingStyleReplay = true
+        } else {
+            changeset.clear()
+        }
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
         refreshConsoleView()
         network.markNavigation(preserving: preservesNetworkOnNavigation)
@@ -1436,6 +1564,13 @@ final class DevToolsSession: Identifiable {
             await drainNetworkBacklog()
             await loadDocument()
             await refreshStatus()
+            // After the document, and independent of whether anything is
+            // selected: a reload clears the selection, and the edits have to
+            // come back regardless.
+            if pendingStyleReplay {
+                pendingStyleReplay = false
+                await replayStyleEdits()
+            }
         }
     }
 

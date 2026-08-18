@@ -1221,6 +1221,94 @@ enum DevToolsAgent {
                 return JSON.stringify(matchedStyles(node));
               }
 
+              case 'CSS.findRules': {
+                // Finds rules by what they *are*, with no element involved.
+                //
+                // Replay can't go through matched styles: a reload clears the
+                // selection, and the edits have to come back whether or not
+                // anyone happens to have an element open.
+                const wanted = (params && params.rules) || [];
+                const matches = [];
+
+                function descriptorOf(rule, context) {
+                  return {
+                    selector: rule.selectorText || '',
+                    label: context.label,
+                    conditions: context.conditions,
+                    layer: context.layer || ''
+                  };
+                }
+
+                function sameDescriptor(a, b) {
+                  if (a.selector !== b.selector) { return false; }
+                  if (a.label !== b.label) { return false; }
+                  if ((a.layer || '') !== (b.layer || '')) { return false; }
+                  const one = a.conditions || [];
+                  const two = b.conditions || [];
+                  if (one.length !== two.length) { return false; }
+                  for (let i = 0; i < one.length; i++) {
+                    if (one[i] !== two[i]) { return false; }
+                  }
+                  return true;
+                }
+
+                function scan(list, context) {
+                  for (let i = 0; i < list.length; i++) {
+                    const rule = list[i];
+                    const name = (rule.constructor && rule.constructor.name) || '';
+
+                    if (rule.selectorText !== undefined && rule.style) {
+                      const descriptor = descriptorOf(rule, context);
+                      for (let w = 0; w < wanted.length; w++) {
+                        if (!sameDescriptor(descriptor, wanted[w])) { continue; }
+                        if (matches.some(function (m) { return m.index === w; })) { continue; }
+                        matches.push({
+                          index: w, id: idForRule(rule),
+                          declarations: readDeclarations(rule.style, null)
+                        });
+                      }
+                      if (rule.cssRules && rule.cssRules.length) {
+                        const nested = Object.assign({}, context);
+                        nested.parent = resolveNested(rule.selectorText, context.parent);
+                        scan(rule.cssRules, nested);
+                      }
+                      continue;
+                    }
+                    if (!rule.cssRules) { continue; }
+
+                    const next = Object.assign({}, context);
+                    next.conditions = context.conditions.slice();
+                    if (name === 'CSSLayerBlockRule') {
+                      const layerName = rule.name || '';
+                      next.layer = context.layer && layerName
+                        ? context.layer + '.' + layerName : (layerName || context.layer);
+                    } else if (rule.media && rule.media.mediaText) {
+                      next.conditions.push('@media ' + rule.media.mediaText);
+                    } else if (name === 'CSSContainerRule') {
+                      next.conditions.push('@container ' + (rule.containerQuery || rule.conditionText || ''));
+                    } else if (rule.conditionText !== undefined) {
+                      next.conditions.push('@supports ' + rule.conditionText);
+                    } else if (name === 'CSSScopeRule') {
+                      next.conditions.push('@scope');
+                    }
+                    scan(rule.cssRules, next);
+                  }
+                }
+
+                const sheets = document.styleSheets || [];
+                for (let s = 0; s < sheets.length; s++) {
+                  const sheet = sheets[s];
+                  if (sheet.disabled) { continue; }
+                  let list = null;
+                  try { list = sheet.cssRules; } catch (e) { continue; }
+                  if (!list) { continue; }
+                  scan(list, {
+                    conditions: [], layer: '', label: sheetLabel(sheet), parent: null
+                  });
+                }
+                return JSON.stringify({ matches: matches });
+              }
+
               case 'CSS.addRecoveredSheet': {
                 const href = params && params.href;
                 const text = (params && params.text) || '';

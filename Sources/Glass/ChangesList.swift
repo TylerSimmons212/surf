@@ -16,7 +16,7 @@ import SwiftUI
 /// `@media` and `@layer` they were found in — lifted out, they'd apply
 /// everywhere.
 struct ChangesList: View {
-    let session: DevToolsSession
+    @Bindable var session: DevToolsSession
 
     @State private var justCopied = false
 
@@ -30,6 +30,7 @@ struct ChangesList: View {
             .frame(minHeight: 180)
         } else {
             header
+            if session.didReplayEdits || !session.replayMisses.isEmpty { replayReport }
             ForEach(session.changeset.grouped) { source in
                 SourceSection(source: source, session: session)
             }
@@ -41,6 +42,13 @@ struct ChangesList: View {
         HStack(spacing: 8) {
             Text(session.changeset.summary)
                 .font(DevToolsTheme.chrome.weight(.medium))
+
+            Toggle("Keep on reload", isOn: $session.preservesStyleEditsOnReload)
+                .toggleStyle(.checkbox)
+                .font(DevToolsTheme.chrome)
+                // Glass owns the browser, so this needs none of the setup
+                // Chrome's Local Overrides asks for.
+                .help("Re-apply these edits after reloading the same page")
 
             Spacer(minLength: 8)
 
@@ -68,6 +76,45 @@ struct ChangesList: View {
             .font(DevToolsTheme.chrome)
         }
         .padding(.bottom, 2)
+    }
+
+    /// What happened when the edits were put back.
+    ///
+    /// Reported rather than assumed, because a page whose CSS changed under the
+    /// edits will not take all of them — and an edit that quietly failed to
+    /// return is worse than one that never claimed it would.
+    private var replayReport: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Image(systemName: session.replayMisses.isEmpty
+                    ? "arrow.clockwise.circle" : "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                Text(session.replayMisses.isEmpty
+                    ? "Edits re-applied after reload"
+                    : "\(session.replayMisses.count) edit\(session.replayMisses.count == 1 ? "" : "s") couldn't be re-applied")
+                    .font(DevToolsTheme.chrome.weight(.medium))
+                Spacer(minLength: 4)
+                Button("Dismiss") { session.dismissReplayReport() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color.accentColor)
+            }
+            .foregroundStyle(session.replayMisses.isEmpty ? Color.secondary : .orange)
+
+            ForEach(session.replayMisses, id: \.property) { miss in
+                Text("\(miss.selector) · \(miss.property) — \(miss.reason)")
+                    .font(DevToolsTheme.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
+                .fill(session.replayMisses.isEmpty
+                    ? DevToolsTheme.inputFill : Color.orange.opacity(0.10))
+        }
     }
 
     /// The patch itself, ready to paste. Shown rather than hidden behind the
