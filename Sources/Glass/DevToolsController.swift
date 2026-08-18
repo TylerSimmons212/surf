@@ -120,6 +120,16 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         if panel.isVisible { panel.close() }
     }
 
+    /// Brings the panel back after a pick.
+    ///
+    /// Arming the picker deliberately fronts the *page*, so the click lands
+    /// there. Once something is picked the answer is in the panel, so that is
+    /// what should be in front — otherwise the tree scrolls to the element
+    /// behind a window you can't see.
+    func bringPanelForward(for tab: Tab) {
+        panels[tab.id]?.makeKeyAndOrderFront(nil)
+    }
+
     /// Opens the panel if needed, shows Elements, and arms the picker — so
     /// ⌥⌘C works as one gesture from anywhere rather than three steps.
     func beginPicking(_ tab: Tab) {

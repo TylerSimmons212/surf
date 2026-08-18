@@ -577,8 +577,11 @@ final class DevToolsSession: Identifiable {
             isPicking = false
             hoveredNode = nil
             hoveredBox = nil
-            revealAndSelect(nodeId)
             pane = .elements
+            revealAndSelect(nodeId)
+            // The result is in the panel, so the panel comes forward. The page
+            // was fronted to receive the click; that job is done.
+            if let tab { DevToolsController.shared.bringPanelForward(for: tab) }
 
         case .inspectCancelled:
             isPicking = false
