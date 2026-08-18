@@ -105,6 +105,16 @@ final class Tab: NSObject, Identifiable {
 
     @ObservationIgnored private var appearanceObserver: (any NSObjectProtocol)?
 
+    /// The page's address as a string.
+    ///
+    /// Everything outside the tab should ask for this rather than reaching
+    /// through to `webView.url`: a tab that hasn't been opened yet — restored
+    /// from disk — knows perfectly well where it points without having loaded.
+    var currentURL: String? {
+        if let url = webView.url { return url.absoluteString }
+        return pendingRestore?.url
+    }
+
     /// The label shown on the tab chip, degrading gracefully before a title lands.
     var displayTitle: String {
         if !pageTitle.isEmpty { return pageTitle }
@@ -331,6 +341,13 @@ final class Tab: NSObject, Identifiable {
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
         webView.stopLoading()
+
+        // The window's container keeps recently shown pages mounted so
+        // switching back to them is free. A closed tab is never coming back, so
+        // it leaves under its own steam rather than lingering there until it
+        // happens to be evicted.
+        webView.isHidden = false
+        webView.removeFromSuperview()
         webView.configuration.userContentController
             .removeScriptMessageHandler(forName: MediaBridge.handlerName)
 
@@ -643,14 +660,41 @@ final class Tab: NSObject, Identifiable {
         faviconHost = host
     }
 
-    func snapshot() -> PersistedTab {
+    /// WebKit's back/forward + scroll blob, kept between saves.
+    ///
+    /// Reading `interactionState` is a full synchronous serialization of the
+    /// tab's history, and the session is saved for reasons that have nothing to
+    /// do with history — a title landing, most often. Every such save was
+    /// re-serializing *every* tab, so a page that animates its own title
+    /// ("(3) Inbox", a video's countdown) had the whole window paying for it
+    /// once a second. The blob only changes when the tab navigates or scrolls,
+    /// so it is re-read then, and on the way out.
+    @ObservationIgnored private var cachedInteractionState: Data?
+    @ObservationIgnored private var interactionStateIsStale = true
+
+    /// Marks the blob as worth re-reading. Cheap, and called from the KVO
+    /// observers that already fire on navigation.
+    private func invalidateInteractionState() {
+        interactionStateIsStale = true
+    }
+
+    /// `refreshingState` forces a re-read regardless — used when quitting,
+    /// where an exact scroll position is worth the cost that a routine
+    /// debounced save is not.
+    func snapshot(refreshingState: Bool = false) -> PersistedTab {
         // A tab restored but never opened still has an empty web view; hand
         // back what we loaded so its history survives another quit.
         if let pendingRestore { return pendingRestore }
+
+        if refreshingState || interactionStateIsStale {
+            cachedInteractionState = webView.interactionState as? Data
+            interactionStateIsStale = false
+        }
+
         return PersistedTab(
             url: webView.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
             title: pageTitle,
-            interactionState: webView.interactionState as? Data
+            interactionState: cachedInteractionState
         )
     }
 
@@ -691,6 +735,9 @@ final class Tab: NSObject, Identifiable {
                 MainActor.assumeIsolated {
                     guard let self, let url = webView.url else { return }
                     self.addressText = url.absoluteString
+                    // The history blob is only worth re-reading once the tab
+                    // has actually gone somewhere.
+                    self.invalidateInteractionState()
                     // Covers SPA route changes, which never fire didFinish.
                     // Clear first so a stale colour doesn't linger on the new page.
                     self.sampledTopColor = nil
@@ -833,6 +880,7 @@ extension Tab: WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
+        invalidateInteractionState()
         session?.scheduleSave()
         // A new document gets its own sweep budget.
         themeSweeps = 0

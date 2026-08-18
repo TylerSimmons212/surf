@@ -23,12 +23,25 @@ final class FaviconStore {
         return base.appendingPathComponent("Glass/Favicons", isDirectory: true)
     }()
 
+    /// Hosts already looked for on disk and not found.
+    ///
+    /// Without this a miss cached nothing, so every call re-hashed the host and
+    /// went back to the filesystem for a file that wasn't there last time
+    /// either. This is called from view bodies — once per suggestion row, per
+    /// keystroke, in the address bar — so a miss is the *common* case and it
+    /// was the one doing synchronous I/O on the main thread.
+    private var absent: Set<String> = []
+
     /// Synchronous lookup — memory, then disk. Returns nil if not yet fetched.
     func cachedIcon(forHost host: String) -> NSImage? {
         if let image = memory[host] { return image }
+        guard !absent.contains(host) else { return nil }
         guard let data = try? Data(contentsOf: fileURL(for: host)),
               let image = NSImage(data: data)
-        else { return nil }
+        else {
+            absent.insert(host)
+            return nil
+        }
         image.size = NSSize(width: 16, height: 16)
         memory[host] = image
         return image
@@ -51,6 +64,8 @@ final class FaviconStore {
 
         image.size = NSSize(width: 16, height: 16)
         memory[host] = image
+        // There's a file for this host now, so a previous miss no longer holds.
+        absent.remove(host)
         // Best-effort: a failed disk write just means refetching next launch.
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? data.write(to: fileURL(for: host), options: .atomic)
