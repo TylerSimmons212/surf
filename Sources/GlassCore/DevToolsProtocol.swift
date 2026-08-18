@@ -21,6 +21,8 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domGetDocument = "DOM.getDocument"
     case domRequestChildNodes = "DOM.requestChildNodes"
     case domGetBoxModel = "DOM.getBoxModel"
+    case domScrollIntoView = "DOM.scrollIntoView"
+    case domAck = "DOM.ack"
 
     case cssGetMatchedRules = "CSS.getMatchedRulesForNode"
     case cssGetComputed = "CSS.getComputedStyleForNode"
@@ -49,6 +51,7 @@ extension DevToolsMethod {
         switch self {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
+             .domScrollIntoView, .domAck,
              .cssGetMatchedRules, .cssGetComputed,
              .overlaySetInspectMode:
             .agent
@@ -74,6 +77,12 @@ public enum DevToolsEvent: Sendable, Equatable {
     case consoleBatch(entries: [ConsoleEntry], sequence: Int, dropped: Int)
     /// The page called `console.clear()` itself.
     case consoleCleared
+    /// The page's DOM changed under a subtree the panel is mirroring.
+    case domMutations(mutations: [DOMMutation], sequence: Int)
+    /// The pointer moved over a new element while the picker is armed.
+    case inspectHover(nodeId: DOMNodeID, box: BoxModel?)
+    case inspectPicked(nodeId: DOMNodeID)
+    case inspectCancelled
 }
 
 public enum DevToolsProtocol {
@@ -103,6 +112,19 @@ public enum DevToolsProtocol {
             )
         case "cleared":
             return .consoleCleared
+        case "dom.mutations":
+            return .domMutations(
+                mutations: DOMWire.decodeMutations(dict["mutations"]),
+                sequence: dict["sequence"] as? Int ?? 0
+            )
+        case "dom.inspectHover":
+            guard let nodeId = dict["nodeId"] as? Int else { return nil }
+            return .inspectHover(nodeId: nodeId, box: DOMWire.decodeBox(dict["box"]))
+        case "dom.inspectPicked":
+            guard let nodeId = dict["nodeId"] as? Int else { return nil }
+            return .inspectPicked(nodeId: nodeId)
+        case "dom.inspectCancelled":
+            return .inspectCancelled
         default:
             return nil
         }

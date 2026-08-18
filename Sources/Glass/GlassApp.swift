@@ -147,6 +147,11 @@ struct GlassApp: App {
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
 
+            Button("Inspect Element") {
+                DevToolsController.shared.beginPicking(session.selectedTab)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+
             Button("Show JavaScript Console") {
                 DevToolsController.shared.open(session.selectedTab, pane: .console)
             }

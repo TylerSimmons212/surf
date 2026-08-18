@@ -21,6 +21,8 @@ final class DevToolsController: NSObject, NSWindowDelegate {
 
     @ObservationIgnored private var panels: [Tab.ID: NSPanel] = [:]
     @ObservationIgnored private var sessions: [Tab.ID: DevToolsSession] = [:]
+    @ObservationIgnored private var highlights: [Tab.ID: InspectorHighlightView] = [:]
+    @ObservationIgnored private var highlightTasks: [Tab.ID: Task<Void, Never>] = [:]
 
     private override init() { super.init() }
 
@@ -85,6 +87,7 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         panels[tab.id] = panel
         inspectedTabIDs.insert(tab.id)
         trackTitle(of: tab, in: panel)
+        installHighlight(for: tab, session: session)
 
         session.start()
         panel.makeKeyAndOrderFront(nil)
@@ -100,6 +103,8 @@ final class DevToolsController: NSObject, NSWindowDelegate {
     }
 
     private func close(tabID: Tab.ID) {
+        highlightTasks.removeValue(forKey: tabID)?.cancel()
+        highlights.removeValue(forKey: tabID)?.removeFromSuperview()
         sessions.removeValue(forKey: tabID)?.stop()
         inspectedTabIDs.remove(tabID)
 
@@ -115,6 +120,13 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         // hosting view mid-close pulls SwiftUI's hierarchy out from under a
         // teardown that is still walking it.
         if panel.isVisible { panel.close() }
+    }
+
+    /// Opens the panel if needed, shows Elements, and arms the picker — so
+    /// ⌥⌘C works as one gesture from anywhere rather than three steps.
+    func beginPicking(_ tab: Tab) {
+        open(tab, pane: .elements)
+        sessions[tab.id]?.setPicking(true)
     }
 
     // MARK: - Navigation
@@ -158,6 +170,51 @@ final class DevToolsController: NSObject, NSWindowDelegate {
             at: safari,
             configuration: NSWorkspace.OpenConfiguration()
         )
+    }
+
+    // MARK: - Highlight
+
+    /// Adds the highlight as a subview of the web view itself.
+    ///
+    /// It declines every hit test, so the page still receives clicks exactly as
+    /// before — the overlay is invisible to everything except the eye.
+    private func installHighlight(for tab: Tab, session: DevToolsSession) {
+        let highlight = InspectorHighlightView(frame: tab.webView.bounds)
+        highlight.autoresizingMask = [.width, .height]
+        tab.webView.addSubview(highlight)
+        highlights[tab.id] = highlight
+
+        highlightTasks[tab.id]?.cancel()
+        highlightTasks[tab.id] = Task { @MainActor [weak self, weak session, weak tab] in
+            while !Task.isCancelled {
+                guard let self, let session, let tab, self.highlights[tab.id] != nil else { return }
+                self.applyHighlight(for: tab, session: session)
+                // Polled rather than event-driven, deliberately for now: the
+                // element moves when the page scrolls, when it resizes, and
+                // when the page animates, and re-measuring on a slow beat is
+                // both simpler and cheaper than three separate observers.
+                try? await Task.sleep(for: .milliseconds(250))
+                if session.selectedNode != nil, session.pane == .elements {
+                    session.refreshHighlight()
+                }
+            }
+        }
+    }
+
+    private func applyHighlight(for tab: Tab, session: DevToolsSession) {
+        guard let highlight = highlights[tab.id] else { return }
+
+        // Hidden when the page isn't on screen: the lens crops a popped-out
+        // tab, so a highlight outside the crop is invisible and misleading,
+        // and an unselected tab has nothing to draw over.
+        let isVisible = !PopOutController.shared.isPoppedOut(tab)
+            && (session.pane == .elements || session.isPicking)
+
+        guard isVisible, let box = session.selectedBox else {
+            highlight.clear()
+            return
+        }
+        highlight.show(box)
     }
 
     // MARK: - Title tracking

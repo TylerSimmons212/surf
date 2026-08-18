@@ -55,6 +55,138 @@ final class DevToolsSession: Identifiable {
     /// new page with the old page's answers.
     private(set) var generation = 0
 
+    // MARK: - Elements
+
+    private(set) var tree = DOMTree()
+    private(set) var selectedNode: DOMNodeID?
+    private(set) var selectedBox: BoxModel?
+    /// What the picker is currently over, which is highlighted but not selected.
+    private(set) var hoveredNode: DOMNodeID?
+    private(set) var isPicking = false
+
+    /// Cached for the same reason the console's list is: SwiftUI reads it
+    /// several times per render pass and flattening walks the whole open tree.
+    private(set) var visibleRows: [DOMRow] = []
+
+    var breadcrumb: [DOMNode] {
+        guard let selectedNode else { return [] }
+        return (tree.ancestors(of: selectedNode) + [selectedNode]).compactMap { tree[$0] }
+    }
+
+    var selectedSelector: String {
+        selectedNode.map { tree.selectorPath(to: $0) } ?? ""
+    }
+
+    private func refreshTree() {
+        visibleRows = tree.visibleRows()
+    }
+
+    /// Reads the document and opens the first couple of levels.
+    func loadDocument() async {
+        let issued = generation
+        guard let reply = try? await bridge.call(.domGetDocument),
+              issued == generation,
+              let root = DOMWire.decodeNode(reply["root"])
+        else { return }
+
+        tree.setRoot(root)
+        // The nested payload saves round trips; the tree stores by id, so
+        // flattening it here is all that's needed.
+        adopt(reply["root"], into: root.id)
+        refreshTree()
+
+        // <html> alone is not a useful first screen — open down to <body>.
+        if let body = tree[root.id]?.childIds?.compactMap({ tree[$0] })
+            .first(where: { $0.nodeName.lowercased() == "body" }) {
+            await expand(body.id)
+        }
+    }
+
+    /// Walks the nested wire payload, recording each level's children.
+    private func adopt(_ payload: Any?, into parent: DOMNodeID) {
+        guard let dict = payload as? [String: Any],
+              let rawChildren = dict["children"] as? [[String: Any]]
+        else { return }
+        let children = rawChildren.compactMap { DOMWire.decodeNode($0) }
+        guard !children.isEmpty else { return }
+        tree.setChildren(children, of: parent)
+        for (index, child) in children.enumerated() {
+            adopt(rawChildren[index], into: child.id)
+        }
+    }
+
+    func toggle(_ id: DOMNodeID) {
+        guard let needsFetch = tree.toggleExpansion(id) else {
+            refreshTree()
+            return
+        }
+        refreshTree()
+        Task { @MainActor in await fetchChildren(of: needsFetch) }
+    }
+
+    func expand(_ id: DOMNodeID) async {
+        tree.expand(id)
+        if tree[id]?.childIds == nil { await fetchChildren(of: id) }
+        refreshTree()
+    }
+
+    private func fetchChildren(of id: DOMNodeID) async {
+        let issued = generation
+        guard let reply = try? await bridge.call(.domRequestChildNodes, ["nodeId": id]),
+              issued == generation
+        else { return }
+        let children = (reply["children"] as? [[String: Any]] ?? []).compactMap(DOMWire.decodeNode)
+        tree.setChildren(children, of: id)
+        refreshTree()
+    }
+
+    func select(_ id: DOMNodeID) {
+        selectedNode = id
+        Task { @MainActor in await refreshBox() }
+    }
+
+    /// Brings a node into view in both the tree and the page.
+    func revealAndSelect(_ id: DOMNodeID) {
+        let missing = tree.reveal(id)
+        refreshTree()
+        selectedNode = id
+        Task { @MainActor in
+            for parent in missing { await fetchChildren(of: parent) }
+            await refreshBox()
+        }
+    }
+
+    private func refreshBox() async {
+        guard let selectedNode else { selectedBox = nil; return }
+        let issued = generation
+        guard let reply = try? await bridge.call(.domGetBoxModel, ["nodeId": selectedNode]),
+              issued == generation
+        else { return }
+        selectedBox = DOMWire.decodeBox(reply["box"])
+    }
+
+    /// Re-reads the selected element's geometry — after a scroll, a resize, or
+    /// a mutation that might have moved it.
+    func refreshHighlight() {
+        Task { @MainActor in await refreshBox() }
+    }
+
+    func scrollPageTo(_ id: DOMNodeID) {
+        bridge.send(.domScrollIntoView, ["nodeId": id])
+        Task { @MainActor in
+            // The scroll is animated by the page, so the box is only correct
+            // once it settles.
+            try? await Task.sleep(for: .milliseconds(320))
+            await refreshBox()
+        }
+    }
+
+    func setPicking(_ enabled: Bool) {
+        isPicking = enabled
+        if !enabled { hoveredNode = nil }
+        bridge.send(.overlaySetInspectMode, ["enabled": enabled])
+    }
+
     // MARK: - Console
 
     private(set) var console = ConsoleBuffer()
@@ -279,6 +411,7 @@ final class DevToolsSession: Identifiable {
             do {
                 try await bridge.attach()
                 await drainConsoleBacklog()
+                await loadDocument()
                 await refreshStatus()
             } catch {
                 status = .unavailable(error.localizedDescription)
@@ -322,6 +455,12 @@ final class DevToolsSession: Identifiable {
     func documentDidChange() {
         generation += 1
         status = .connecting
+        // Every id the agent handed out belonged to the old document.
+        tree = DOMTree()
+        visibleRows = []
+        selectedNode = nil
+        selectedBox = nil
+        hoveredNode = nil
         console.markNavigation(url: pageURL, preservingLog: preservesLogOnNavigation)
         refreshConsoleView()
         releaseEvictedObjects()
@@ -331,6 +470,7 @@ final class DevToolsSession: Identifiable {
             // live — it has no idea a window is open — so it has to be told,
             // and its startup logs collected, exactly as at attach time.
             await drainConsoleBacklog()
+            await loadDocument()
             await refreshStatus()
         }
     }
@@ -359,6 +499,34 @@ final class DevToolsSession: Identifiable {
             // past the window stop the agent emitting, which is the whole
             // backpressure mechanism.
             bridge.send(.consoleAck, ["sequence": sequence])
+
+        case .domMutations(let mutations, let sequence):
+            tree.apply(mutations)
+            refreshTree()
+            bridge.send(.domAck, ["sequence": sequence])
+            // A mutation may have moved whatever is highlighted.
+            if selectedNode != nil { Task { @MainActor in await refreshBox() } }
+            // Anything open whose children were dropped has to be re-read.
+            let pending = tree.pendingFetches()
+            if !pending.isEmpty {
+                Task { @MainActor in
+                    for id in pending { await fetchChildren(of: id) }
+                }
+            }
+
+        case .inspectHover(let nodeId, let box):
+            hoveredNode = nodeId
+            selectedBox = box
+
+        case .inspectPicked(let nodeId):
+            isPicking = false
+            hoveredNode = nil
+            revealAndSelect(nodeId)
+            pane = .elements
+
+        case .inspectCancelled:
+            isPicking = false
+            hoveredNode = nil
 
         case .consoleCleared:
             // The page called console.clear() itself. Honouring it matches

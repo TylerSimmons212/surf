@@ -45,16 +45,15 @@ struct DevToolsView: View {
                 }
             }
             .pickerStyle(.segmented)
-            // macOS 26 defaults a segmented control to a capsule. That reads as
-            // a pill-shaped filter chip, which is the wrong signal for what is
-            // really a two-view switcher — and it collides with the actual
-            // filter chips a few points below it in the console.
+            // Small, not regular: 20pt rather than 24pt, which suits a dense
+            // inspector header sitting above monospaced rows.
             //
-            // The border shape is a first-class control property in the new
-            // design (`NSSegmentedControl.BorderShape` is `.automatic`,
-            // `.capsule` or `.roundedRectangle`), so this is choosing between
-            // sanctioned appearances rather than overriding one.
-            .buttonBorderShape(.roundedRectangle)
+            // Note the shape needs no help. Measured on macOS 26, a segmented
+            // control is a rounded rectangle at mini through medium sizes
+            // (r≈4.4pt here) and only rounds into a capsule at large and
+            // extra-large. The pill look this replaced came from a hand-rolled
+            // control, not from the system.
+            .controlSize(.small)
             .labelsHidden()
             .fixedSize()
 
@@ -118,19 +117,6 @@ struct DevToolsView: View {
         case .unavailable(let reason):
             reason
         }
-    }
-}
-
-/// Placeholder until Phase 3.
-struct ElementsPane: View {
-    let session: DevToolsSession
-
-    var body: some View {
-        DevToolsPlaceholder(
-            symbol: "chevron.left.forwardslash.chevron.right",
-            title: "Elements",
-            detail: "The DOM tree and styles land here."
-        )
     }
 }
 
