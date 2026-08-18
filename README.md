@@ -1,4 +1,4 @@
-# Glass
+# Surf
 
 A web browser for macOS, built in Swift + SwiftUI.
 
@@ -58,7 +58,7 @@ property one level down, which is where per-site exceptions will hook in.
 
 That much is free and exact: a site with a dark mode of its own renders in the
 design its authors drew, not an approximation of it. A site without one is
-currently left alone — Glass doesn't yet invent a dark theme for it.
+currently left alone — Surf doesn't yet invent a dark theme for it.
 
 "Restyle sites that don't offer it" builds one for the rest. It is off by
 default, because restyling a page is a far larger intervention than telling it
@@ -157,10 +157,10 @@ The lists are EasyList, EasyPrivacy and the Adblock Warning Removal List — the
 first is about advertising, the second about tracking, since a page can be free
 of ads while still reporting everything you do on it to a dozen people, and the
 third is about the sites that notice and put up a wall about it. That last one
-removes the wall rather than hiding from the thing that raised it, and Glass
+removes the wall rather than hiding from the thing that raised it, and Surf
 could only take it on once it converted lists itself: nobody publishes a WebKit
 build of it. Both are published in Adblock Plus
-filter syntax and converted here, which is the part Glass used to borrow.
+filter syntax and converted here, which is the part Surf used to borrow.
 EasyList's publisher does build a WebKit version of that one list, and taking it
 worked until the second list made it untenable: EasyPrivacy is published in
 filter syntax only, and carrying one list through a converter and the other
@@ -180,7 +180,7 @@ weekly into Application Support from then on.
 There is no checksum to verify a list against — the publisher issues none — so
 the guarantee comes from what the payload *is*. It is filter syntax, never code:
 it is parsed into declarative rules that WebKit compiles and matches URLs
-against, and there is no path from it into Glass or into a page. What's left to
+against, and there is no path from it into Surf or into a page. What's left to
 guard is a truncated download or a captive portal's sign-in page arriving with a
 200 and quietly replacing a working list with nothing, and that is what
 converting it and counting what came out catches. A list that produces less than
@@ -226,7 +226,7 @@ which is the half that makes the panel worth opening twice. A site that breaks
 under blocking is fixed by the switch in the panel's header, which pauses that
 site alone and leaves it on everywhere else.
 
-Windows a page opens are judged the same way. Glass already refused any window
+Windows a page opens are judged the same way. Surf already refused any window
 opened *without* a click — `javaScriptCanOpenWindowsAutomatically` is off, so a
 script that opens one unprompted gets nowhere. What that can't cover is the
 pop-under, which is opened *by* the click: the gesture is real, WebKit is right
@@ -250,7 +250,7 @@ to hold together — no title, nothing readable in the body, and several refused
 requests — and only ever on a tab a page opened. A tab you opened stays open
 however empty it is, because you opened it.
 
-There is a third way a page can check, and it is the one Glass can least argue
+There is a third way a page can check, and it is the one Surf can least argue
 with: hiding is the only thing a blocker does that a site can *see from the
 inside*. A player puts an element on its own page, measures it, finds it hidden,
 and stops playing — and it is right, in the sense that the measurement is
@@ -271,7 +271,7 @@ so it loads a script whose only job is to set a variable and then tests whether
 the variable is there — pausing the video and raising a wall if it isn't. The
 name is random per site, so no list can carry it and no stub can be written for
 it in advance. What is constant is the shape: an identifier tested with `typeof`,
-never assigned anywhere in the page, and named after what it is. So Glass reads
+never assigned anywhere in the page, and named after what it is. So Surf reads
 the check rather than knowing the name, and answers it. Narrowly: only names that
 announce themselves as bait, and only where the page never assigns them, because
 `typeof jQuery === 'undefined'` is how a page decides whether to load jQuery and
@@ -309,7 +309,7 @@ player waits for a callback that cannot come — and the viewer, who pressed pla
 watches nothing happen. The site is then free to call that an ad blocker's
 fault, and usually does.
 
-So a script Glass has a stand-in for is answered rather than silenced. The stub
+So a script Surf has a stand-in for is answered rather than silenced. The stub
 is installed, nothing is fetched, and the script element reports the load the
 player is waiting on. What the stub then says is that there are no ads, which is
 a state every player already handles — it is what an unfilled ad slot looks like
@@ -384,7 +384,7 @@ last launch is never compiled twice.
 
 ### Privacy
 
-Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
+Surf is private by default and keeps no browsing history. Settings (`⌘,`) has
 four switches:
 
 | Setting | Default | Effect |
@@ -400,16 +400,16 @@ enforce it.
 
 ### Helpers
 
-Stream downloads are done by two binaries Glass runs but doesn't build: yt-dlp
+Stream downloads are done by two binaries Surf runs but doesn't build: yt-dlp
 resolves a page to its media, and ffmpeg merges separate video and audio
 streams. Neither is a user-visible feature. Settings shows one number — the
-Glass version — and nothing about what's inside it, because a version the user
-can't act on is noise, and "Glass is current" has to mean everything in it is
+Surf version — and nothing about what's inside it, because a version the user
+can't act on is noise, and "Surf is current" has to mean everything in it is
 current or the number means nothing.
 
 `UpdateManager` keeps them that way: a weekly check at launch, SHA-256 verified
 against the publisher's own checksums, installed atomically into
-`~/Library/Application Support/Glass/Components`, never prompting and never
+`~/Library/Application Support/Surf/Components`, never prompting and never
 reporting. A failed update leaves the previous copy alone and tries again next
 week. Resolution runs newest-first — managed copy, then the copy bundled in the
 app, then `PATH`, so `swift run` works without a bundle.
@@ -419,12 +419,12 @@ The two are handled differently, and the difference is licensing:
 | | yt-dlp | ffmpeg |
 |---|---|---|
 | Licence | Unlicense | GPLv3 — every prebuilt static macOS build |
-| Bundled in `Glass.app` | Yes, pinned + checksummed by `bundle.sh` | **No** |
+| Bundled in `Surf.app` | Yes, pinned + checksummed by `bundle.sh` | **No** |
 | Source | GitHub releases + `SHA2-256SUMS` | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) + `.sha256` sidecar |
 | Extra verification | — | Developer ID team pin (`KU3N25YGLU`) |
 
-Bundling an ffmpeg build would put Glass under GPLv3 along with it. Fetching it
-at runtime makes the user the recipient rather than Glass the redistributor,
+Bundling an ffmpeg build would put Surf under GPLv3 along with it. Fetching it
+at runtime makes the user the recipient rather than Surf the redistributor,
 which is the same arrangement yt-dlp itself and HandBrake use. If that ever
 needs to change, it means compiling an LGPL ffmpeg (`--disable-gpl
 --disable-version3`, minus the GPL codecs) — which would also cost the
@@ -460,7 +460,7 @@ swift run
 Or build a real app bundle (needed if you want to launch it from Finder):
 
 ```
-./scripts/bundle.sh && open Glass.app
+./scripts/bundle.sh && open Surf.app
 ```
 
 Tests:
@@ -471,94 +471,94 @@ swift test
 
 ## Layout
 
-Pure logic lives in `GlassCore` with no AppKit or WebKit imports, which is what
+Pure logic lives in `SurfCore` with no AppKit or WebKit imports, which is what
 makes it unit-testable — the UI targets can't be.
 
-- `Sources/GlassCore/URLResolver.swift` — decides address vs. search
-- `Sources/GlassCore/TabSelection.swift` — tab index math (close, cycle, ⌘N)
-- `Sources/GlassCore/PersistedSession.swift` — session file model and IO
-- `Sources/GlassCore/FaviconPicker.swift` — chooses which declared icon to fetch
-- `Sources/GlassCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
-- `Sources/GlassCore/HistorySearch.swift` — autocomplete ranking
-- `Sources/GlassCore/AppearanceMode.swift` — the three-way scheme setting and
+- `Sources/SurfCore/URLResolver.swift` — decides address vs. search
+- `Sources/SurfCore/TabSelection.swift` — tab index math (close, cycle, ⌘N)
+- `Sources/SurfCore/PersistedSession.swift` — session file model and IO
+- `Sources/SurfCore/FaviconPicker.swift` — chooses which declared icon to fetch
+- `Sources/SurfCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
+- `Sources/SurfCore/HistorySearch.swift` — autocomplete ranking
+- `Sources/SurfCore/AppearanceMode.swift` — the three-way scheme setting and
   what it resolves to against the OS
-- `Sources/GlassCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
-- `Sources/GlassCore/OKLCH.swift` — the perceptual colour space and hue-preserving
+- `Sources/SurfCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
+- `Sources/SurfCore/OKLCH.swift` — the perceptual colour space and hue-preserving
   gamut mapping
-- `Sources/GlassCore/Contrast.swift` — WCAG ratio, plus the perceptual floor that
+- `Sources/SurfCore/Contrast.swift` — WCAG ratio, plus the perceptual floor that
   catches the pairs it flatters
-- `Sources/GlassCore/CSSColor.swift` — the colour syntaxes stylesheets actually use
-- `Sources/GlassCore/CSSGradient.swift` — gradient parsing and whole-value rewriting
-- `Sources/GlassCore/ThemeTransform.swift` — surface, text, and accent remapping
-- `Sources/GlassCore/ContrastRepair.swift` — re-seats a colour against its new background
-- `Sources/GlassCore/ThemePlan.swift` — classifies each colour's role and builds
+- `Sources/SurfCore/CSSColor.swift` — the colour syntaxes stylesheets actually use
+- `Sources/SurfCore/CSSGradient.swift` — gradient parsing and whole-value rewriting
+- `Sources/SurfCore/ThemeTransform.swift` — surface, text, and accent remapping
+- `Sources/SurfCore/ContrastRepair.swift` — re-seats a colour against its new background
+- `Sources/SurfCore/ThemePlan.swift` — classifies each colour's role and builds
   the page's substitutions
-- `Sources/GlassCore/ImageAnalysis.swift` — decides which artwork would vanish,
+- `Sources/SurfCore/ImageAnalysis.swift` — decides which artwork would vanish,
   and what to back it with
-- `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
-- `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
-- `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
-- `Sources/Glass/ContentView.swift` — tab bar + selected tab's content
-- `Sources/Glass/Sidebar.swift` — the vertical tab list
-- `Sources/Glass/HoverZone.swift` — click-through edge hover detection
-- `Sources/Glass/IconButton.swift` — shared icon button; hover/press feedback and
+- `Sources/Surf/SurfApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
+- `Sources/Surf/BrowserSession.swift` — owns the tabs and the selection
+- `Sources/Surf/Tab.swift` — one tab: its `WKWebView` and observed state
+- `Sources/Surf/ContentView.swift` — tab bar + selected tab's content
+- `Sources/Surf/Sidebar.swift` — the vertical tab list
+- `Sources/Surf/HoverZone.swift` — click-through edge hover detection
+- `Sources/Surf/IconButton.swift` — shared icon button; hover/press feedback and
   SF Symbols effects (spin, bounce, pulse, draw-in)
-- `Sources/Glass/FaviconStore.swift` — favicon fetch, memory + disk cache
-- `Sources/Glass/URLPalette.swift` — the floating address bar
-- `Sources/Glass/SuggestionList.swift` — autocomplete dropdown and keyboard state
-- `Sources/Glass/HistoryStore.swift` — in-memory visit history
-- `Sources/Glass/SettingsView.swift` — the Settings window
-- `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
-- `Sources/Glass/Appearance.swift` — maps the setting onto `NSAppearance`
-- `Sources/Glass/ThemeBridge.swift` — measures a page's colours and writes the
+- `Sources/Surf/FaviconStore.swift` — favicon fetch, memory + disk cache
+- `Sources/Surf/URLPalette.swift` — the floating address bar
+- `Sources/Surf/SuggestionList.swift` — autocomplete dropdown and keyboard state
+- `Sources/Surf/HistoryStore.swift` — in-memory visit history
+- `Sources/Surf/SettingsView.swift` — the Settings window
+- `Sources/Surf/Preferences.swift` — defaults keys and WebKit data clearing
+- `Sources/Surf/Appearance.swift` — maps the setting onto `NSAppearance`
+- `Sources/Surf/ThemeBridge.swift` — measures a page's colours and writes the
   plan back onto it
-- `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
-- `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
-- `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
-- `Sources/Glass/DownloadManager.swift` — download history, progress, and disk writes;
+- `Sources/Surf/EmptyTabView.swift` — the new-tab backdrop
+- `Sources/Surf/MediaBridge.swift` — media detection script and JS↔Swift bridge
+- `Sources/Surf/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
+- `Sources/Surf/DownloadManager.swift` — download history, progress, and disk writes;
   routes each source to WebKit or to yt-dlp
-- `Sources/Glass/DownloadsPanel.swift` — toolbar button and downloads list
-- `Sources/Glass/MediaExtractor.swift` — resolves the helper, exports one site's
+- `Sources/Surf/DownloadsPanel.swift` — toolbar button and downloads list
+- `Sources/Surf/MediaExtractor.swift` — resolves the helper, exports one site's
   cookies, and runs the process
-- `Sources/Glass/UpdateManager.swift` — weekly check, checksum + signature
+- `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
-- `Sources/GlassCore/BlockDomains.swift` — registrable domains, third-party, and
+- `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
   set matching that can't be fooled by a suffix
-- `Sources/GlassCore/FilterList.swift` — which lists are carried, and what makes
+- `Sources/SurfCore/FilterList.swift` — which lists are carried, and what makes
   a payload one
-- `Sources/GlassCore/FilterConverter.swift` — Adblock Plus filter syntax into
+- `Sources/SurfCore/FilterConverter.swift` — Adblock Plus filter syntax into
   WebKit's rules, and which way it fails when the two don't meet
-- `Sources/GlassCore/UserBlockRules.swift` — the user's two decisions and the
+- `Sources/SurfCore/UserBlockRules.swift` — the user's two decisions and the
   rules they compile to
-- `Sources/GlassCore/BlockLog.swift` — what a page requested, what caught it,
+- `Sources/SurfCore/BlockLog.swift` — what a page requested, what caught it,
   and how it groups
-- `Sources/Glass/ContentBlocker.swift` — compiles the rule lists, keeps the list
+- `Sources/Surf/ContentBlocker.swift` — compiles the rule lists, keeps the list
   current, applies both to every tab
-- `Sources/GlassCore/AdSlots.swift` — what names an ad container, and what has
+- `Sources/SurfCore/AdSlots.swift` — what names an ad container, and what has
   to be true before its space is reclaimed
-- `Sources/GlassCore/Surrogates.swift` — stand-ins for the scripts blocking
+- `Sources/SurfCore/Surrogates.swift` — stand-ins for the scripts blocking
   removes, so a player is told there are no ads rather than left waiting
-- `Sources/GlassCore/AntiAdblock.swift` — the bait variable a page checks for,
+- `Sources/SurfCore/AntiAdblock.swift` — the bait variable a page checks for,
   and why pressing play is never a request to open a window
-- `Sources/Glass/BlockBridge.swift` — the page-side account of what was
+- `Sources/Surf/BlockBridge.swift` — the page-side account of what was
   requested, and the two passes that close the hole a blocked ad leaves
-- `Sources/Glass/BlockPanel.swift` — the shield and the list behind it
-- `Sources/GlassCore/MediaSource.swift` — file vs manifest vs `blob:` classification
-- `Sources/GlassCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
-- `Sources/GlassCore/ComponentUpdate.swift` — version comparison, scheduling, and
+- `Sources/Surf/BlockPanel.swift` — the shield and the list behind it
+- `Sources/SurfCore/MediaSource.swift` — file vs manifest vs `blob:` classification
+- `Sources/SurfCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
+- `Sources/SurfCore/ComponentUpdate.swift` — version comparison, scheduling, and
   release discovery for both helpers
-- `Sources/Glass/PopOutChrome.swift` — the pop-out's hover controls and rounded frame
-- `Sources/Glass/PopOutController.swift` — lens panel: crops the live web view
+- `Sources/Surf/PopOutChrome.swift` — the pop-out's hover controls and rounded frame
+- `Sources/Surf/PopOutController.swift` — lens panel: crops the live web view
   to the video's rectangle instead of restyling the page
-- `Sources/Glass/VisualEffectBackground.swift` — the transparent blurred window
+- `Sources/Surf/VisualEffectBackground.swift` — the transparent blurred window
 
 ## Dev
 
-`GLASS_URL=example.com swift run` boots straight to a page and logs load
+`SURF_URL=example.com swift run` boots straight to a page and logs load
 results to stderr — handy for exercising navigation without clicking.
-Comma-separate to open several tabs: `GLASS_URL=example.com,apple.com swift run`.
+Comma-separate to open several tabs: `SURF_URL=example.com,apple.com swift run`.
 
-State lives in `~/Library/Application Support/Glass/session.json`.
+State lives in `~/Library/Application Support/Surf/session.json`.
 
 ## Next
 

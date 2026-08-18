@@ -1,11 +1,11 @@
 #!/bin/bash
-# Builds Glass.app. WKWebView needs a real bundle identifier to launch its
+# Builds Surf.app. WKWebView needs a real bundle identifier to launch its
 # Web Content helper process, so a bare SwiftPM binary can't browse.
 set -euo pipefail
 
 CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP="$ROOT/Glass.app"
+APP="$ROOT/Surf.app"
 
 # yt-dlp reassembles segmented video, which WebKit can't download. Pinned and
 # checksummed rather than "latest": a build should produce the same app twice.
@@ -18,11 +18,11 @@ YTDLP_SHA256="498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b"
 YTDLP_CACHE="$ROOT/.build/vendor/yt-dlp-$YTDLP_VERSION"
 
 swift build -c "$CONFIG" --package-path "$ROOT"
-BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)/Glass"
+BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)/Surf"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/Glass"
+cp "$BIN" "$APP/Contents/MacOS/Surf"
 
 # Cached outside git: it's a 40MB binary with its own release cadence, and
 # nothing about it belongs in the history of a Swift project.
@@ -41,7 +41,7 @@ if [ ! -f "$YTDLP_CACHE" ]; then
         fi
     else
         rm -f "$YTDLP_CACHE.tmp"
-        # Not fatal: Glass falls back to a yt-dlp on PATH, and everything other
+        # Not fatal: Surf falls back to a yt-dlp on PATH, and everything other
         # than stream downloads works regardless. A build shouldn't need network.
         echo "warning: couldn't fetch yt-dlp — stream downloads will need a system copy." >&2
     fi
@@ -57,9 +57,9 @@ fi
 # Application Support — these copies are only ever the floor.
 #
 # Not pinned or checksummed, unlike yt-dlp above, and the difference is what the
-# payload is. yt-dlp is an executable Glass runs; these are filter rules Glass
+# payload is. yt-dlp is an executable Surf runs; these are filter rules Surf
 # parses into declarative form for WebKit to match URLs against, with no path
-# from them into Glass or into a page. Their publisher issues no checksums, so
+# from them into Surf or into a page. Their publisher issues no checksums, so
 # what stands in for one is the same check the runtime update makes: each list
 # has to convert to tens of thousands of usable rules.
 # Each entry is "name|url|minimum rules". The minimum is per list because they
@@ -91,7 +91,7 @@ for ENTRY in \
             fi
         else
             rm -f "$LIST_CACHE.tmp"
-            # Not fatal, for the same reason as yt-dlp: Glass fetches its own
+            # Not fatal, for the same reason as yt-dlp: Surf fetches its own
             # copy on first launch, and a build shouldn't need network.
             echo "warning: couldn't fetch $LIST — blocking starts after the first update." >&2
         fi
@@ -102,15 +102,37 @@ for ENTRY in \
     fi
 done
 
+# The app icon is an Icon Composer document. actool compiles it into the
+# Assets.car that macOS 26 reads for the layered icon, plus an .icns for
+# anything still asking the old question.
+#
+# Not fatal if it fails, for the same reason as yt-dlp and the filter lists: a
+# build shouldn't need Xcode installed, and an app with a generic icon browses
+# exactly as well as one without.
+if xcrun --find actool >/dev/null 2>&1; then
+    if ! xcrun actool "$ROOT/Resources/AppIcon.icon" \
+        --compile "$APP/Contents/Resources" \
+        --app-icon AppIcon \
+        --output-partial-info-plist "$ROOT/.build/icon-partial.plist" \
+        --platform macosx --minimum-deployment-target 26.0 \
+        --errors --warnings >/dev/null; then
+        echo "warning: couldn't compile AppIcon.icon — the app will use a generic icon." >&2
+    fi
+else
+    echo "warning: actool not found (needs Xcode) — the app will use a generic icon." >&2
+fi
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Glass</string>
-    <key>CFBundleDisplayName</key><string>Glass</string>
-    <key>CFBundleExecutable</key><string>Glass</string>
-    <key>CFBundleIdentifier</key><string>com.glass.browser</string>
+    <key>CFBundleName</key><string>Surf</string>
+    <key>CFBundleDisplayName</key><string>Surf</string>
+    <key>CFBundleExecutable</key><string>Surf</string>
+    <key>CFBundleIdentifier</key><string>com.surf.browser</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>CFBundleIconName</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>CFBundleVersion</key><string>1</string>
