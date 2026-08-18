@@ -19,6 +19,8 @@ public enum ColorProperty: String, CaseIterable, Sendable {
     /// structure rather than prose, and WCAG holds them to the lower bar.
     public var requirement: Contrast.Requirement {
         switch self {
+        // SVG fill often carries a wordmark, so it is held to the text bar.
+        // A stroke is a drawn line and is held to the graphic one.
         case .text, .fill: .normalText
         case .border, .outline, .shadow, .stroke, .background: .nonText
         }
@@ -27,7 +29,10 @@ public enum ColorProperty: String, CaseIterable, Sendable {
     /// Backgrounds are the ground other colours are judged against, rather
     /// than something judged itself.
     public var isBackground: Bool { self == .background }
-    var isReadable: Bool { self == .text || self == .fill }
+    /// Prose, and the SVG paint that stands in for it. A neutral icon belongs
+    /// with text — it inverts — rather than with surfaces, which would leave it
+    /// the same colour as the page it sits on.
+    var isReadable: Bool { self == .text || self == .fill || self == .stroke }
     /// Lines drawn to separate things, whose job is separation rather than
     /// colour.
     var isSeparator: Bool { self == .border || self == .outline }

@@ -60,7 +60,57 @@ enum ThemeBridge {
       .filter(Boolean);
     ourSheets.forEach(function (sheet) { sheet.disabled = true; });
 
+    let payload = null;
+    let deferred = [];
+
     try {
+
+    // Sample any image that might be a logo.
+    //
+    // Pixels are never altered — this only asks whether the artwork would
+    // survive on a dark page, and the answer, when it is no, is a plate painted
+    // behind it. A 16x16 reduction is plenty for "is this broadly dark ink on
+    // nothing", and keeps the message small.
+    //
+    // getImageData throws for a cross-origin image loaded without CORS, which
+    // is most images on most sites. That is left as a refusal rather than
+    // worked around: an image we cannot inspect is one we leave exactly alone,
+    // which is the safe outcome anyway.
+    if (!window.__glassSeenImages) { window.__glassSeenImages = new Set(); }
+    const sampled = [];
+    const backgroundGrounds = [];
+
+    function firstURL(value) {
+      if (!value) { return ''; }
+      const start = value.indexOf('url(');
+      if (start === -1) { return ''; }
+      let inner = value.slice(start + 4);
+      const end = inner.indexOf(')');
+      if (end === -1) { return ''; }
+      inner = inner.slice(0, end).trim();
+      const quote = inner.charAt(0);
+      if (quote === '"' || quote === "'") { inner = inner.slice(1, -1); }
+      // A data: URI is already in hand and costs nothing; anything else is a
+      // fetch we only want to make once.
+      return inner;
+    }
+
+    function pixelsOf(image) {
+      try {
+        context.clearRect(0, 0, 16, 16);
+        context.drawImage(image, 0, 0, 16, 16);
+        const data = context.getImageData(0, 0, 16, 16).data;
+        let binary = '';
+        for (let j = 0; j < data.length; j++) { binary += String.fromCharCode(data[j]); }
+        return btoa(binary);
+      } catch (error) {
+        return null;  // tainted: left alone, which is the safe outcome
+      }
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
 
     const viewport = Math.max(1, innerWidth * innerHeight);
     const found = new Map();
@@ -144,6 +194,33 @@ enum ThemeBridge {
         note(style.outlineColor, 'outline', area, interactive, large, backdrop);
       }
 
+      // SVG paint, which is how most sites now ship their icons. This is DOM
+      // rather than pixels, so it is recoloured like anything else and gets the
+      // same role treatment: a neutral mark inverts as text does, a chromatic
+      // one is brand and keeps its hue. Only real colours — `none`, and a
+      // url(#gradient) reference, are not ours to touch.
+      if (element instanceof SVGElement) {
+        const fill = style.fill;
+        if (fill && fill !== 'none' && fill.indexOf('url(') !== 0) {
+          note(fill, 'fill', area, interactive, large, backdrop);
+        }
+        const stroke = style.stroke;
+        if (stroke && stroke !== 'none' && stroke.indexOf('url(') !== 0) {
+          note(stroke, 'stroke', area, interactive, large, backdrop);
+        }
+      }
+
+      // A background image is artwork too, and can be backed the same way —
+      // background-color paints behind background-image, so the plate lands
+      // under it without the artwork being touched. Deferred to after the
+      // measurement, because reading one means loading it.
+      const backgroundURL = firstURL(style.backgroundImage);
+      if (backgroundURL && !window.__glassSeenImages.has(backgroundURL)
+          && backgroundGrounds.length < 8) {
+        window.__glassSeenImages.add(backgroundURL);
+        backgroundGrounds.push({ url: backgroundURL, backdrop: backdrop });
+      }
+
       // Gradients only. A url() is an image, and images are never recoloured.
       const image = style.backgroundImage;
       if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
@@ -151,23 +228,6 @@ enum ThemeBridge {
       }
     }
 
-    // Sample any image that might be a logo.
-    //
-    // Pixels are never altered — this only asks whether the artwork would
-    // survive on a dark page, and the answer, when it is no, is a plate painted
-    // behind it. A 16x16 reduction is plenty for "is this broadly dark ink on
-    // nothing", and keeps the message small.
-    //
-    // getImageData throws for a cross-origin image loaded without CORS, which
-    // is most images on most sites. That is left as a refusal rather than
-    // worked around: an image we cannot inspect is one we leave exactly alone,
-    // which is the safe outcome anyway.
-    if (!window.__glassSeenImages) { window.__glassSeenImages = new Set(); }
-    const sampled = [];
-    const canvas = document.createElement('canvas');
-    canvas.width = 16;
-    canvas.height = 16;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
     const images = document.querySelectorAll('img');
 
     for (let i = 0; i < Math.min(images.length, 40) && sampled.length < 16; i++) {
@@ -182,25 +242,10 @@ enum ThemeBridge {
       if (box.width < 8 || box.height < 8) { continue; }
       if (box.width > 512 || box.height > 512) { continue; }
 
-      let data;
-      try {
-        context.clearRect(0, 0, 16, 16);
-        context.drawImage(image, 0, 0, 16, 16);
-        data = context.getImageData(0, 0, 16, 16).data;
-      } catch (error) {
-        // Tainted canvas. Remember it so we don't try again every sweep.
-        window.__glassSeenImages.add(source);
-        continue;
-      }
-
-      let binary = '';
-      for (let j = 0; j < data.length; j++) { binary += String.fromCharCode(data[j]); }
       window.__glassSeenImages.add(source);
-      sampled.push({
-        key: source,
-        pixels: btoa(binary),
-        backdrop: backdrops.get(image) || ''
-      });
+      const pixels = pixelsOf(image);
+      if (!pixels) { continue; }
+      sampled.push({ key: source, pixels: pixels, backdrop: backdrops.get(image) || '' });
     }
 
     // What the page is actually sitting on, which decides whether it needs us
@@ -216,14 +261,40 @@ enum ThemeBridge {
     // that the site was always dark — it simply sweeps whatever is new.
     const themed = !!document.getElementById('__glass_theme');
 
-    return JSON.stringify({
+    payload = {
       ground: ground || '', themed: themed, ready: true,
       colors: Array.from(found.values()), images: sampled
-    });
+    };
+    deferred = backgroundGrounds;
 
     } finally {
       ourSheets.forEach(function (sheet) { sheet.disabled = false; });
     }
+
+    // Only now is it safe to wait for anything. An await yields to the event
+    // loop, and a frame painted while our styles were switched off would show
+    // the page stripped bare — so every measurement above had to be
+    // synchronous, and loading an image never can be.
+    for (const pending of deferred) {
+      const pixels = await new Promise(function (resolve) {
+        const image = new Image();
+        let settled = false;
+        function finish(value) { if (!settled) { settled = true; resolve(value); } }
+        image.onload = function () { finish(pixelsOf(image)); };
+        image.onerror = function () { finish(null); };
+        // A background that never arrives must not hold the sweep open.
+        setTimeout(function () { finish(null); }, 1200);
+        // Deliberately no crossOrigin: asking for CORS would make a second,
+        // uncached request of every background on the page, and an image we
+        // can't read is one we leave alone anyway.
+        image.src = pending.url;
+      });
+      if (pixels) {
+        payload.images.push({ key: pending.url, pixels: pixels, backdrop: pending.backdrop });
+      }
+    }
+
+    return JSON.stringify(payload);
     """
 
     /// Writes the plan onto the page.
@@ -261,8 +332,12 @@ enum ThemeBridge {
       [data-glass-bd] { border-color: var(--glass-bd) !important; }
       [data-glass-ol] { outline-color: var(--glass-ol) !important; }
       [data-glass-gr] { background-image: var(--glass-gr) !important; }
-      /* Behind the artwork, never over it. The image itself is untouched;
-         its transparent areas simply show this instead of the dark page. */
+      [data-glass-fl] { fill: var(--glass-fl) !important; }
+      [data-glass-st] { stroke: var(--glass-st) !important; }
+      /* Behind the artwork, never over it. The image itself is untouched; its
+         transparent areas simply show this instead of the dark page. Last, so
+         it wins over a background colour on the same element — the plate was
+         computed to make that particular artwork readable. */
       [data-glass-plate] { background-color: var(--glass-plate) !important; }
     }`;
 
@@ -272,6 +347,19 @@ enum ThemeBridge {
       .map(function (id) { const el = document.getElementById(id); return el && el.sheet; })
       .filter(Boolean);
     ourSheets.forEach(function (each) { each.disabled = true; });
+
+    function firstURL(value) {
+      if (!value) { return ''; }
+      const start = value.indexOf('url(');
+      if (start === -1) { return ''; }
+      let inner = value.slice(start + 4);
+      const end = inner.indexOf(')');
+      if (end === -1) { return ''; }
+      inner = inner.slice(0, end).trim();
+      const quote = inner.charAt(0);
+      if (quote === '"' || quote === "'") { inner = inner.slice(1, -1); }
+      return inner;
+    }
 
     function paint(element, attribute, variable, replacement) {
       if (!replacement) { return; }
@@ -295,9 +383,22 @@ enum ThemeBridge {
         paint(element, 'data-glass-ol', '--glass-ol',
               plan['outline|' + style.outlineColor]);
 
+        if (element instanceof SVGElement) {
+          paint(element, 'data-glass-fl', '--glass-fl', plan['fill|' + style.fill]);
+          paint(element, 'data-glass-st', '--glass-st', plan['stroke|' + style.stroke]);
+        }
+
         const image = style.backgroundImage;
-        if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
-          paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
+        if (image && image !== 'none') {
+          if (image.indexOf('gradient(') !== -1) {
+            paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
+          }
+          // A background image gets its plate on the element carrying it,
+          // where background-color already paints underneath the artwork.
+          const backgroundURL = firstURL(image);
+          if (backgroundURL) {
+            paint(element, 'data-glass-plate', '--glass-plate', plates[backgroundURL]);
+          }
         }
       }
     } finally {
@@ -413,9 +514,11 @@ enum ThemeBridge {
     document.getElementById('__glass_theme')?.remove();
     document.getElementById('__glass_preflight')?.remove();
     const attributes = ['data-glass-bg', 'data-glass-fg', 'data-glass-bd',
-                        'data-glass-ol', 'data-glass-gr', 'data-glass-plate'];
+                        'data-glass-ol', 'data-glass-gr', 'data-glass-plate',
+                        'data-glass-fl', 'data-glass-st'];
     const variables = ['--glass-bg', '--glass-fg', '--glass-bd',
-                       '--glass-ol', '--glass-gr', '--glass-plate'];
+                       '--glass-ol', '--glass-gr', '--glass-plate',
+                       '--glass-fl', '--glass-st'];
     for (const attribute of attributes) {
       for (const element of document.querySelectorAll('[' + attribute + ']')) {
         element.removeAttribute(attribute);

@@ -94,10 +94,18 @@ could do, and there is no recovering from a brand mark in the wrong colours.
 That leaves one casualty worth rescuing: artwork drawn as dark ink on
 transparency, which reads on the white page it was made for and disappears on a
 dark one. It gets a plate painted *behind* it instead, so every pixel of the
-artwork stays exactly as its designer drew it. Only that case is touched — an
-opaque image carries its own background and was never at risk, light artwork is
-already visible, and an image that can't be inspected is left alone, because
-the cost of guessing wrong is so much higher than the cost of doing nothing.
+artwork stays exactly as its designer drew it — for an `<img>` and for a CSS
+`background-image` alike, since a background colour paints underneath the
+artwork either way. Only that case is touched: an opaque image carries its own
+background and was never at risk, light artwork is already visible, and an
+image that can't be inspected is left alone, because the cost of guessing wrong
+is so much higher than the cost of doing nothing.
+
+An inline `<svg>` is a different thing wearing the same clothes. It is DOM
+rather than pixels, and it is how most sites now ship their icons, so its paint
+is remapped like any other colour and by the same rules: a neutral mark inverts
+as text does, and a chromatic one is brand and keeps its hue exactly. A black
+chevron comes back light; a green logotype comes back the same green.
 
 A holding colour is painted at document start, before the page's own styles
 arrive, so there is no flash of the light version on the way to the dark one —
