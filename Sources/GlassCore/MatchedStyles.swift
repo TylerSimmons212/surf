@@ -32,6 +32,9 @@ public struct CSSDeclaration: Sendable, Equatable, Identifiable {
     public var value: String
     public var isImportant: Bool
     public var longhands: [String]
+    /// Present only when the value contains a colour, so an ordinary
+    /// declaration costs nothing extra on the wire.
+    public var segments: [CSSValueSegment]
 
     public var id: Int { index }
 
@@ -40,13 +43,15 @@ public struct CSSDeclaration: Sendable, Equatable, Identifiable {
         name: String,
         value: String,
         isImportant: Bool = false,
-        longhands: [String] = []
+        longhands: [String] = [],
+        segments: [CSSValueSegment] = []
     ) {
         self.index = index
         self.name = name
         self.value = value
         self.isImportant = isImportant
         self.longhands = longhands.isEmpty ? [name] : longhands
+        self.segments = segments
     }
 
     public var isCustomProperty: Bool { name.hasPrefix("--") }
@@ -211,4 +216,66 @@ public enum CSSInheritance {
     public static func isInheritable(_ property: String) -> Bool {
         property.hasPrefix("--") || inherited.contains(property)
     }
+}
+
+/// A colour, already resolved to sRGB bytes by the page's own parser.
+///
+/// Resolved there rather than here because the alternative is reimplementing
+/// CSS colour: the 148 named colours, hex in three lengths, two syntaxes each
+/// for `rgb()` and `hsl()` — and that still wouldn't cover `oklch()`, which
+/// Tailwind v4 emits by default, or `color-mix()`, or `light-dark()`.
+public struct CSSColor: Sendable, Equatable {
+    /// 0–255.
+    public var red: Int
+    public var green: Int
+    public var blue: Int
+    /// 0–255, where 255 is opaque.
+    public var alpha: Int
+
+    public init(red: Int, green: Int, blue: Int, alpha: Int = 255) {
+        self.red = min(255, max(0, red))
+        self.green = min(255, max(0, green))
+        self.blue = min(255, max(0, blue))
+        self.alpha = min(255, max(0, alpha))
+    }
+
+    public var isOpaque: Bool { alpha == 255 }
+
+    public var opacity: Double { Double(alpha) / 255 }
+
+    /// `#00aaff`, or `#00aaff80` when it carries alpha.
+    public var hex: String {
+        let base = String(format: "#%02x%02x%02x", red, green, blue)
+        return isOpaque ? base : base + String(format: "%02x", alpha)
+    }
+}
+
+/// One run of a declaration's value, so a colour can be drawn beside the text
+/// that produced it.
+///
+/// Per colour rather than per declaration: `border: 1px solid red` has one and
+/// `linear-gradient(red, blue)` has two, and a single swatch on the front of
+/// either would be answering a different question.
+public struct CSSValueSegment: Sendable, Equatable, Identifiable {
+    public var index: Int
+    public var text: String
+    public var color: CSSColor?
+
+    public var id: Int { index }
+
+    public init(index: Int, text: String, color: CSSColor? = nil) {
+        self.index = index
+        self.text = text
+        self.color = color
+    }
+}
+
+extension CSSDeclaration {
+    /// The value split around the colours in it, or the whole value as one run
+    /// when there are none.
+    public var valueSegments: [CSSValueSegment] {
+        segments.isEmpty ? [CSSValueSegment(index: 0, text: value)] : segments
+    }
+
+    public var hasColor: Bool { segments.contains { $0.color != nil } }
 }

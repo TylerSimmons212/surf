@@ -50,6 +50,13 @@
   .btn::before { content: "→"; color: purple; }
 
   .stack .btn.wide { color: rebeccapurple !important; }
+
+  /* Colour swatch cases: modern syntax, alpha, several in one value. */
+  .btn { border: 2px solid oklch(0.65 0.19 24); }
+  .btn { box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25); }
+  .btn { outline-color: color-mix(in oklab, red 40%, blue); }
+  .btn { background-image: linear-gradient(to right, #ff9900, rebeccapurple); }
+  .btn { caret-color: var(--brand); }
 </style>
 </head>
 <body>

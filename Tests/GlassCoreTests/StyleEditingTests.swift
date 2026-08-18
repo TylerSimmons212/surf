@@ -224,3 +224,63 @@ struct CascadeEscalationTests {
         #expect(result.advice.contains("#main .btn"))
     }
 }
+
+@Suite("CSS colour")
+struct CSSColorTests {
+
+    /// The page's own parser answers, so nothing here needs to know the 148
+    /// named colours or what `oklch()` means — only how to read four bytes.
+    @Test("A resolved colour decodes from the page's four bytes")
+    func decode() {
+        let color = CSSWire.decodeColor([0, 170, 255, 255])
+        #expect(color == CSSColor(red: 0, green: 170, blue: 255))
+        #expect(color?.hex == "#00aaff")
+        #expect(color?.isOpaque == true)
+    }
+
+    /// Alpha has to survive, because a swatch for `rgba(0, 0, 0, 0.05)` drawn
+    /// as opaque black is a lie about a value people specifically go looking
+    /// for.
+    @Test("Alpha survives and shows in the hex")
+    func alpha() {
+        let color = CSSWire.decodeColor([0, 0, 0, 128])
+        #expect(color?.isOpaque == false)
+        #expect(color?.hex == "#00000080")
+        #expect((color?.opacity ?? 0) > 0.5 && (color?.opacity ?? 0) < 0.51)
+    }
+
+    @Test("Anything that isn't four numbers is not a colour")
+    func rejectsJunk() {
+        #expect(CSSWire.decodeColor(nil) == nil)
+        #expect(CSSWire.decodeColor([0, 170]) == nil)
+        #expect(CSSWire.decodeColor("red") == nil)
+    }
+
+    /// `border: 1px solid red` is one swatch in the middle of a sentence, not
+    /// a swatch for the whole declaration.
+    @Test("A value splits around the colours inside it")
+    func segments() {
+        let segments = CSSWire.decodeSegments([
+            ["text": "1px solid "],
+            ["text": "red", "rgba": [255, 0, 0, 255]],
+        ])
+        #expect(segments.count == 2)
+        #expect(segments[0].color == nil)
+        #expect(segments[1].color?.hex == "#ff0000")
+    }
+
+    @Test("A value with no colours reads as a single plain run")
+    func noColors() {
+        let declaration = CSSDeclaration(index: 0, name: "padding", value: "8px")
+        #expect(declaration.valueSegments.map(\.text) == ["8px"])
+        #expect(!declaration.hasColor)
+    }
+
+    @Test("Out-of-range bytes are clamped rather than trusted")
+    func clamps() {
+        let color = CSSColor(red: 300, green: -20, blue: 128, alpha: 999)
+        #expect(color.red == 255)
+        #expect(color.green == 0)
+        #expect(color.alpha == 255)
+    }
+}

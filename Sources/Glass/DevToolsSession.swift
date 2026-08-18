@@ -287,6 +287,8 @@ final class DevToolsSession: Identifiable {
     private(set) var styles: ResolvedStyles?
     private(set) var stylePayload: MatchedStylesPayload?
     private(set) var computed: [String: String] = [:]
+    /// Resolved by the page, so `oklch()` and `color-mix()` need no parser here.
+    private(set) var computedColors: [String: CSSColor] = [:]
     private(set) var isLoadingStyles = false
 
     /// Which box the pane is resolving: the element, or one of its
@@ -325,6 +327,7 @@ final class DevToolsSession: Identifiable {
             styles = nil
             stylePayload = nil
             computed = [:]
+            computedColors = [:]
             return
         }
 
@@ -347,6 +350,7 @@ final class DevToolsSession: Identifiable {
             var payload = CSSWire.decodeMatchedStyles(reply)
             payload.rules = reinstateDisabled(payload.rules)
             stylePayload = payload
+            changeset.refreshColors(from: payload.rules)
             // A pseudo-element the previous selection had is very unlikely to
             // exist on this one, and resolving against a box that isn't there
             // shows an empty pane rather than the element's own styles.
@@ -377,6 +381,7 @@ final class DevToolsSession: Identifiable {
               issued == generation, selectedNode == self.selectedNode
         else { return }
         computed = reply["computed"] as? [String: String] ?? [:]
+        computedColors = CSSWire.decodeComputedColors(reply)
     }
 
     /// A `var()` reference resolved to what it actually evaluates to.
@@ -866,6 +871,7 @@ final class DevToolsSession: Identifiable {
         styles = nil
         stylePayload = nil
         computed = [:]
+        computedColors = [:]
         stylePseudo = nil
         // Every rule handle belonged to the old document, and the page has
         // reloaded its own stylesheets — so the edits are gone whether we like

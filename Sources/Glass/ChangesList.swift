@@ -195,6 +195,10 @@ private struct ChangeRow: View {
                 .foregroundStyle(.secondary)
 
             if let updated = change.updated {
+                if let swatch = change.updatedColor {
+                    ColorSwatch(color: swatch)
+                        .padding(.trailing, 3)
+                }
                 Text(updated)
                     .foregroundStyle(ElementsStyle.valueColor)
                 if change.isImportant {

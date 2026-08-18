@@ -589,11 +589,7 @@ private struct DeclarationRow: View {
                         .strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 0.5)
                 }
         } else {
-            Text(declaration.value)
-                .foregroundStyle(valueColor)
-                .strikethrough(isStruck, color: .secondary)
-                .lineLimit(2)
-                .truncationMode(.tail)
+            ColoredValue(declaration: declaration, color: valueColor, isStruck: isStruck)
                 .onTapGesture { beginEditing() }
         }
     }
@@ -829,6 +825,11 @@ private struct ComputedRow: View {
                     .frame(width: 185, alignment: .leading)
                     .lineLimit(1)
                     .truncationMode(.middle)
+
+                if let swatch = session.computedColors[name] {
+                    ColorSwatch(color: swatch)
+                        .padding(.trailing, 3)
+                }
 
                 Text(value)
                     .foregroundStyle(ElementsStyle.valueColor)

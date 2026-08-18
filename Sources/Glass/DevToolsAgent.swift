@@ -316,6 +316,135 @@ enum DevToolsAgent {
         return { ok: true, applied: applied, owner: owner };
       }
 
+      // ---- Colour resolution ----------------------------------------------
+
+      // Asked of the engine rather than parsed by hand.
+      //
+      // A hand-rolled parser would need the 148 named colours, hex in three
+      // lengths, rgb/hsl in two syntaxes each — and would still miss `oklch()`,
+      // which Tailwind v4 now emits by default, and `color-mix()`, and
+      // `light-dark()`. A 1×1 canvas knows all of them, because it is the same
+      // colour parser the page itself uses.
+      let colorCanvas = null;
+      const colorCache = new Map();
+
+      function colorContext() {
+        if (!colorCanvas) {
+          colorCanvas = document.createElement('canvas');
+          colorCanvas.width = 1;
+          colorCanvas.height = 1;
+        }
+        try {
+          return colorCanvas.getContext('2d', { willReadFrequently: true });
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function resolveColor(token, node) {
+        const cached = colorCache.get(token);
+        if (cached !== undefined) { return cached; }
+
+        let result = null;
+        const ctx = colorContext();
+        let text = token;
+
+        // A custom property is a name, not a colour, until it's resolved.
+        if (text.indexOf('var(') === 0 && node) {
+          const close = text.indexOf(')');
+          const name = text.slice(4, close < 0 ? text.length : close).split(',')[0].trim();
+          text = (getComputedStyle(node).getPropertyValue(name) || '').trim();
+        }
+
+        if (ctx && text) {
+          // Two sentinels. An unparseable value leaves `fillStyle` untouched,
+          // so the two answers disagree — which is the only reliable way to
+          // ask the engine "is this a colour?" without a table of your own.
+          ctx.fillStyle = '#000000';
+          ctx.fillStyle = text;
+          const black = ctx.fillStyle;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillStyle = text;
+          if (black === ctx.fillStyle) {
+            // The pixel rather than the string: exact sRGB bytes come back
+            // whatever syntax went in, so nothing here has to know what
+            // `oklch(0.7 0.1 200)` means.
+            ctx.clearRect(0, 0, 1, 1);
+            ctx.fillStyle = text;
+            ctx.fillRect(0, 0, 1, 1);
+            try {
+              const data = ctx.getImageData(0, 0, 1, 1).data;
+              result = [data[0], data[1], data[2], data[3]];
+            } catch (e) { /* tainted canvas, which this one can't be */ }
+          }
+        }
+
+        colorCache.set(token, result);
+        return result;
+      }
+
+      /// Splits a value so each colour in it can be shown next to its swatch.
+      ///
+      /// Per colour, not per declaration: `border: 1px solid red` has one, and
+      /// `linear-gradient(red, blue)` has two, and a single swatch stuck on the
+      /// front of either would be answering a different question.
+      function colorSegments(value, node, depth) {
+        const segments = [];
+        let plain = '';
+        let i = 0;
+
+        function pushPlain() {
+          if (plain) { segments.push({ text: plain }); plain = ''; }
+        }
+
+        while (i < value.length) {
+          const ch = value[i];
+          if (ch !== '#' && !isNameChar(ch)) { plain += ch; i++; continue; }
+
+          let j = ch === '#' ? i + 1 : i;
+          while (j < value.length && isNameChar(value[j])) { j++; }
+          let token = value.slice(i, j);
+          let end = j;
+
+          if (value[j] === '(') {
+            let level = 0;
+            let k = j;
+            for (; k < value.length; k++) {
+              if (value[k] === '(') { level++; }
+              else if (value[k] === ')') { level--; if (level === 0) { k++; break; } }
+            }
+            token = value.slice(i, k);
+            end = k;
+          }
+
+          const rgba = resolveColor(token, node);
+          if (rgba) {
+            pushPlain();
+            segments.push({ text: token, rgba: rgba });
+            i = end;
+            continue;
+          }
+
+          const open = token.indexOf('(');
+          if (open > 0 && depth < 4) {
+            // Not a colour itself, but its arguments might be — a gradient is
+            // the ordinary case, and two swatches is the right answer.
+            plain += token.slice(0, open + 1);
+            pushPlain();
+            const inner = colorSegments(token.slice(open + 1, token.length - 1), node, depth + 1);
+            for (let n = 0; n < inner.length; n++) { segments.push(inner[n]); }
+            plain = ')';
+            i = end;
+            continue;
+          }
+
+          plain += token;
+          i = end;
+        }
+        pushPlain();
+        return segments;
+      }
+
       function isNameChar(ch) {
         return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
           || (ch >= '0' && ch <= '9') || ch === '-' || ch === '_';
@@ -443,7 +572,7 @@ enum DevToolsAgent {
         return result;
       }
 
-      function readDeclarations(style) {
+      function readDeclarations(style, node) {
         const out = [];
         if (!style) { return out; }
         // The authored names in authored order, taken from `cssText` — walking
@@ -462,12 +591,17 @@ enum DevToolsAgent {
             value = pieces[i].slice(colon + 1).replace('!important', '').trim();
           }
           if (value.length > MAX_VALUE) { value = value.slice(0, MAX_VALUE) + '…'; }
-          out.push({
+          const entry = {
             name: name,
             value: value,
             important: style.getPropertyPriority(name) === 'important',
             longhands: longhandsFor(name, value)
-          });
+          };
+          // Carried only when there is one, so an ordinary declaration costs
+          // nothing extra on the wire.
+          const segments = colorSegments(value, node, 0);
+          if (segments.some(function (s) { return !!s.rgba; })) { entry.segments = segments; }
+          out.push(entry);
         }
         return out;
       }
@@ -516,7 +650,7 @@ enum DevToolsAgent {
 
         function visitStyleRule(rule, context) {
           if (rules.length >= MAX_RULES) { return; }
-          const declarations = readDeclarations(rule.style);
+          const declarations = readDeclarations(rule.style, chain[0]);
           const position = order++;
           if (!declarations.length) { return; }
 
@@ -637,7 +771,7 @@ enum DevToolsAgent {
         }
 
         // The style attribute, which behaves as a final layer of its own.
-        const inline = readDeclarations(node.style);
+        const inline = readDeclarations(node.style, node);
         if (inline.length) {
           rules.push({
             // Negative, so an inline block can never collide with a rule id.
@@ -896,11 +1030,20 @@ enum DevToolsAgent {
                 if (!node || node.nodeType !== 1) { return JSON.stringify({ computed: {} }); }
                 const style = getComputedStyle(node);
                 const out = {};
+                const colors = {};
                 for (let i = 0; i < style.length; i++) {
                   const name = style.item(i);
-                  out[name] = style.getPropertyValue(name);
+                  const value = style.getPropertyValue(name);
+                  out[name] = value;
+                  // Computed colours always come back as rgb()/rgba(), so this
+                  // prefilter costs nothing and skips the other three hundred.
+                  if (value.indexOf('rgb') === 0 || value.indexOf('#') === 0
+                      || value.indexOf('color(') === 0) {
+                    const rgba = resolveColor(value, node);
+                    if (rgba) { colors[name] = rgba; }
+                  }
                 }
-                return JSON.stringify({ computed: out });
+                return JSON.stringify({ computed: out, colors: colors });
               }
 
               case 'CSS.setRuleText': {

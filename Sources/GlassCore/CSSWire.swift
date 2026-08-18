@@ -76,6 +76,28 @@ public enum CSSWire {
         )
     }
 
+    /// `[r, g, b, a]`, as the page's own colour parser resolved it.
+    public static func decodeColor(_ value: Any?) -> CSSColor? {
+        guard let parts = value as? [Int], parts.count == 4 else { return nil }
+        return CSSColor(red: parts[0], green: parts[1], blue: parts[2], alpha: parts[3])
+    }
+
+    public static func decodeSegments(_ value: Any?) -> [CSSValueSegment] {
+        guard let raw = value as? [[String: Any]] else { return [] }
+        return raw.enumerated().compactMap { index, entry in
+            guard let text = entry["text"] as? String else { return nil }
+            return CSSValueSegment(
+                index: index, text: text, color: decodeColor(entry["rgba"])
+            )
+        }
+    }
+
+    /// The computed map's colours, by property.
+    public static func decodeComputedColors(_ body: [String: Any]) -> [String: CSSColor] {
+        guard let raw = body["colors"] as? [String: Any] else { return [:] }
+        return raw.compactMapValues { decodeColor($0) }
+    }
+
     public static func decodeDeclarations(_ value: Any?) -> [CSSDeclaration] {
         guard let raw = value as? [[String: Any]] else { return [] }
         return raw.enumerated().compactMap { index, entry in
@@ -88,7 +110,8 @@ public enum CSSWire {
                 // Absent means the page couldn't expand it — a custom property,
                 // or a shorthand the engine doesn't recognise. Standing for
                 // itself is right in both cases.
-                longhands: entry["longhands"] as? [String] ?? [name]
+                longhands: entry["longhands"] as? [String] ?? [name],
+                segments: decodeSegments(entry["segments"])
             )
         }
     }

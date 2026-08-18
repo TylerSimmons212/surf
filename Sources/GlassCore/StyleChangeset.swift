@@ -20,6 +20,9 @@ public struct StyleChange: Sendable, Equatable, Identifiable {
     public var updated: String?
     public var wasImportant: Bool
     public var isImportant: Bool
+    /// Filled in after the edit lands, from what the page resolved the new
+    /// value to — the colour of `oklch(...)` isn't knowable until then.
+    public var updatedColor: CSSColor?
 
     public var id: String { "\(ruleId).\(property)" }
 
@@ -33,7 +36,8 @@ public struct StyleChange: Sendable, Equatable, Identifiable {
         original: String?,
         updated: String?,
         wasImportant: Bool = false,
-        isImportant: Bool = false
+        isImportant: Bool = false,
+        updatedColor: CSSColor? = nil
     ) {
         self.ruleId = ruleId
         self.selector = selector
@@ -45,6 +49,7 @@ public struct StyleChange: Sendable, Equatable, Identifiable {
         self.updated = updated
         self.wasImportant = wasImportant
         self.isImportant = isImportant
+        self.updatedColor = updatedColor
     }
 
     public enum Kind: Sendable, Equatable {
@@ -117,6 +122,22 @@ public struct StyleChangeset: Sendable, Equatable {
         }
         if entries[merged.id] == nil { order.append(merged.id) }
         entries[merged.id] = merged
+    }
+
+    /// Picks up the colours the page resolved for the new values.
+    ///
+    /// A separate pass because the answer doesn't exist at the moment of the
+    /// edit: what `oklch(0.7 0.1 200)` looks like is known only once the engine
+    /// has been handed it.
+    public mutating func refreshColors(from rules: [MatchedRule]) {
+        for rule in rules {
+            for declaration in rule.declarations {
+                let key = "\(rule.id).\(declaration.name)"
+                guard var change = entries[key] else { continue }
+                change.updatedColor = declaration.segments.compactMap(\.color).first
+                entries[key] = change
+            }
+        }
     }
 
     /// Forgets everything about one rule — what reverting it means.
