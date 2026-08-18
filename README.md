@@ -277,7 +277,20 @@ announce themselves as bait, and only where the page never assigns them, because
 `typeof jQuery === 'undefined'` is how a page decides whether to load jQuery and
 answering that one would leave it calling methods on nothing.
 
-The second is a window opened by the click that plays the video. A player can be
+The second is a sheet laid over the player to catch the click meant for it —
+unnamed, empty, transparent, and stacked above the player's own controls. The
+viewer aims at play, hits that instead, and gets a window; it then gets out of
+the way so the second click works, which is exactly why it reads as "I pressed
+play and an ad opened". What identifies it is the combination, and above all
+the last part: a player has no reason to cover its own controls. Its own layers
+are named — `fp-ui`, `fp-ui-block` — because its own code has to find them
+again, where this one is anonymous because nothing ever will. It is made
+transparent to the pointer rather than removed, because removing an element a
+player put there is a guess about someone else's code, while this changes
+nothing except who receives the click — and the click was always meant for the
+player.
+
+The third is a window opened by the click that plays the video. A player can be
 configured to open one — the destination sits in the page, beside the video's own
 settings — so every defence that reasons about gestures is defeated by design:
 the gesture is real, and it is the one the viewer made. Checking the destination

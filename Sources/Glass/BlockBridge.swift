@@ -265,6 +265,88 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
+      // The layer over the play button.
+      //
+      // A transparent sheet covering the player, stacked above the player's own
+      // controls, catching the click meant for the video. The viewer aims at
+      // play, hits this, and gets a window — which is what "I clicked play and
+      // it opened an ad" actually is.
+      //
+      // It is made transparent to the pointer rather than removed. Removing an
+      // element a player put there is a guess about someone else's code; this
+      // changes nothing except who receives the click, and the click was always
+      // meant for the player.
+
+      const TRAP_COVERAGE = \(AntiAdblock.clickTrapCoverage);
+      const SMALLEST_PLAYER = \(Int(AntiAdblock.smallestPlayer));
+
+      function isTransparent(style) {
+        if (style.backgroundImage !== 'none') { return false; }
+        const colour = style.backgroundColor || '';
+        return colour === 'transparent' || colour === 'rgba(0, 0, 0, 0)' || colour === '';
+      }
+
+      function untrapPlayers() {
+        let videos;
+        try { videos = document.querySelectorAll('video'); } catch (error) { return; }
+
+        for (let v = 0; v < videos.length; v++) {
+          const video = videos[v];
+
+          // The *outermost* player element, not the nearest one. `closest`
+          // stops at the first match, which on a real player is the inner
+          // wrapper holding the video — and the sheet is laid one level above
+          // that, as a sibling of it, precisely where a search from the inner
+          // wrapper can never look.
+          let container = null;
+          let node = video.parentElement;
+          while (node && node !== document.body && node !== document.documentElement) {
+            try { if (node.matches(PLAYER_PARTS)) { container = node; } }
+            catch (error) { /* a selector this engine dislikes */ }
+            node = node.parentElement;
+          }
+          if (!container) { container = video.parentElement; }
+          if (!container) { continue; }
+
+          // Measured against the video rather than against the container. An
+          // outer wrapper can be far larger than the picture, and a sheet that
+          // covers the picture is covering the player whatever else it does or
+          // doesn't reach.
+          const player = video.getBoundingClientRect();
+          if (player.width < SMALLEST_PLAYER || player.height < SMALLEST_PLAYER) { continue; }
+          const area = player.width * player.height;
+
+          let candidates;
+          try { candidates = container.querySelectorAll('div,a,span'); } catch (error) { continue; }
+
+          for (let i = 0; i < candidates.length; i++) {
+            const element = candidates[i];
+            if (element.hasAttribute('data-glass-untrapped')) { continue; }
+            // Named elements belong to the player: its own code has to find
+            // them again. This one is anonymous because nothing ever will.
+            if (element.id) { continue; }
+            const className = typeof element.className === 'string' ? element.className : '';
+            if (className.trim()) { continue; }
+            // Empty. A layer with anything in it is showing something.
+            if (element.children.length || (element.textContent || '').trim()) { continue; }
+
+            let style;
+            try { style = getComputedStyle(element); } catch (error) { continue; }
+            if (style.position !== 'absolute' && style.position !== 'fixed') { continue; }
+            if (style.display === 'none' || style.visibility === 'hidden') { continue; }
+            if (style.pointerEvents === 'none') { continue; }
+            if (!isTransparent(style)) { continue; }
+
+            const box = element.getBoundingClientRect();
+            if (box.width * box.height < area * TRAP_COVERAGE) { continue; }
+
+            element.style.setProperty('pointer-events', 'none', 'important');
+            element.setAttribute('data-glass-untrapped', '');
+          }
+        }
+      }
+
+      // ------------------------------------------------------------------
       // The variable a page checks for instead of asking.
       //
       // A page cannot ask whether a request was blocked, so it loads a script
@@ -443,7 +525,14 @@ enum BlockBridge {
       let sweepTimer = null;
       function scheduleSweep() {
         if (sweepTimer) { return; }
-        sweepTimer = setTimeout(() => { sweepTimer = null; sweepSlots(); }, 400);
+        sweepTimer = setTimeout(() => {
+          sweepTimer = null;
+          sweepSlots();
+          // The trap is laid once the player has built itself, and laid again
+          // if it is taken away, so it is looked for on every sweep rather
+          // than once at load.
+          untrapPlayers();
+        }, 400);
       }
 
       // Before `load`, which is when these checks are wired up, and again after
@@ -451,10 +540,12 @@ enum BlockBridge {
       document.addEventListener('DOMContentLoaded', function () {
         sweepMarkupScripts();
         answerBaitChecks();
+        untrapPlayers();
         scheduleSweep();
       }, true);
       window.addEventListener('load', function () {
         answerBaitChecks();
+        untrapPlayers();
         scheduleSweep();
       }, true);
       try {

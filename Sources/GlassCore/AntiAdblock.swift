@@ -104,4 +104,34 @@ public enum AntiAdblock {
     public static var playerSelectorsJS: String {
         "'" + playerSelectors.joined(separator: ",") + "'"
     }
+
+    // MARK: - The layer over the play button
+
+    /// A transparent sheet laid over a video player to catch the click meant
+    /// for it.
+    ///
+    /// ```html
+    /// <div style="inset:0; position:absolute; z-index:171; background:none"></div>
+    /// ```
+    ///
+    /// Unnamed, empty, invisible, and stacked above the player's own controls.
+    /// The viewer aims at play and hits this instead, which opens a window and
+    /// then gets out of the way so the second click works — which is exactly why
+    /// it reads as "I clicked play and got an ad".
+    ///
+    /// What identifies it is not any one of those properties but the
+    /// combination, and above all the last one: a player has no reason to cover
+    /// its own controls. Its own overlays are named — `fp-ui`, `fp-ui-block` —
+    /// because its own code has to find them, where this one is anonymous
+    /// because nothing needs to refer to it again.
+    ///
+    /// The answer is to stop it *receiving* clicks rather than to remove it.
+    /// Removing an element a player put there is a guess about someone else's
+    /// code; making it transparent to the pointer changes nothing except who
+    /// gets the click, and the click was always meant for the player.
+    public static let clickTrapCoverage = 0.8
+
+    /// Below this a player is a thumbnail or a hidden pre-roll frame, and an
+    /// overlay on it isn't worth reasoning about.
+    public static let smallestPlayer = 120.0
 }
