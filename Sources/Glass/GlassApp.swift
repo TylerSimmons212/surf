@@ -12,6 +12,12 @@ struct GlassApp: App {
     init() {
         // Must precede BrowserSession, which consults these on construction.
         PrivacySettings.registerDefaults()
+
+        // Also before the session, and for a sharper reason: the session may
+        // start loading a page the moment it exists, and rules that arrive
+        // after the first request arrive too late for it.
+        ContentBlocker.shared.prepare()
+
         _session = State(initialValue: BrowserSession())
     }
 

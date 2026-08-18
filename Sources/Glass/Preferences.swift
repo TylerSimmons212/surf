@@ -14,6 +14,10 @@ enum PreferenceKeys {
     static let autoPopOutVideo = "autoPopOutVideo"
     static let appearanceMode = "appearanceMode"
     static let synthesizeTheme = "synthesizeTheme"
+    static let blockAds = "blockAds"
+    /// When the filter list was last checked. Not a setting either, and here
+    /// for the same reason as the one below it.
+    static let lastFilterListCheck = "lastFilterListCheck"
     /// When the helper binaries were last checked for updates. Not a setting —
     /// there is no UI for it — but it lives here so the key isn't a literal
     /// buried in `UpdateManager`.
@@ -36,6 +40,10 @@ extension PrivacySettings {
             // Off by default while it's new: restyling a site is a far bigger
             // intervention than telling it which scheme we want.
             PreferenceKeys.synthesizeTheme: false,
+            // On, unlike the theme switch above it. Blocking removes requests
+            // the user never asked to make; restyling redraws a page its
+            // authors did draw. Only one of those needs asking first.
+            PreferenceKeys.blockAds: true,
         ])
     }
 

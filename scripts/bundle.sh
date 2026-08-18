@@ -52,6 +52,45 @@ if [ -f "$YTDLP_CACHE" ]; then
     chmod +x "$APP/Contents/Resources/yt-dlp"
 fi
 
+# EasyList and EasyPrivacy, so a fresh install blocks on its first page rather
+# than after its first weekly check. Refreshed in place from then on, into
+# Application Support — these copies are only ever the floor.
+#
+# Not pinned or checksummed, unlike yt-dlp above, and the difference is what the
+# payload is. yt-dlp is an executable Glass runs; these are filter rules Glass
+# parses into declarative form for WebKit to match URLs against, with no path
+# from them into Glass or into a page. Their publisher issues no checksums, so
+# what stands in for one is the same check the runtime update makes: each list
+# has to convert to tens of thousands of usable rules.
+for LIST in easylist easyprivacy; do
+    LIST_CACHE="$ROOT/.build/vendor/$LIST.txt"
+
+    if [ ! -f "$LIST_CACHE" ]; then
+        mkdir -p "$(dirname "$LIST_CACHE")"
+        echo "Fetching $LIST…"
+        if curl -fsSL --retry 2 -o "$LIST_CACHE.tmp" "https://easylist.to/easylist/$LIST.txt"; then
+            # A filter list is mostly rules. An error page is not.
+            RULES=$(grep -c '^[^!#[:space:]]' "$LIST_CACHE.tmp" || true)
+            if [ "${RULES:-0}" -ge 5000 ]; then
+                mv "$LIST_CACHE.tmp" "$LIST_CACHE"
+            else
+                rm -f "$LIST_CACHE.tmp"
+                echo "error: $LIST download isn't a usable filter list — refusing to bundle it." >&2
+                exit 1
+            fi
+        else
+            rm -f "$LIST_CACHE.tmp"
+            # Not fatal, for the same reason as yt-dlp: Glass fetches its own
+            # copy on first launch, and a build shouldn't need network.
+            echo "warning: couldn't fetch $LIST — blocking starts after the first update." >&2
+        fi
+    fi
+
+    if [ -f "$LIST_CACHE" ]; then
+        cp "$LIST_CACHE" "$APP/Contents/Resources/$LIST.txt"
+    fi
+done
+
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

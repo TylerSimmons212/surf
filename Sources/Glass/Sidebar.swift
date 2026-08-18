@@ -162,6 +162,8 @@ private struct SidebarNavigationBar: View {
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
 
+            BlockButton(session: session, hold: hold)
+
             DownloadsButton(session: session, hold: hold)
 
             IconButton(

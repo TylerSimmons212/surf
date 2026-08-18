@@ -15,6 +15,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
     @AppStorage(PreferenceKeys.appearanceMode) private var appearanceMode = AppearanceMode.default
     @AppStorage(PreferenceKeys.synthesizeTheme) private var synthesizeTheme = false
+    @AppStorage(PreferenceKeys.blockAds) private var blockAds = true
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
@@ -71,6 +72,35 @@ struct SettingsView: View {
                 """, isCaveat: true)
             } header: {
                 Text("Appearance")
+            }
+
+            Section {
+                Toggle("Block ads and trackers", isOn: $blockAds)
+                    .onChange(of: blockAds) { _, _ in
+                        // Every open tab picks this up where it stands. A
+                        // setting that needs a reload to be believed reads as
+                        // broken.
+                        ContentBlocker.shared.enabledDidChange()
+                    }
+                explain("""
+                On by default. Requests to ad and tracking domains are refused \
+                before they leave your Mac, using \(FilterList.displayName) — the \
+                two filter lists most ad blockers are built on. The shield in \
+                the sidebar lists what was blocked on the page you're looking \
+                at, and lets you add anything else it contacted.
+                """)
+                explain("""
+                Some sites break when their ad code can't load. The same shield \
+                pauses blocking for that site alone, and leaves it on everywhere else.
+                """, isCaveat: true)
+                if ContentBlocker.shared.blockedDomainCount > 0 {
+                    explain("""
+                    \(ContentBlocker.shared.blockedDomainCount.formatted()) known ad and \
+                    tracking domains blocked, refreshed weekly.
+                    """)
+                }
+            } header: {
+                Text("Content Blocking")
             }
 
             Section {

@@ -146,6 +146,133 @@ signals — a meta tag, a `prefers-color-scheme` rule — say what a site claims
 reading what it painted says what it did, and cross-origin stylesheets can't
 hide it.
 
+### Blocking
+
+Ads and trackers are blocked by default. The rules are WebKit's own content
+blockers — the same mechanism Safari extensions use — which match in the network
+process, so a blocked request is never made rather than made and discarded, and
+no script on the page can be first past the post.
+
+The lists are EasyList and EasyPrivacy — the first is about advertising, the
+second about tracking, and a page can be free of ads while still reporting
+everything you do on it to a dozen people. Both are published in Adblock Plus
+filter syntax and converted here, which is the part Glass used to borrow.
+EasyList's publisher does build a WebKit version of that one list, and taking it
+worked until the second list made it untenable: EasyPrivacy is published in
+filter syntax only, and carrying one list through a converter and the other
+around it would mean two sets of rules behaving differently for reasons nobody
+could see. Converting also fixed what borrowing had cost — their rules are
+host-exact, so `||adnxs.com^` came out matching `adnxs.com` and not the
+`ib.adnxs.com` the ads actually come from.
+
+Between them the two lists convert to about 132,000 rules naming 88,000 domains,
+with 1.3% of EasyList and 0.2% of EasyPrivacy left behind as unconvertible.
+Copies are bundled so a fresh install blocks on its first page, and they refresh
+weekly into Application Support from then on.
+
+There is no checksum to verify a list against — the publisher issues none — so
+the guarantee comes from what the payload *is*. It is filter syntax, never code:
+it is parsed into declarative rules that WebKit compiles and matches URLs
+against, and there is no path from it into Glass or into a page. What's left to
+guard is a truncated download or a captive portal's sign-in page arriving with a
+200 and quietly replacing a working list with nothing, and that is what
+converting it and counting what came out catches. A list that produces less than
+a real list's worth of rules is refused before it is installed, and the previous
+one stays in force.
+
+The two syntaxes don't fully meet, and the gap is handled in one direction only.
+A **block** rule that can't be expressed is dropped, and the cost is one ad
+getting through — the state the browser was in a moment ago. An **exception** is
+the dangerous one, because dropping it leaves a site blocked that the list says
+shouldn't be, so an exception is only ever dropped when its whole effect is on
+element hiding and never when it would leave a request refused. What's left out
+is counted rather than guessed at.
+
+Order matters more than it looks: WebKit applies rules in sequence and
+`ignore-previous-rules` cancels only what came *before* it, so every exception in
+a list is emitted after every block in it. An exception written above the block
+it exists to override does nothing at all.
+
+A few translations carry the weight. `||host^` becomes a filter with a subdomain
+group, which is what reaches `ib.adnxs.com` from a rule naming `adnxs.com`, and
+it ends at a boundary rather than at the host, or `||example.com^` would also
+match `example.community`. A rule with no type option is held away from
+top-level documents — Adblock Plus's own default, and the difference between an
+ad filter and a list that can block a site the user typed the address of. Regex
+literals are refused outright: WebKit's engine is a subset of the one they were
+written for, and a rule it rejects fails the entire list's compile, taking every
+other rule with it.
+
+The shield in the sidebar carries the count for the page and opens the list
+behind it, in two parts. **Blocked** is what was refused, grouped by site with
+what each was doing and which rule caught it. **Also contacted** is every other
+third party the page reached, each with a button that blocks it everywhere —
+which is the half that makes the panel worth opening twice. A site that breaks
+under blocking is fixed by the switch in the panel's header, which pauses that
+site alone and leaves it on everywhere else.
+
+Blocking the request is only half of a blocked ad. A page reserves the space
+before it knows what will fill it — a banner slot is a container given a height
+and nothing else — so refusing the ad leaves the reservation standing and the
+reader gets a blank band where the ad was. Blocked, but not gone.
+
+So the space is reclaimed too, by two passes that are deliberately timid. A
+subresource that failed is a box that will never be filled, and it is hidden
+outright along with any wrapper left holding space for it and nothing else. A
+slot that never requested anything — which is what happens when the script that
+would have filled it was itself blocked — is found by name instead, and only
+collapses when all three of a name that marks it as an ad container, a real
+height held open, and nothing visible inside are true at once. Names are matched
+as whole words, because a class called `download` contains "ad" and names
+nothing of the sort.
+
+What that second pass does is stop the container *reserving* space rather than
+hide it. `display: none` is a decision that can't be walked back if the site
+fills the slot a second later, while a container no longer holding a height open
+collapses while it's empty and grows again when something real arrives — which
+is what makes a heuristic safe enough to run at all. An ad slot that fills with
+something legitimate keeps its space; a heading, a download panel, and anything
+else with content in it is never touched.
+
+Assembling that list is the awkward part, because WebKit blocks the requests and
+then says nothing about it. The `notify` action that would report a match is
+private API, and `decidePolicyFor` is only ever called for frame navigations —
+it never sees an image, a script, or a beacon, which between them are the whole
+subject. So the panel can't be a readout of WebKit's decisions and is built from
+the page's own account instead, out of two sources that can't overlap: Resource
+Timing reports everything that completed, and the failure handlers report what
+didn't. The difference between them is the shape of what blocking did.
+
+Which rule caught a request is known from the conversion, and only rules that
+block a domain outright name one. A rule against one path on a shared host —
+`googleapis.com/dfh/`, on a host that also serves half the web's fonts — names a
+domain that isn't blocked, and treating it as one would turn every unrelated
+failure there into a reported block. Requests caught only by a path rule are
+therefore blocked correctly and go unnamed: the panel undercounts rather than
+inventing, and what it does name, it names correctly.
+
+One rule settles the disagreements: a request seen to complete was not blocked,
+whatever the filters say. The page's evidence outranks ours, which keeps a
+cached response from being reported as a block — and means pausing a site needs
+no special case anywhere in the panel, since with the rules off those requests
+simply load and are reported as contacted.
+
+Third-party is judged against the address in the address bar, not the frame that
+reported it, or an ad frame's own tracker would count as the ad's first party.
+Your own block rules are third-party only for the same reason in reverse: a rule
+that fired on the site you're actually on would take the page down along with
+the ad on it.
+
+Two lists are compiled rather than one, and the split is about time. EasyList is
+around forty-six thousand rules and compiling it costs seconds; your own rules
+are a handful and compile instantly. Sharing a list would mean recompiling
+EasyList to add one line, and the Block button would feel broken. The allowlist
+has to be in both, because `ignore-previous-rules` only cancels rules earlier in
+its own list and can't reach across into another — which is why pausing a site
+is the one action that pays the slow compile. Each compiled list is cached under
+a hash of the rules it was built from, so a list that hasn't changed since the
+last launch is never compiled twice.
+
 ### Privacy
 
 Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
@@ -286,6 +413,23 @@ makes it unit-testable — the UI targets can't be.
   cookies, and runs the process
 - `Sources/Glass/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
+- `Sources/GlassCore/BlockDomains.swift` — registrable domains, third-party, and
+  set matching that can't be fooled by a suffix
+- `Sources/GlassCore/FilterList.swift` — which lists are carried, and what makes
+  a payload one
+- `Sources/GlassCore/FilterConverter.swift` — Adblock Plus filter syntax into
+  WebKit's rules, and which way it fails when the two don't meet
+- `Sources/GlassCore/UserBlockRules.swift` — the user's two decisions and the
+  rules they compile to
+- `Sources/GlassCore/BlockLog.swift` — what a page requested, what caught it,
+  and how it groups
+- `Sources/Glass/ContentBlocker.swift` — compiles the rule lists, keeps the list
+  current, applies both to every tab
+- `Sources/GlassCore/AdSlots.swift` — what names an ad container, and what has
+  to be true before its space is reclaimed
+- `Sources/Glass/BlockBridge.swift` — the page-side account of what was
+  requested, and the two passes that close the hole a blocked ad leaves
+- `Sources/Glass/BlockPanel.swift` — the shield and the list behind it
 - `Sources/GlassCore/MediaSource.swift` — file vs manifest vs `blob:` classification
 - `Sources/GlassCore/YTDLP.swift` — its arguments, progress parsing, and cookie file
 - `Sources/GlassCore/ComponentUpdate.swift` — version comparison, scheduling, and

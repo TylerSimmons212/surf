@@ -36,6 +36,11 @@ final class Tab: NSObject, Identifiable {
     /// still shows in the player rather than vanishing mid-track.
     private(set) var media: MediaState?
 
+    /// What this page was seen to request, and which of it was blocked. Emptied
+    /// at every commit: the panel answers a question about the page on screen,
+    /// and a running total across a session is a number nobody can act on.
+    private(set) var blockLog = BlockLog()
+
     /// The colour at the top of the page, used to tint the title strip so the
     /// window chrome belongs to the site rather than sitting apart from it.
     ///
@@ -106,6 +111,12 @@ final class Tab: NSObject, Identifiable {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.appearanceSettingsChanged() }
         }
+
+        blockingObserver = NotificationCenter.default.addObserver(
+            forName: .glassBlockingChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.blockingRulesChanged() }
+        }
     }
 
     /// Builds the web view and everything that hangs off it.
@@ -138,6 +149,11 @@ final class Tab: NSObject, Identifiable {
 
         liveWebView = created
 
+        // Before anything can be loaded into it. A view that starts a page load
+        // and gains its rules afterwards has already let the first wave of
+        // requests through, which is the wave the ads are in.
+        ContentBlocker.shared.apply(to: config)
+
         installMediaBridge()
         observeWebViewState()
 
@@ -149,6 +165,7 @@ final class Tab: NSObject, Identifiable {
     }
 
     @ObservationIgnored private var appearanceObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var blockingObserver: (any NSObjectProtocol)?
 
     /// The page's address as a string.
     ///
@@ -251,6 +268,10 @@ final class Tab: NSObject, Identifiable {
             contentWorld: .defaultClient,
             name: ThemeBridge.handlerName
         )
+
+        controller.removeScriptMessageHandler(forName: BlockBridge.handlerName)
+        controller.add(WeakScriptMessageProxy(target: self), name: BlockBridge.handlerName)
+
         installUserScripts()
     }
 
@@ -272,6 +293,20 @@ final class Tab: NSObject, Identifiable {
                 in: .page
             )
         )
+
+        if ContentBlocker.isEnabled {
+            controller.addUserScript(
+                WKUserScript(
+                    source: BlockBridge.script,
+                    injectionTime: .atDocumentStart,
+                    // Every frame: a third-party iframe is where much of an ad
+                    // stack does its work, and a panel blind to it would report
+                    // one request where a page made forty.
+                    forMainFrameOnly: false,
+                    in: .page
+                )
+            )
+        }
 
         guard ThemePreferences.isEnabled else {
             webView.underPageBackgroundColor = nil
@@ -311,6 +346,42 @@ final class Tab: NSObject, Identifiable {
         } else {
             revertTheme()
         }
+    }
+
+    /// Folds a batch of the page's requests into the tally.
+    ///
+    /// Judged against the *main frame's* host, not the frame the report came
+    /// from. Third-party is a statement about the site the user believes they
+    /// are on, and measuring it per frame would rule that an ad frame's own
+    /// tracker is first-party to the ad.
+    private func recordRequests(_ records: [RequestRecord]) {
+        guard !records.isEmpty, let pageHost = liveWebView?.url?.host else { return }
+        let classifier = ContentBlocker.shared.classifier
+
+        // Folded into a copy and written back once. `blockLog` is observed by
+        // the panel, and a busy page would otherwise redraw it per request.
+        var log = blockLog
+        var changed = false
+        for record in records {
+            guard let host = DomainName.host(ofURL: record.url) else { continue }
+            let verdict = classifier.verdict(forHost: host, pageHost: pageHost)
+            if log.record(record, verdict: verdict, host: host) { changed = true }
+        }
+        guard changed else { return }
+        blockLog = log
+        debugLog("blocked \(log.blockedCount) from \(log.blocked.count), \(log.allowed.count) contacted")
+    }
+
+    /// The rules changed, or blocking was switched on or off.
+    ///
+    /// Applied to the tab as it stands rather than on its next navigation: a
+    /// setting that needs a reload to be believed reads as broken. The requests
+    /// a page already made are already made — what changes is everything from
+    /// here on, and a reload makes it total.
+    private func blockingRulesChanged() {
+        guard isLive else { return }
+        ContentBlocker.shared.apply(to: webView.configuration)
+        installUserScripts()
     }
 
     /// The page has changed under us — content revealed on scroll, a lazily
@@ -425,8 +496,11 @@ final class Tab: NSObject, Identifiable {
         live.removeFromSuperview()
         live.configuration.userContentController
             .removeScriptMessageHandler(forName: MediaBridge.handlerName)
+        live.configuration.userContentController
+            .removeScriptMessageHandler(forName: BlockBridge.handlerName)
 
         media = nil
+        blockLog = BlockLog()
 
         Task { @MainActor in
             // Pause first for an immediate stop, then navigate away to tear the
@@ -1114,6 +1188,13 @@ final class Tab: NSObject, Identifiable {
 
 extension Tab: WKNavigationDelegate {
 
+    /// The new document is in place and its first requests are about to run.
+    /// Main frame only, so a third-party iframe committing mid-page doesn't
+    /// wipe the tally of what put it there.
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        if !blockLog.isEmpty { blockLog = BlockLog() }
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
         invalidateInteractionState()
@@ -1201,6 +1282,8 @@ extension Tab: WKScriptMessageHandler {
                 guard let state = MediaBridge.decode(body) else { return }
                 // Media that never started isn't worth showing in the player.
                 if state.isPlaying || media != nil { media = state }
+            case BlockBridge.handlerName:
+                recordRequests(BlockBridge.decode(body))
             case ThemeBridge.handlerName:
                 pageDidMutate()
             default:
@@ -1239,11 +1322,4 @@ extension Tab: WKUIDelegate {
 /// Two decimal places, for log lines where more would be noise.
 private func rounded(_ value: Double) -> String {
     String((value * 100).rounded() / 100)
-}
-
-/// stderr, so it survives output redirection unbuffered. Gated on the dev
-/// `GLASS_URL` env var.
-private func debugLog(_ message: String) {
-    guard ProcessInfo.processInfo.environment["GLASS_URL"] != nil else { return }
-    fputs("[glass] \(message)\n", stderr)
 }
