@@ -89,14 +89,19 @@ Gradients move as one body rather than stop by stop: transforming each stop
 alone reverses the direction the light falls from, which reads as broken rather
 than as dark.
 
-Images are left alone, with one exception narrow enough to be safe: a mark
-carrying **no colour at all** is inverted, so a black wordmark drawn for a white
-page comes back white rather than invisible. There is no hue to shift and no
-brand to mangle, and a filter touches only the pixels already being drawn — so
-transparency stays transparent and no box appears around the artwork. Anything
-with real colour in it is left exactly as it was, even where that leaves it
-dim: Wikipedia's wordmark carries a blue badge beside its black letters, and
-inverting that would turn the badge orange.
+Images are left alone unless a mark on transparency would be lost on the new
+background — a logo drawn for a white page, invisible on a dark one. Then it is
+inverted, which touches only the pixels already being drawn: transparency stays
+transparent, and no box appears around the artwork.
+
+Colourless marks flip outright, since there is no hue to lose. Marks carrying
+colour flip their lightness while *holding* their hue, through a colour matrix
+rather than the usual `invert(1) hue-rotate(180deg)` — that shorthand is a
+linear approximation which drifts, and light blue reliably comes out brown. So
+Wikipedia's wordmark comes back with white letters beside a lighter blue badge,
+where plain inversion would have made the badge orange. Anything already
+legible is left untouched: a logo that reads is not improved by being turned
+inside out.
 
 Colourlessness is judged per pixel and weighted by alpha. A logo of a red
 circle beside a green one averages to grey and would fool any test of its mean;

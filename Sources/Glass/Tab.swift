@@ -532,6 +532,7 @@ final class Tab: NSObject, Identifiable {
         // A black wordmark becomes a white one — what its designers drew for
         // their own dark mode — and there is no hue to lose by flipping it.
         var inverts: [String: String] = [:]
+        var hueInverts: [String: String] = [:]
         for reading in survey.images {
             guard let data = Data(base64Encoded: reading.pixels),
                   let verdict = ImageAnalysis.verdict(rgba: [UInt8](data))
@@ -550,14 +551,21 @@ final class Tab: NSObject, Identifiable {
                 return plan.pageBackground.rgb
             }()
 
-            if ImageAnalysis.shouldInvert(verdict, on: surface) { inverts[reading.key] = "1" }
+            if ImageAnalysis.shouldInvert(verdict, on: surface) {
+                inverts[reading.key] = "1"
+            } else if ImageAnalysis.shouldInvertPreservingHue(verdict, on: surface) {
+                hueInverts[reading.key] = "1"
+            }
         }
 
-        if !inverts.isEmpty {
-            debugLog("theme: inverting \(inverts.count) colourless mark(s)")
+        if !inverts.isEmpty || !hueInverts.isEmpty {
+            debugLog("""
+                theme: inverting \(inverts.count) colourless and \
+                \(hueInverts.count) coloured mark(s)
+                """)
         }
 
-        guard !plan.isEmpty || !inverts.isEmpty else {
+        guard !plan.isEmpty || !inverts.isEmpty || !hueInverts.isEmpty else {
             debugLog("theme: nothing to change — left alone")
             _ = try? await webView.callAsyncJavaScript(
                 ThemeBridge.dismissPreflightScript,
@@ -571,6 +579,7 @@ final class Tab: NSObject, Identifiable {
             arguments: [
                 "plan": plan.replacements,
                 "inverts": inverts,
+                "hueInverts": hueInverts,
                 "ground": plan.pageBackground.css,
                 "scheme": target.rawValue,
             ],

@@ -106,6 +106,27 @@ public enum ImageAnalysis {
         )
     }
 
+    /// Whether a mark carrying colour would be lost on the given surface.
+    ///
+    /// The rescue for these is an inversion that holds hue rather than a plain
+    /// one. Plain inversion is what makes automatic dark modes infamous: it
+    /// takes a complement, so Wikipedia's blue badge would arrive orange and a
+    /// green logotype pink. The hue-preserving form flips lightness and leaves
+    /// the hue where it was — `#0e65c0` becomes a lighter blue rather than
+    /// another colour entirely.
+    ///
+    /// Still only for marks on transparency, and still only when they would
+    /// otherwise be lost. A logo that reads perfectly well is not improved by
+    /// being turned inside out.
+    public static func shouldInvertPreservingHue(
+        _ verdict: ImageVerdict, on surface: SRGB
+    ) -> Bool {
+        guard verdict.hasTransparency, !verdict.isAchromatic else { return false }
+        return !Contrast.isLegible(
+            .nonText, foreground: verdict.artwork, background: surface
+        )
+    }
+
     /// Whether this mark would be lost on the given surface, and can be
     /// inverted without losing anything.
     ///

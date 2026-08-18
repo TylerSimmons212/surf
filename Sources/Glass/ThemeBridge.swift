@@ -307,6 +307,12 @@ enum ThemeBridge {
          A filter touches the pixels already being drawn and leaves
          transparency transparent — no box appears around the artwork. */
       img[data-glass-invert] { filter: invert(1) brightness(0.92) !important; }
+      /* A mark that does carry colour flips its lightness while holding its
+         hue. Plain inversion takes the complement, which is what turns a blue
+         badge orange and a green logotype pink. */
+      img[data-glass-invert-hue] {
+        filter: url(#glass-hue-invert) brightness(0.92) !important;
+      }
     }`;
 
     window.__glassSheets = [];
@@ -319,6 +325,37 @@ enum ThemeBridge {
       }
     }
 
+    // The hue-preserving inversion, as a real colour matrix.
+    //
+    // `invert(1) hue-rotate(180deg)` is the usual shorthand for this and is a
+    // linear approximation that drifts — light blue reliably comes out brown.
+    // This is the exact form: each row sums to about -1 with a +1 offset, so
+    // lightness flips while hue stays put. sRGB interpolation is explicit
+    // because the default is linearRGB, which would give a different answer.
+    function ensureFilters(target) {
+      if (target.getElementById('__glass_filters')) { return; }
+      const NS = 'http://www.w3.org/2000/svg';
+      const holder = target.createElementNS(NS, 'svg');
+      holder.id = '__glass_filters';
+      holder.setAttribute('width', '0');
+      holder.setAttribute('height', '0');
+      holder.setAttribute('aria-hidden', 'true');
+      holder.style.position = 'absolute';
+      const filter = target.createElementNS(NS, 'filter');
+      filter.id = 'glass-hue-invert';
+      filter.setAttribute('color-interpolation-filters', 'sRGB');
+      const matrix = target.createElementNS(NS, 'feColorMatrix');
+      matrix.setAttribute('type', 'matrix');
+      matrix.setAttribute('values',
+        '0.333 -0.667 -0.667 0 1 ' +
+        '-0.667 0.333 -0.667 0 1 ' +
+        '-0.667 -0.667 0.333 0 1 ' +
+        '0 0 0 1 0');
+      filter.appendChild(matrix);
+      holder.appendChild(filter);
+      target.documentElement.appendChild(holder);
+    }
+
     function styleDocument(target) {
       let element = target.getElementById('__glass_theme');
       if (!element) {
@@ -328,6 +365,7 @@ enum ThemeBridge {
       }
       element.textContent = RULES;
       register(element.sheet);
+      ensureFilters(target);
     }
 
     // A shadow root is styled by adoption rather than injection: encapsulation
@@ -389,8 +427,24 @@ enum ThemeBridge {
           paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
         }
 
-        if (element.localName === 'img' && inverts[element.currentSrc || element.src]) {
-          element.setAttribute('data-glass-invert', '');
+        if (element.localName === 'img') {
+          const source = element.currentSrc || element.src;
+          if (inverts[source]) {
+            element.setAttribute('data-glass-invert', '');
+          } else if (hueInverts[source]) {
+            // A filter referenced by url(#id) resolves against the document, so
+            // it is only offered where that reference can be trusted: not from
+            // inside a shadow tree, whose fragments resolve in their own scope,
+            // and not on a page carrying a <base>, which would send the lookup
+            // to another URL entirely. Where it can't be trusted the mark is
+            // left as it is, which is the safe half of the trade.
+            const owner = element.ownerDocument;
+            const inShadow = !!(element.getRootNode() && element.getRootNode().host);
+            if (!inShadow && owner.getElementById('glass-hue-invert')
+                && !owner.querySelector('base')) {
+              element.setAttribute('data-glass-invert-hue', '');
+            }
+          }
         }
       }, function (root) {
         // A tree discovered on the way: give it the rules, or nothing marked
@@ -497,9 +551,11 @@ enum ThemeBridge {
     window.__glassSeenImages = null;
     document.getElementById('__glass_theme')?.remove();
     document.getElementById('__glass_preflight')?.remove();
+    document.getElementById('__glass_filters')?.remove();
     const attributes = ['data-glass-bg', 'data-glass-fg', 'data-glass-bd',
                         'data-glass-ol', 'data-glass-gr',
-                        'data-glass-fl', 'data-glass-st', 'data-glass-invert'];
+                        'data-glass-fl', 'data-glass-st', 'data-glass-invert',
+                        'data-glass-invert-hue'];
     const variables = ['--glass-bg', '--glass-fg', '--glass-bd',
                        '--glass-ol', '--glass-gr',
                        '--glass-fl', '--glass-st'];

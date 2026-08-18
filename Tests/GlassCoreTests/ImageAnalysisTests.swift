@@ -138,3 +138,59 @@ struct SamplingRobustnessTests {
         #expect(!ImageAnalysis.shouldInvert(verdict, on: SRGB(hex: "#0d0d0d")!))
     }
 }
+
+@Suite("Mixed marks")
+struct MixedMarkTests {
+
+    private let darkSurface = SRGB(hex: "#0d0d0d")!
+
+    /// A mark of black letters beside a coloured badge — Wikipedia's wordmark.
+    private func mixedMark() -> [UInt8] {
+        var bytes: [UInt8] = []
+        for _ in 0..<50 { bytes += [0, 0, 0, 255] }          // #000 letters
+        for _ in 0..<20 { bytes += [14, 101, 192, 255] }     // #0e65c0 badge
+        for _ in 0..<60 { bytes += [0, 0, 0, 0] }            // transparency
+        return bytes
+    }
+
+    @Test("A mark with colour in it takes the hue-preserving path, not the plain one")
+    func mixedTakesHuePath() {
+        let verdict = ImageAnalysis.verdict(rgba: mixedMark())!
+        #expect(verdict.hasTransparency)
+        #expect(!verdict.isAchromatic)
+        // Not the plain inversion — that is what would turn the badge orange.
+        #expect(!ImageAnalysis.shouldInvert(verdict, on: darkSurface))
+        #expect(ImageAnalysis.shouldInvertPreservingHue(verdict, on: darkSurface))
+    }
+
+    @Test("The two paths never both claim the same mark")
+    func pathsAreExclusive() {
+        let colourless = ImageAnalysis.verdict(
+            rgba: [17, 17, 17, 255, 17, 17, 17, 255, 0, 0, 0, 0, 0, 0, 0, 0])!
+        let mixed = ImageAnalysis.verdict(rgba: mixedMark())!
+        for verdict in [colourless, mixed] {
+            let plain = ImageAnalysis.shouldInvert(verdict, on: darkSurface)
+            let hue = ImageAnalysis.shouldInvertPreservingHue(verdict, on: darkSurface)
+            #expect(!(plain && hue))
+        }
+    }
+
+    @Test("A coloured mark that already reads is left alone")
+    func visibleColouredMarksUntouched() {
+        // Bright brand colour on a dark page needs no rescue, and turning it
+        // inside out would be pure damage.
+        var bytes: [UInt8] = []
+        for _ in 0..<40 { bytes += [29, 185, 84, 255] }
+        for _ in 0..<60 { bytes += [0, 0, 0, 0] }
+        let verdict = ImageAnalysis.verdict(rgba: bytes)!
+        #expect(!ImageAnalysis.shouldInvertPreservingHue(verdict, on: darkSurface))
+    }
+
+    @Test("An opaque coloured image is never touched")
+    func opaqueUntouched() {
+        var bytes: [UInt8] = []
+        for _ in 0..<100 { bytes += [14, 101, 192, 255] }
+        let verdict = ImageAnalysis.verdict(rgba: bytes)!
+        #expect(!ImageAnalysis.shouldInvertPreservingHue(verdict, on: darkSurface))
+    }
+}
