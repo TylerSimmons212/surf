@@ -363,13 +363,20 @@ enum ConsoleStyle {
     /// read as data, numbers as quantities, and `null`/`undefined` recede.
     static func valueColor(for object: RemoteObject) -> Color {
         switch object.type {
-        case .string: .init(red: 0.78, green: 0.28, blue: 0.24)
-        case .number, .bigint: .init(red: 0.15, green: 0.35, blue: 0.75)
-        case .boolean: .init(red: 0.45, green: 0.25, blue: 0.70)
-        case .undefined: .secondary
-        case .function: .init(red: 0.30, green: 0.45, blue: 0.30)
-        case .symbol: .purple
-        case .object: object.subtype == .null ? .secondary : .primary
+        case .string:
+            DevToolsTheme.adaptive(light: (0.78, 0.28, 0.24), dark: (0.95, 0.55, 0.50))
+        case .number, .bigint:
+            DevToolsTheme.adaptive(light: (0.15, 0.35, 0.75), dark: (0.55, 0.75, 1.00))
+        case .boolean:
+            DevToolsTheme.adaptive(light: (0.45, 0.25, 0.70), dark: (0.78, 0.62, 0.95))
+        case .undefined:
+            .secondary
+        case .function:
+            DevToolsTheme.adaptive(light: (0.30, 0.45, 0.30), dark: (0.60, 0.85, 0.60))
+        case .symbol:
+            DevToolsTheme.adaptive(light: (0.55, 0.20, 0.60), dark: (0.85, 0.60, 0.90))
+        case .object:
+            object.subtype == .null ? .secondary : .primary
         }
     }
 

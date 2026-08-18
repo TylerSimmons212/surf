@@ -1,3 +1,4 @@
+import AppKit
 import GlassCore
 import SwiftUI
 
@@ -49,4 +50,19 @@ enum DevToolsTheme {
     /// Row striping for what you typed, so the conversation is legible at a
     /// glance without colour doing the work.
     static let inputFill2 = Color.primary.opacity(0.04)
+
+    // MARK: - Syntax colour
+
+    /// A colour that answers differently in light and dark.
+    ///
+    /// Syntax palettes do not survive being inverted: a green picked to read
+    /// against white is muddy against near-black, and a purple dark enough to
+    /// be legible on paper disappears entirely. Each of these is chosen twice.
+    static func adaptive(light: (Double, Double, Double), dark: (Double, Double, Double)) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            let (r, g, b) = isDark ? dark : light
+            return NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
+        })
+    }
 }

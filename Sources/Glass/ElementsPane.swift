@@ -13,7 +13,17 @@ struct ElementsPane: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
-            tree
+
+            // A real split rather than a fixed proportion: how much tree
+            // against how much detail depends entirely on what you're doing,
+            // and VSplitView gives a draggable divider that remembers itself.
+            VSplitView {
+                tree
+                    .frame(minHeight: 120)
+                ElementDetail(session: session)
+                    .frame(minHeight: 100)
+            }
+
             if !session.breadcrumb.isEmpty { Divider() }
             breadcrumb
         }
@@ -332,9 +342,15 @@ private struct DOMRowView: View {
 }
 
 enum ElementsStyle {
-    static let tagColor = Color(red: 0.51, green: 0.24, blue: 0.62)
-    static let attributeColor = Color(red: 0.76, green: 0.42, blue: 0.16)
-    static let valueColor = Color(red: 0.14, green: 0.43, blue: 0.24)
+    static let tagColor = DevToolsTheme.adaptive(
+        light: (0.51, 0.24, 0.62), dark: (0.78, 0.57, 0.92)
+    )
+    static let attributeColor = DevToolsTheme.adaptive(
+        light: (0.76, 0.42, 0.16), dark: (0.98, 0.76, 0.42)
+    )
+    static let valueColor = DevToolsTheme.adaptive(
+        light: (0.14, 0.43, 0.24), dark: (0.60, 0.85, 0.52)
+    )
     static let comment = Color.secondary
     static let text = Color.primary
 
