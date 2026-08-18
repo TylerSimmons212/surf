@@ -168,6 +168,7 @@ struct ContentView: View {
             session: session,
             isPinned: $isPinned,
             isFloating: isFloating,
+            lightsRevealed: areLightsRevealed,
             hold: sidebarHold
         )
     }

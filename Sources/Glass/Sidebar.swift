@@ -19,10 +19,12 @@ struct Sidebar: View {
     let session: BrowserSession
     @Binding var isPinned: Bool
     /// Floating mode draws its own material panel; pinned sits on the window's
-    /// glass. Also shifts the top inset: with the title strip gone, the sidebar
-    /// is what has to keep clear of the traffic lights, and the floating panel
-    /// starts lower down to begin with.
+    /// glass. Also shifts the top inset: the floating panel already starts
+    /// below the traffic lights' row, so it has less of it left to clear.
     let isFloating: Bool
+    /// Whether the traffic lights are currently overlaying the window's corner
+    /// — which is this panel's corner too, whenever it's pinned.
+    let lightsRevealed: Bool
     /// Lets the sidebar's own transient UI keep it on screen.
     let hold: SidebarHold
 
@@ -37,15 +39,26 @@ struct Sidebar: View {
     /// How far the floating panel is held off the top of the window.
     static let floatingTopPadding: CGFloat = 4
 
-    /// Reserves the traffic lights' row inside the sidebar — and *only* inside
-    /// it, which is the whole point of removing the title strip: the page runs
-    /// full height, while the one surface the lights can actually collide with
-    /// steps out of their way.
+    /// Steps out of the traffic lights' way — but only while they're actually
+    /// there.
+    ///
+    /// Holding this space permanently rebuilds, inside the sidebar, exactly the
+    /// dead strip that removing the title bar was meant to reclaim: the lights
+    /// are hidden almost all of the time, so almost all of the time it reserved
+    /// room for nothing.
+    ///
+    /// A pinned panel is the case that needs it, since it's on screen no matter
+    /// what the pointer is doing and the lights can appear right on top of its
+    /// back and forward buttons. A floating panel is nearly always spared by
+    /// arbitration — it holds the corner while the pointer is inside it, so the
+    /// lights don't reveal — and this only covers the moment one is animating
+    /// out as the other fades in.
     ///
     /// Measured from the window's top edge, so the floating panel subtracts the
     /// gap it's already sitting below.
     private var topInset: CGFloat {
-        ChromeReveal.lightsRowHeight - (isFloating ? Sidebar.floatingTopPadding : 0)
+        guard lightsRevealed else { return 0 }
+        return ChromeReveal.lightsRowHeight - (isFloating ? Sidebar.floatingTopPadding : 0)
     }
 
     var body: some View {
@@ -55,6 +68,9 @@ struct Sidebar: View {
             SidebarMediaSection(session: session)
         }
         .padding(.top, topInset)
+        // Matched to the lights' own fade, so the room appears as they do
+        // rather than as a separate jolt just after them.
+        .animation(.easeOut(duration: 0.18), value: topInset)
         .frame(width: Sidebar.width)
     }
 
