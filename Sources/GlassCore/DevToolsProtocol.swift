@@ -22,6 +22,7 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domRequestChildNodes = "DOM.requestChildNodes"
     case domGetBoxModel = "DOM.getBoxModel"
     case domScrollIntoView = "DOM.scrollIntoView"
+    case domGetOuterHTML = "DOM.getOuterHTML"
     case domWatch = "DOM.watch"
     case domPathToNode = "DOM.pathToNode"
     case domAck = "DOM.ack"
@@ -89,7 +90,7 @@ extension DevToolsMethod {
         switch self {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
-             .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
+             .domScrollIntoView, .domGetOuterHTML, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
              .cssAddRecoveredSheet, .cssFindRules,
              .storageRead, .storageWrite, .storageRemove,

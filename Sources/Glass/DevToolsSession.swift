@@ -262,6 +262,20 @@ final class DevToolsSession: Identifiable {
         selectedBox = DOMWire.decodeBox(reply["box"])
     }
 
+    /// The element's markup as the page currently holds it, children and all.
+    ///
+    /// Asked of the page rather than rebuilt from the tree here. The tree is
+    /// filled a level at a time as nodes are opened, so a node's children may
+    /// never have been fetched — and rebuilding from what *has* been fetched
+    /// would quietly hand back a truncated element that looks complete.
+    func outerHTML(of id: DOMNodeID) async -> String? {
+        guard let reply = try? await bridge.call(.domGetOuterHTML, ["nodeId": id]),
+              let html = reply["html"] as? String,
+              !html.isEmpty
+        else { return nil }
+        return html
+    }
+
     func scrollPageTo(_ id: DOMNodeID) {
         bridge.send(.domScrollIntoView, ["nodeId": id])
         Task { @MainActor in

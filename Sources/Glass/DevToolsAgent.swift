@@ -1203,6 +1203,28 @@ enum DevToolsAgent {
                 return JSON.stringify({ box: boxModel(node) });
               }
 
+              // The element as it stands, children and all.
+              //
+              // Read from the page rather than rebuilt from the tree on this
+              // side, for two reasons: the tree is loaded lazily, so a node's
+              // children may never have been fetched, and what the page holds is
+              // the live DOM — including anything a script has changed since the
+              // markup was parsed, which is usually the whole reason someone is
+              // copying it.
+              case 'DOM.getOuterHTML': {
+                const node = nodeFor(params && params.nodeId);
+                if (!node) { return JSON.stringify({ html: '' }); }
+                let html = '';
+                try {
+                  // Element nodes carry outerHTML. Text and comment nodes do
+                  // not, and for those the node's own data is the whole of it.
+                  html = typeof node.outerHTML === 'string'
+                    ? node.outerHTML
+                    : (node.nodeValue || node.textContent || '');
+                } catch (error) { html = ''; }
+                return JSON.stringify({ html: html });
+              }
+
               case 'DOM.scrollIntoView': {
                 const node = nodeFor(params && params.nodeId);
                 if (node && node.scrollIntoView) {
