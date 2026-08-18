@@ -15,6 +15,7 @@ enum PreferenceKeys {
     static let appearanceMode = "appearanceMode"
     static let synthesizeTheme = "synthesizeTheme"
     static let blockAds = "blockAds"
+    static let hideAdContainers = "hideAdContainers"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"
@@ -44,6 +45,9 @@ extension PrivacySettings {
             // the user never asked to make; restyling redraws a page its
             // authors did draw. Only one of those needs asking first.
             PreferenceKeys.blockAds: true,
+            // On: an emptied ad container still occupies the page, and hiding
+            // it is most of what makes a blocked page look unblocked.
+            PreferenceKeys.hideAdContainers: true,
         ])
     }
 

@@ -26,6 +26,14 @@ public enum FilterConverter {
     public struct Result: Sendable, Equatable {
         /// Rule objects, already encoded, in the order WebKit must see them.
         public var rules: [String]
+        /// The same list with the element-hiding rules left out.
+        ///
+        /// Hiding an ad container is the one thing a blocker does that a page
+        /// can see from the inside: it puts an element on the page, measures it,
+        /// and knows. Some players do exactly that and stop playing when the
+        /// measurement comes back wrong — so this variant exists to keep
+        /// refusing the requests while giving them nothing to measure.
+        public var networkOnlyRules: [String]
         /// Domains blocked outright, for naming what the panel caught.
         public var blockedDomains: Set<String>
         public var converted: Int
@@ -106,6 +114,7 @@ public enum FilterConverter {
 
     public static func convert(_ text: String) -> Result {
         var blocks: [String] = []
+        var cosmetics: [String] = []
         var exceptions: [String] = []
         var domains: Set<String> = []
         var skipped = 0
@@ -120,6 +129,8 @@ public enum FilterConverter {
             case .block(let rule, let domain):
                 blocks.append(rule)
                 if let domain { domains.insert(domain) }
+            case .cosmetic(let rule):
+                cosmetics.append(rule)
             case .exception(let rule):
                 exceptions.append(rule)
             case .ignored:
@@ -134,9 +145,10 @@ public enum FilterConverter {
         // what came *before* it. An exception emitted above the block it exists
         // to override does nothing at all.
         return Result(
-            rules: blocks + exceptions,
+            rules: blocks + cosmetics + exceptions,
+            networkOnlyRules: blocks + exceptions,
             blockedDomains: domains,
-            converted: blocks.count + exceptions.count,
+            converted: blocks.count + cosmetics.count + exceptions.count,
             skipped: skipped
         )
     }
@@ -144,6 +156,9 @@ public enum FilterConverter {
     enum Parsed {
         /// A rule, and the domain it blocks outright if it blocks one.
         case block(String, domain: String?)
+        /// An element-hiding rule, kept apart because it is the half a page can
+        /// detect.
+        case cosmetic(String)
         case exception(String)
         /// Deliberately not carried, and not counted against the list.
         case ignored
@@ -470,7 +485,7 @@ public enum FilterConverter {
             trigger: trigger,
             action: Action(type: "css-display-none", selector: selector)
         ) else { return .unsupported }
-        return .block(encoded, domain: nil)
+        return .cosmetic(encoded)
     }
 
     // MARK: - Encoding

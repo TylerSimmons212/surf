@@ -250,7 +250,16 @@ to hold together — no title, nothing readable in the body, and several refused
 requests — and only ever on a tab a page opened. A tab you opened stays open
 however empty it is, because you opened it.
 
-Some pages check anyway, and two of the ways they check are worth naming because
+There is a third way a page can check, and it is the one Glass can least argue
+with: hiding is the only thing a blocker does that a site can *see from the
+inside*. A player puts an element on its own page, measures it, finds it hidden,
+and stops playing — and it is right, in the sense that the measurement is
+correct. So element hiding can be switched off on its own, in Settings, without
+giving up a single refused request. The lists are compiled a second way with the
+hiding rules left out, the space an ad would have taken is still reclaimed, and
+the page has nothing left to measure.
+
+Some pages check less directly, and two of those ways are worth naming because
 between them they account for a video that starts and then stops.
 
 The first is a bait variable. A page cannot ask whether a request was blocked,

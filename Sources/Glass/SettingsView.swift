@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.appearanceMode) private var appearanceMode = AppearanceMode.default
     @AppStorage(PreferenceKeys.synthesizeTheme) private var synthesizeTheme = false
     @AppStorage(PreferenceKeys.blockAds) private var blockAds = true
+    @AppStorage(PreferenceKeys.hideAdContainers) private var hideAdContainers = true
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
@@ -92,6 +93,25 @@ struct SettingsView: View {
                 explain("""
                 Some sites break when their ad code can't load. The same shield \
                 pauses blocking for that site alone, and leaves it on everywhere else.
+                """, isCaveat: true)
+
+                Toggle("Hide leftover ad containers", isOn: $hideAdContainers)
+                    .disabled(!blockAds)
+                    .onChange(of: hideAdContainers) { _, _ in
+                        ContentBlocker.shared.hidingDidChange()
+                    }
+                explain("""
+                On by default. With an ad refused, the empty frame it would have \
+                filled is hidden too, which is most of what makes a blocked page \
+                look like a page rather than a page with holes in it.
+                """)
+                explain("""
+                Hiding is also the one thing a blocker does that a site can see \
+                from the inside: it puts an element on its own page, measures it, \
+                and knows. A few video players do exactly that and stop playing \
+                when the measurement comes back wrong. Turn this off and they \
+                have nothing to measure — every ad request is still refused, and \
+                the space is still reclaimed, but nothing is hidden outright.
                 """, isCaveat: true)
                 if ContentBlocker.shared.blockedDomainCount > 0 {
                     explain("""

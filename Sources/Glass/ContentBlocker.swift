@@ -78,6 +78,22 @@ final class ContentBlocker {
         directory.appendingPathComponent("\(source.id).rules.json")
     }
 
+    /// The same list without the element-hiding half.
+    private static func networkOnlyURL(_ source: FilterListSource) -> URL {
+        directory.appendingPathComponent("\(source.id).nohide.json")
+    }
+
+    /// Whether leftover ad containers are hidden as well as emptied.
+    ///
+    /// On by default. Off is for the sites that measure their own page to find
+    /// out whether they are being blocked — a player that puts an element on the
+    /// page, measures it, and stops playing when the answer is wrong. Turning
+    /// this off gives them nothing to measure while every request is still
+    /// refused.
+    static var hidesAdContainers: Bool {
+        UserDefaults.standard.bool(forKey: PreferenceKeys.hideAdContainers)
+    }
+
     private static func domainsURL(_ source: FilterListSource) -> URL {
         directory.appendingPathComponent("\(source.id).domains.txt")
     }
@@ -97,7 +113,8 @@ final class ContentBlocker {
     /// The converted rules and their domains, converting first if that hasn't
     /// happened yet. Runs off the main actor: this is the expensive call.
     private static func converted(_ source: FilterListSource) async -> (Data, Set<String>)? {
-        if let rules = try? Data(contentsOf: rulesURL(source)),
+        let wanted = hidesAdContainers ? rulesURL(source) : networkOnlyURL(source)
+        if let rules = try? Data(contentsOf: wanted),
            let domainText = try? String(contentsOf: domainsURL(source), encoding: .utf8) {
             let domains = Set(domainText.split(separator: "\n").map(String.init))
             return (rules, domains)
@@ -111,13 +128,18 @@ final class ContentBlocker {
     private static func convertAndStore(
         _ published: Data, for source: FilterListSource
     ) async -> (Data, Set<String>)? {
-        let outcome = await Task.detached(priority: .utility) { () -> (Data, Set<String>, Int, Int)? in
+        let outcome = await Task.detached(priority: .utility) {
+            () -> (Data, Data, Set<String>, Int, Int)? in
             guard let text = String(data: published, encoding: .utf8) else { return nil }
             let result = FilterConverter.convert(text)
             guard result.converted >= source.minimumRuleCount,
-                  let json = ContentRuleJSON.list(result.rules)
+                  let json = ContentRuleJSON.list(result.rules),
+                  let networkOnly = ContentRuleJSON.list(result.networkOnlyRules)
             else { return nil }
-            return (Data(json.utf8), result.blockedDomains, result.converted, result.skipped)
+            return (
+                Data(json.utf8), Data(networkOnly.utf8),
+                result.blockedDomains, result.converted, result.skipped
+            )
         }.value
 
         guard let outcome else {
@@ -125,16 +147,17 @@ final class ContentBlocker {
             return nil
         }
 
-        debugLog("\(source.name): \(outcome.2) rules converted, \(outcome.3) skipped")
+        debugLog("\(source.name): \(outcome.3) rules converted, \(outcome.4) skipped")
 
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true
         )
         try? outcome.0.write(to: rulesURL(source), options: .atomic)
-        try? Data(outcome.1.sorted().joined(separator: "\n").utf8)
+        try? outcome.1.write(to: networkOnlyURL(source), options: .atomic)
+        try? Data(outcome.2.sorted().joined(separator: "\n").utf8)
             .write(to: domainsURL(source), options: .atomic)
 
-        return (outcome.0, outcome.1)
+        return (hidesAdContainers ? outcome.0 : outcome.1, outcome.2)
     }
 
     private static func loadUserRules() -> UserBlockRules {
@@ -375,6 +398,12 @@ final class ContentBlocker {
     /// but every tab has to be told to add or drop them.
     func enabledDidChange() {
         NotificationCenter.default.post(name: .glassBlockingChanged, object: nil)
+    }
+
+    /// Element hiding was turned on or off. This one does recompile, because it
+    /// is a different set of rules rather than the same set applied differently.
+    func hidingDidChange() {
+        Task { await compile() }
     }
 
     // MARK: - Updating

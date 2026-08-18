@@ -8,6 +8,7 @@ struct FilterConverterTests {
     private func rule(_ filter: String) -> String? {
         switch FilterConverter.parse(filter) {
         case .block(let rule, _): rule
+        case .cosmetic(let rule): rule
         case .exception(let rule): rule
         case .ignored, .unsupported: nil
         }
@@ -362,5 +363,44 @@ struct AntiAdblockTests {
             #expect(AntiAdblock.baitPrefixesJSArray.contains("'\(prefix)'"))
         }
         #expect(AntiAdblock.playerSelectorsJS.contains("video"))
+    }
+}
+
+@Suite("Element hiding, kept separable")
+struct NetworkOnlyVariantTests {
+
+    private let list = """
+    ||ads.example^
+    ##.advert
+    news.test##.sponsored
+    @@||good.example^$document
+    """
+
+    @Test("The full list carries the hiding rules")
+    func fullList() {
+        let result = FilterConverter.convert(list)
+        #expect(result.rules.count == 4)
+        #expect(result.rules.filter { $0.contains("css-display-none") }.count == 2)
+    }
+
+    @Test("The network-only variant carries none of them")
+    func networkOnly() {
+        // Hiding is the one thing a blocker does that a page can measure from
+        // the inside, so it has to be droppable on its own — without giving up
+        // a single refused request.
+        let result = FilterConverter.convert(list)
+        #expect(result.networkOnlyRules.count == 2)
+        #expect(!result.networkOnlyRules.contains { $0.contains("css-display-none") })
+        #expect(result.networkOnlyRules.contains { $0.contains(#""type":"block""#) })
+        #expect(result.networkOnlyRules.contains { $0.contains("ignore-previous-rules") })
+    }
+
+    @Test("Exceptions stay last in both")
+    func orderingHolds() {
+        // ignore-previous-rules cancels only what precedes it, and dropping the
+        // middle section must not disturb that.
+        let result = FilterConverter.convert(list)
+        #expect(result.rules.last?.contains("ignore-previous-rules") == true)
+        #expect(result.networkOnlyRules.last?.contains("ignore-previous-rules") == true)
     }
 }
