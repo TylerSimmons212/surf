@@ -91,6 +91,14 @@ than imposing it: backgrounds go transparent so everything shows the one dark
 ground beneath, which leaves overlays overlaying instead of turning them into
 opaque blocks.
 
+Pages don't hold still, so the theme is swept again whenever one changes under
+it — a section revealed on scroll, a lazily loaded list, a subtree re-rendered
+with our properties torn off, a sticky header that turns opaque. Each sweep
+switches our own styles off before reading, so what it sees is always the
+site's palette rather than the last answer we gave: that is what lets an
+element whose colour changed *in place* be noticed at all, and it means a sweep
+can be repeated safely rather than having to skip whatever it already touched.
+
 Which sites need this is measured rather than asked. A page is examined after
 it paints, and one already showing the requested scheme is left alone. Declared
 signals — a meta tag, a `prefers-color-scheme` rule — say what a site claims;

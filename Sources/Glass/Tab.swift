@@ -176,6 +176,18 @@ final class Tab: NSObject, Identifiable {
         // this handler; adding a duplicate name throws.
         controller.removeScriptMessageHandler(forName: MediaBridge.handlerName)
         controller.add(WeakScriptMessageProxy(target: self), name: MediaBridge.handlerName)
+
+        // The theme runs in an isolated world, so its channel has to be
+        // registered for that world specifically — a handler added for the page
+        // world simply isn't there when the observer reaches for it.
+        controller.removeScriptMessageHandler(
+            forName: ThemeBridge.handlerName, contentWorld: .defaultClient
+        )
+        controller.add(
+            WeakScriptMessageProxy(target: self),
+            contentWorld: .defaultClient,
+            name: ThemeBridge.handlerName
+        )
         installUserScripts()
     }
 
@@ -227,6 +239,20 @@ final class Tab: NSObject, Identifiable {
         } else {
             revertTheme()
         }
+    }
+
+    /// The page has changed under us — content revealed on scroll, a lazily
+    /// loaded section, a subtree re-rendered — and wants sweeping again.
+    private func pageDidMutate() {
+        guard ThemePreferences.isEnabled else { return }
+        guard themeSweeps < Self.maxThemeSweeps else {
+            if themeSweeps == Self.maxThemeSweeps {
+                themeSweeps += 1  // so this is said once, not on every mutation
+                debugLog("theme: sweep limit reached — leaving later content alone")
+            }
+            return
+        }
+        scheduleThemeSynthesis()
     }
 
     /// Puts the page back exactly as its authors drew it.
@@ -399,6 +425,16 @@ final class Tab: NSObject, Identifiable {
     /// no theme, reports itself unthemed, and the ground is derived afresh.
     @ObservationIgnored private var establishedGround: CSSColor?
 
+    /// How many times this page has been swept.
+    ///
+    /// A page that rewrites itself in response to being rewritten would
+    /// otherwise sweep forever. The observer is disconnected while we write, so
+    /// this should never be reached in practice — it is the backstop for the
+    /// page that manages it anyway, and it fails by leaving late content
+    /// untouched rather than by spinning.
+    @ObservationIgnored private var themeSweeps = 0
+    private static let maxThemeSweeps = 60
+
     /// Restyles a page that doesn't offer the scheme the user asked for.
     ///
     /// Debounced, and cancelled on every navigation: a page mid-load reports
@@ -516,6 +552,7 @@ final class Tab: NSObject, Identifiable {
             """)
 
         establishedGround = plan.pageBackground
+        themeSweeps += 1
 
         // Public API, and the fix for the white band that rubber-band scrolling
         // would otherwise reveal under a darkened page.
@@ -757,6 +794,8 @@ extension Tab: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         lastError = nil
         session?.scheduleSave()
+        // A new document gets its own sweep budget.
+        themeSweeps = 0
         Task { await refreshFavicon() }
         scheduleTopColorSampling()
         scheduleThemeSynthesis()
@@ -830,12 +869,19 @@ extension Tab: WKScriptMessageHandler {
         _ controller: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        guard message.name == MediaBridge.handlerName else { return }
+        let name = message.name
         let body = message.body
         MainActor.assumeIsolated {
-            guard let state = MediaBridge.decode(body) else { return }
-            // Media that never started isn't worth showing in the player.
-            if state.isPlaying || media != nil { media = state }
+            switch name {
+            case MediaBridge.handlerName:
+                guard let state = MediaBridge.decode(body) else { return }
+                // Media that never started isn't worth showing in the player.
+                if state.isPlaying || media != nil { media = state }
+            case ThemeBridge.handlerName:
+                pageDidMutate()
+            default:
+                break
+            }
         }
     }
 }

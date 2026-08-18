@@ -14,6 +14,9 @@ import WebKit
 /// site's own scripts.
 enum ThemeBridge {
 
+    /// The channel the page uses to say it has changed under us.
+    static let handlerName = "glassTheme"
+
     /// How many elements are examined. A long article can run to tens of
     /// thousands of nodes and the colours stop being new long before that;
     /// this is a ceiling on the cost, not a sample of the page.
@@ -38,17 +41,24 @@ enum ThemeBridge {
       return JSON.stringify({ ground: '', themed: false, ready: false, colors: [] });
     }
 
-    // Measuring through our own holding colour would only measure the holding
-    // colour — the page would look dark, be declared already dark, and be left
-    // alone in a scheme it never had. So the preflight is switched off for the
-    // duration of the read.
+    // Measuring through our own paint would only measure our own paint, so both
+    // the holding colour and the theme itself are switched off for the read.
+    //
+    // This is what makes a page re-readable. Once a colour is overridden,
+    // getComputedStyle returns the value *we* wrote, and the author's is no
+    // longer observable — so a second look would either transform our own
+    // output again or have to skip everything it had already touched. Skipping
+    // is what a reveal-on-scroll page punishes: an element whose colour changes
+    // underneath us has already been marked, so it would keep the answer for a
+    // colour it no longer has.
     //
     // Safe because nothing paints in the middle of a script turn: the browser
-    // renders between turns, not during one, so the page is never shown without
-    // it. `getComputedStyle` still forces the recalc we need, synchronously.
-    const preflight = document.getElementById('__glass_preflight');
-    const preflightSheet = preflight ? preflight.sheet : null;
-    if (preflightSheet) { preflightSheet.disabled = true; }
+    // renders between turns, not during one, so the page is never shown
+    // unstyled. getComputedStyle still forces the recalc, synchronously.
+    const ourSheets = ['__glass_preflight', '__glass_theme']
+      .map(function (id) { const el = document.getElementById(id); return el && el.sheet; })
+      .filter(Boolean);
+    ourSheets.forEach(function (sheet) { sheet.disabled = true; });
 
     try {
 
@@ -108,30 +118,18 @@ enum ThemeBridge {
 
       const backdrop = backdropFor(element, style.backgroundColor);
 
-      // A property we have already overridden now reports *our* colour.
-      // Reading it back would transform it a second time and undo the work, so
-      // anything already marked is skipped rather than re-measured.
-      if (!element.hasAttribute('data-glass-bg')) {
-        note(style.backgroundColor, 'background', area, interactive, large, '');
-      }
-      if (!element.hasAttribute('data-glass-fg')) {
-        note(style.color, 'text', area, interactive, large, backdrop);
-      }
-      if (!element.hasAttribute('data-glass-bd')) {
-        note(style.borderTopColor, 'border', area, interactive, large, backdrop);
-        note(style.borderBottomColor, 'border', area, interactive, large, backdrop);
-        note(style.borderLeftColor, 'border', area, interactive, large, backdrop);
-        note(style.borderRightColor, 'border', area, interactive, large, backdrop);
-      }
-      if (!element.hasAttribute('data-glass-ol')) {
-        note(style.outlineColor, 'outline', area, interactive, large, backdrop);
-      }
+      note(style.backgroundColor, 'background', area, interactive, large, '');
+      note(style.color, 'text', area, interactive, large, backdrop);
+      note(style.borderTopColor, 'border', area, interactive, large, backdrop);
+      note(style.borderBottomColor, 'border', area, interactive, large, backdrop);
+      note(style.borderLeftColor, 'border', area, interactive, large, backdrop);
+      note(style.borderRightColor, 'border', area, interactive, large, backdrop);
+      note(style.outlineColor, 'outline', area, interactive, large, backdrop);
 
       // Gradients only. A url() is an image, and images are never recoloured.
       const image = style.backgroundImage;
-      if (!element.hasAttribute('data-glass-gr')
-          && image && image !== 'none' && image.indexOf('gradient(') !== -1) {
-        note(image, 'gradient', area, interactive, large);
+      if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
+        note(image, 'gradient', area, interactive, large, backdrop);
       }
     }
 
@@ -154,7 +152,7 @@ enum ThemeBridge {
     });
 
     } finally {
-      if (preflightSheet) { preflightSheet.disabled = false; }
+      ourSheets.forEach(function (sheet) { sheet.disabled = false; });
     }
     """
 
@@ -171,11 +169,10 @@ enum ThemeBridge {
     /// printing, and an unscoped dark theme would put black pages through
     /// someone's printer.
     static let applyScript = """
-    // Off for the read, and then removed for good once the real theme is in
-    // place — the lookups below are keyed on the site's own colours, not on the
-    // ones we are holding over the top of them.
-    const preflight = document.getElementById('__glass_preflight');
-    if (preflight && preflight.sheet) { preflight.sheet.disabled = true; }
+    // Stop watching while we write. Our own attribute and property changes are
+    // page mutations like any other, and an observer left running would report
+    // them straight back and sweep forever.
+    if (window.__glassObserver) { window.__glassObserver.disconnect(); }
 
     const sheetID = '__glass_theme';
     let sheet = document.getElementById(sheetID);
@@ -196,37 +193,71 @@ enum ThemeBridge {
       [data-glass-gr] { background-image: var(--glass-gr) !important; }
     }`;
 
-    function paint(element, property, attribute, variable, replacement) {
-      if (!replacement) return;
+    // Read the site's colours, not ours — the plan is keyed on what the author
+    // wrote, and with our sheet live every lookup would be of our own output.
+    const ourSheets = ['__glass_preflight', '__glass_theme']
+      .map(function (id) { const el = document.getElementById(id); return el && el.sheet; })
+      .filter(Boolean);
+    ourSheets.forEach(function (each) { each.disabled = true; });
+
+    function paint(element, attribute, variable, replacement) {
+      if (!replacement) { return; }
       element.style.setProperty(variable, replacement);
       element.setAttribute(attribute, '');
     }
 
-    const elements = document.querySelectorAll('*');
-    const limit = Math.min(elements.length, \(elementBudget));
-    for (let i = 0; i < limit; i++) {
-      const element = elements[i];
-      const style = getComputedStyle(element);
+    try {
+      const elements = document.querySelectorAll('*');
+      const limit = Math.min(elements.length, \(elementBudget));
+      for (let i = 0; i < limit; i++) {
+        const element = elements[i];
+        const style = getComputedStyle(element);
 
-      paint(element, 'background', 'data-glass-bg', '--glass-bg',
-            plan['background|' + style.backgroundColor]);
-      paint(element, 'text', 'data-glass-fg', '--glass-fg',
-            plan['text|' + style.color]);
-      paint(element, 'border', 'data-glass-bd', '--glass-bd',
-            plan['border|' + style.borderTopColor]);
-      paint(element, 'outline', 'data-glass-ol', '--glass-ol',
-            plan['outline|' + style.outlineColor]);
+        paint(element, 'data-glass-bg', '--glass-bg',
+              plan['background|' + style.backgroundColor]);
+        paint(element, 'data-glass-fg', '--glass-fg',
+              plan['text|' + style.color]);
+        paint(element, 'data-glass-bd', '--glass-bd',
+              plan['border|' + style.borderTopColor]);
+        paint(element, 'data-glass-ol', '--glass-ol',
+              plan['outline|' + style.outlineColor]);
 
-      const image = style.backgroundImage;
-      if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
-        paint(element, 'gradient', 'data-glass-gr', '--glass-gr',
-              plan['gradient|' + image]);
+        const image = style.backgroundImage;
+        if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
+          paint(element, 'data-glass-gr', '--glass-gr', plan['gradient|' + image]);
+        }
       }
+    } finally {
+      ourSheets.forEach(function (each) { each.disabled = false; });
     }
 
     // Last, so there is never a frame between the holding colour coming off and
     // the real one going on.
     document.getElementById('__glass_preflight')?.remove();
+
+    // Then watch for the page changing underneath us — a section revealed on
+    // scroll, a lazily loaded list, a header that turns opaque, a framework
+    // re-rendering a subtree and taking our properties with it. Coalesced into
+    // one report, because a page that loads fifty rows fires fifty times and
+    // they all want the same single answer.
+    if (!window.__glassObserver) {
+      window.__glassObserver = new MutationObserver(function () {
+        if (window.__glassPending) { return; }
+        window.__glassPending = setTimeout(function () {
+          window.__glassPending = null;
+          window.webkit.messageHandlers.\(handlerName).postMessage('changed');
+        }, 250);
+      });
+    }
+    window.__glassObserver.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      // Colour follows class far more often than it follows an inline style,
+      // and watching every attribute on a large page is a lot of noise for the
+      // two that matter.
+      attributes: true,
+      attributeFilter: ['class', 'style']
+    });
     return true;
     """
 
@@ -293,6 +324,8 @@ enum ThemeBridge {
     """
 
     static let revertScript = """
+    window.__glassObserver?.disconnect();
+    window.__glassObserver = null;
     document.getElementById('__glass_theme')?.remove();
     document.getElementById('__glass_preflight')?.remove();
     const attributes = ['data-glass-bg', 'data-glass-fg', 'data-glass-bd',
