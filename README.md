@@ -41,6 +41,25 @@ only unless you turn on "Remember browsing history". Tabs, window size, and wind
 all restore on relaunch — including each tab's back/forward history and scroll
 position.
 
+### Appearance
+
+Settings (`⌘,`) and the View menu carry one three-way choice: System, Light,
+Dark. System follows the Mac, including when it switches at sunset; the other
+two stay put, which is the whole point of an override.
+
+There is no colour-scheme API on `WKWebView` — nothing in `WKWebView.h`,
+`WKWebViewConfiguration.h`, or `WKWebpagePreferences.h`. What WebKit reads is
+the view's `effectiveAppearance`, which it maps onto the `prefers-color-scheme`
+media query and re-evaluates live. So the setting writes one property on
+`NSApplication` and lets AppKit inheritance carry it to every window, the
+chrome, and every tab's web view — including tabs opened later, since a
+`WKWebView` sets no appearance of its own. The per-tab lever is the same
+property one level down, which is where per-site exceptions will hook in.
+
+That much is free and exact: a site with a dark mode of its own renders in the
+design its authors drew, not an approximation of it. A site without one is
+currently left alone — Glass doesn't yet invent a dark theme for it.
+
 ### Privacy
 
 Glass is private by default and keeps no browsing history. Settings (`⌘,`) has
@@ -139,6 +158,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/GlassCore/FaviconPicker.swift` — chooses which declared icon to fetch
 - `Sources/GlassCore/PrivacyPolicy.swift` — what gets cleared, what gets stored
 - `Sources/GlassCore/HistorySearch.swift` — autocomplete ranking
+- `Sources/GlassCore/AppearanceMode.swift` — the three-way scheme setting and
+  what it resolves to against the OS
 - `Sources/Glass/GlassApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Glass/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Glass/Tab.swift` — one tab: its `WKWebView` and observed state
@@ -153,6 +174,7 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Glass/HistoryStore.swift` — in-memory visit history
 - `Sources/Glass/SettingsView.swift` — the Settings window
 - `Sources/Glass/Preferences.swift` — defaults keys and WebKit data clearing
+- `Sources/Glass/Appearance.swift` — maps the setting onto `NSAppearance`
 - `Sources/Glass/EmptyTabView.swift` — the new-tab backdrop
 - `Sources/Glass/MediaBridge.swift` — media detection script and JS↔Swift bridge
 - `Sources/Glass/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
@@ -185,4 +207,6 @@ State lives in `~/Library/Application Support/Glass/session.json`.
 - History and a back/forward menu on long-press
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
 - Tab reordering by drag, and ⌘⇧T to reopen a closed tab
-- Downloads, find-in-page, bookmarks
+- Bookmarks
+- Synthesised dark themes for the sites that don't ship one, keeping each
+  site's own brand colours rather than inverting them

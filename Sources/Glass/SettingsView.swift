@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage(PreferenceKeys.clearTracesOnQuit) private var clearTracesOnQuit = true
 
     @AppStorage(PreferenceKeys.autoPopOutVideo) private var autoPopOutVideo = true
+    @AppStorage(PreferenceKeys.appearanceMode) private var appearanceMode = AppearanceMode.default
 
     @State private var isClearing = false
     @State private var clearedMessage: String?
@@ -29,6 +30,30 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Appearance", selection: $appearanceMode) {
+                    ForEach(AppearanceMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appearanceMode) { _, mode in
+                    AppearanceController.apply(mode)
+                }
+                explain("""
+                System follows the Mac, including when it switches at sunset. \
+                Light and Dark stay put.
+                """)
+                explain("""
+                This tells sites which scheme you want. Sites that have a dark \
+                mode of their own will use it — the site's own design, not an \
+                approximation of it. Sites that don't have one are left as they \
+                are: Glass doesn't invent one for them yet.
+                """)
+            } header: {
+                Text("Appearance")
+            }
+
             Section {
                 Toggle("Remember browsing history", isOn: $rememberHistory)
                     .onChange(of: rememberHistory) { _, isOn in

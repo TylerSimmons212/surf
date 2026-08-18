@@ -12,6 +12,7 @@ enum PreferenceKeys {
     static let clearTracesOnQuit = "clearTracesOnQuit"
     static let sidebarPinned = "sidebarPinned"
     static let autoPopOutVideo = "autoPopOutVideo"
+    static let appearanceMode = "appearanceMode"
     /// When the helper binaries were last checked for updates. Not a setting —
     /// there is no UI for it — but it lives here so the key isn't a literal
     /// buried in `UpdateManager`.
@@ -30,6 +31,7 @@ extension PrivacySettings {
             PreferenceKeys.restoreTabs: PrivacySettings.default.restoreTabs,
             PreferenceKeys.clearTracesOnQuit: PrivacySettings.default.clearTracesOnQuit,
             PreferenceKeys.autoPopOutVideo: true,
+            PreferenceKeys.appearanceMode: AppearanceMode.default.rawValue,
         ])
     }
 
