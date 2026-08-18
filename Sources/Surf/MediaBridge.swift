@@ -1,0 +1,196 @@
+import Foundation
+import SurfCore
+import WebKit
+
+/// What a tab is currently playing.
+struct MediaState: Equatable {
+    var isPlaying: Bool
+    var title: String
+    var artist: String
+    var hasVideo: Bool
+    var duration: Double
+    var currentTime: Double
+    /// The resolved media URL, or empty if the element has no source yet.
+    var sourceURL: String = ""
+
+    /// What the source actually is, which decides how it gets downloaded.
+    var kind: MediaSourceKind { MediaSource.kind(of: sourceURL) }
+
+    /// A plain media file we can fetch, the same as "Download Video" in any
+    /// browser's context menu.
+    var isDownloadable: Bool { kind == .file }
+
+    /// Segmented: either a `blob:` handle into the page's own buffer, or an
+    /// HLS/DASH index whose URL points at a playlist rather than the video.
+    /// Neither can be fetched — both need yt-dlp, which starts from the page.
+    var needsExtraction: Bool { kind == .streamed || kind == .manifest }
+
+    var progress: Double {
+        guard duration > 0 else { return 0 }
+        return min(1, max(0, currentTime / duration))
+    }
+}
+
+enum MediaBridge {
+    static let handlerName = "surfMedia"
+
+    /// Injected in the PAGE world: `navigator.mediaSession.metadata` is set by
+    /// the page's own scripts, and an isolated world would have its own
+    /// `navigator` with nothing in it.
+    ///
+    /// Listeners are registered on `document` in the capture phase, so they see
+    /// every media element including ones created later.
+    static let script = """
+    (function () {
+      const send = (p) => window.webkit.messageHandlers.\(handlerName).postMessage(p);
+      let current = null;
+
+      function describe() {
+        if (!current) return { playing: false, title: '', artist: '', hasVideo: false,
+                               duration: 0, currentTime: 0 };
+        const meta = navigator.mediaSession && navigator.mediaSession.metadata;
+        return {
+          playing: !current.paused && !current.ended,
+          title: (meta && meta.title) || document.title || '',
+          artist: (meta && meta.artist) || location.hostname,
+          hasVideo: current.tagName === 'VIDEO' && current.videoWidth > 0,
+          duration: isFinite(current.duration) ? current.duration : 0,
+          currentTime: current.currentTime || 0,
+          // `currentSrc` is the resolved source, including <source> children.
+          // A blob: URL means Media Source Extensions — a segmented stream with
+          // no single fetchable file behind it.
+          src: current.currentSrc || current.src || ''
+        };
+      }
+
+      function track(event) {
+        const el = event.target;
+        if (!(el instanceof HTMLMediaElement)) return false;
+        // The most recently started element is the one the user means.
+        current = el;
+        window.__surfMedia = el;
+        send(describe());
+        return true;
+      }
+
+      // Position updates for the scrubber. `timeupdate` fires ~4x a second,
+      // which is far more traffic than a progress bar needs — so it's a timer,
+      // but one that only exists while something is actually playing.
+      //
+      // This script is injected into every frame of every tab, so an
+      // unconditional interval meant every tab you had open owned a timer per
+      // frame, waking its content process once a second to discover there was
+      // nothing to report. The overwhelming majority of tabs never play
+      // anything at all.
+      let ticker = null;
+      function startTicker() {
+        if (ticker) { return; }
+        ticker = setInterval(() => {
+          if (current && !current.paused) { send(describe()); } else { stopTicker(); }
+        }, 1000);
+      }
+      function stopTicker() {
+        if (ticker) { clearInterval(ticker); ticker = null; }
+      }
+
+      document.addEventListener('play', (e) => { if (track(e)) { startTicker(); } }, true);
+      document.addEventListener('pause', (e) => {
+        if (e.target === current) { stopTicker(); send(describe()); }
+      }, true);
+      document.addEventListener('ended', (e) => {
+        if (e.target === current) { stopTicker(); send(describe()); }
+      }, true);
+    })();
+    """
+
+    /// Toggling has to run in the page world, where `__surfMedia` lives.
+    static let toggleScript = """
+    const el = window.__surfMedia;
+    if (!el) { return false; }
+    if (el.paused) { el.play(); } else { el.pause(); }
+    return true;
+    """
+
+    /// Seeks to an absolute position. `time` arrives as a call argument rather
+    /// than interpolated into the source, so page content can never become script.
+    static let seekScript = """
+    const el = window.__surfMedia;
+    if (!el) { return false; }
+    const limit = isFinite(el.duration) ? el.duration : time;
+    el.currentTime = Math.max(0, Math.min(limit, time));
+    return true;
+    """
+
+    /// Jumps relative to the current position, clamped to the media's bounds.
+    static let skipScript = """
+    const el = window.__surfMedia;
+    if (!el) { return false; }
+    const target = el.currentTime + delta;
+    el.currentTime = isFinite(el.duration)
+      ? Math.max(0, Math.min(el.duration, target))
+      : Math.max(0, target);
+    return true;
+    """
+
+    /// Where the playing video sits in the viewport, in CSS pixels.
+    ///
+    /// This is the entire site-specific surface of the lens approach: one
+    /// rectangle. No styling is injected into the player, so there is no
+    /// stacking-context or containing-block fight to lose.
+    static let measureScript = """
+    const el = window.__surfMedia;
+    if (!el || !el.isConnected) { return null; }
+    const r = el.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) { return null; }
+    return JSON.stringify([r.x, r.y, r.width, r.height]);
+    """
+
+    /// Stops wheel events from scrolling the page under the lens, which would
+    /// slide the video out of the cropped region.
+    static let lockScrollScript = """
+    if (!document.getElementById('__surf_lens')) {
+      const s = document.createElement('style');
+      s.id = '__surf_lens';
+      // `pointer-events` is inherited, but sites set it explicitly on their
+      // own overlays, so the universal selector and !important are both doing
+      // work here. This is what actually keeps the pointer off the page:
+      // covering a view with another one doesn't stop it, because tracking
+      // areas fire on geometry and know nothing about what's drawn on top.
+      s.textContent = 'html, body { overflow: hidden !important; }' +
+        'html, html * { pointer-events: none !important; }';
+      document.documentElement.appendChild(s);
+    }
+    // Native controls don't auto-hide reliably when the pointer never arrives,
+    // so switch them off outright. Custom players hide themselves once the
+    // page stops seeing hover at all.
+    const el = window.__surfMedia;
+    if (el) {
+      el.dataset.surfControls = el.controls ? '1' : '0';
+      el.controls = false;
+    }
+    return true;
+    """
+
+    static let unlockScrollScript = """
+    document.getElementById('__surf_lens')?.remove();
+    const el = window.__surfMedia;
+    if (el && el.dataset.surfControls !== undefined) {
+      el.controls = el.dataset.surfControls === '1';
+      delete el.dataset.surfControls;
+    }
+    return true;
+    """
+
+    static func decode(_ body: Any) -> MediaState? {
+        guard let dict = body as? [String: Any] else { return nil }
+        return MediaState(
+            isPlaying: dict["playing"] as? Bool ?? false,
+            title: dict["title"] as? String ?? "",
+            artist: dict["artist"] as? String ?? "",
+            hasVideo: dict["hasVideo"] as? Bool ?? false,
+            duration: dict["duration"] as? Double ?? 0,
+            currentTime: dict["currentTime"] as? Double ?? 0,
+            sourceURL: dict["src"] as? String ?? ""
+        )
+    }
+}

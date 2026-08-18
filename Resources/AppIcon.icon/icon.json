@@ -1,0 +1,36 @@
+{
+  "fill" : "automatic",
+  "groups" : [
+    {
+      "blur-material" : null,
+      "layers" : [
+        {
+          "fill" : "automatic",
+          "image-name" : "Curve-blue.svg",
+          "name" : "Curve-blue",
+          "position" : {
+            "scale" : 1.5,
+            "translation-in-points" : [
+              0.06774200943550568,
+              883.9296875
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.2
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

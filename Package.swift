@@ -2,24 +2,24 @@
 import PackageDescription
 
 let package = Package(
-    name: "Glass",
+    name: "Surf",
     // String form: PackageDescription 6.0's enum stops short of .v26.
     platforms: [.macOS("26.0")],
     targets: [
         // Pure logic, no AppKit/WebKit — so it can be unit tested.
         .target(
-            name: "GlassCore",
-            path: "Sources/GlassCore"
+            name: "SurfCore",
+            path: "Sources/SurfCore"
         ),
         .executableTarget(
-            name: "Glass",
-            dependencies: ["GlassCore"],
-            path: "Sources/Glass"
+            name: "Surf",
+            dependencies: ["SurfCore"],
+            path: "Sources/Surf"
         ),
         .testTarget(
-            name: "GlassCoreTests",
-            dependencies: ["GlassCore"],
-            path: "Tests/GlassCoreTests"
+            name: "SurfCoreTests",
+            dependencies: ["SurfCore"],
+            path: "Tests/SurfCoreTests"
         ),
     ]
 )
