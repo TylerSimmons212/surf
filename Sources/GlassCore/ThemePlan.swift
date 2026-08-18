@@ -28,6 +28,9 @@ public enum ColorProperty: String, CaseIterable, Sendable {
     /// than something judged itself.
     public var isBackground: Bool { self == .background }
     var isReadable: Bool { self == .text || self == .fill }
+    /// Lines drawn to separate things, whose job is separation rather than
+    /// colour.
+    var isSeparator: Bool { self == .border || self == .outline }
 }
 
 /// One sighting of a colour on the page, with the context that makes it
@@ -241,11 +244,22 @@ extension ThemePlan {
                 )
             } ?? surface
 
-            let requirement: Contrast.Requirement = observation.isLargeText
-                ? .largeText : observation.property.requirement
-            result = ContrastRepair.repair(
-                foreground: result, background: ground, requirement: requirement
-            ).foreground
+            if observation.property.isSeparator, let backdrop = observation.backdrop {
+                // Judged on separation rather than on contrast, and so not
+                // repaired: the repair's floor is what flattens a heavy rule
+                // and a decorative one into the same line.
+                result = ThemeTransform.transformBorder(
+                    OKLCH(observation.color.rgb),
+                    on: OKLCH(backdrop.rgb),
+                    newBackdrop: ground
+                )
+            } else {
+                let requirement: Contrast.Requirement = observation.isLargeText
+                    ? .largeText : observation.property.requirement
+                result = ContrastRepair.repair(
+                    foreground: result, background: ground, requirement: requirement
+                ).foreground
+            }
 
             record(key, result, observation)
         }

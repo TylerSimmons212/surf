@@ -79,6 +79,12 @@ on that button. Both WCAG's ratio and a perceptual floor have to be satisfied;
 the second exists because the ratio flatters equiluminant chromatic pairs, and
 a theme that preserves brand colours produces those on purpose.
 
+Borders are judged on separation rather than on colour. What a rule means is
+how far it stands from what it sits on, so that gap is measured against the old
+background and re-established against the new one — a deliberate heavy divider
+stays heavy, a decorative hairline stays faint, and neither is dragged to a
+uniform minimum that would make them the same line.
+
 Gradients move as one body rather than stop by stop: transforming each stop
 alone reverses the direction the light falls from, which reads as broken rather
 than as dark.

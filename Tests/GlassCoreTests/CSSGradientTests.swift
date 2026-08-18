@@ -232,3 +232,78 @@ struct GradientValueTests {
         #expect(CSSGradient.transformValue(value, to: .dark) == value)
     }
 }
+
+@Suite("Border emphasis")
+struct BorderEmphasisTests {
+
+    private let white = OKLCH(SRGB(hex: "#ffffff")!)
+    private let darkGround = OKLCH(SRGB(hex: "#0d0d0d")!)
+
+    @Test("A heavy rule stays heavy and a faint one stays faint")
+    func emphasisSurvives() {
+        // The failure this replaces: both of these used to arrive at the same
+        // contrast floor, so apple.com's deliberate black hairline came back
+        // indistinguishable from a decorative divider.
+        let heavy = ThemeTransform.transformBorder(
+            OKLCH(SRGB(hex: "#000000")!), on: white, newBackdrop: darkGround)
+        let faint = ThemeTransform.transformBorder(
+            OKLCH(SRGB(hex: "#dee2e6")!), on: OKLCH(SRGB(hex: "#f8f9fa")!),
+            newBackdrop: darkGround)
+
+        #expect(heavy.l > faint.l)
+        // And the gap between them is substantial, not a rounding difference.
+        #expect(heavy.l - faint.l > 0.25)
+    }
+
+    @Test("Separation is what's preserved, up to the cap")
+    func separationPreserved() {
+        let faintOriginal = abs(
+            OKLCH(SRGB(hex: "#dee2e6")!).l - OKLCH(SRGB(hex: "#f8f9fa")!).l)
+        let faint = ThemeTransform.transformBorder(
+            OKLCH(SRGB(hex: "#dee2e6")!), on: OKLCH(SRGB(hex: "#f8f9fa")!),
+            newBackdrop: darkGround)
+        #expect(abs((faint.l - darkGround.l) - faintOriginal) < 0.01)
+
+        // Black on white is separation 1.0, which no dark page can reproduce
+        // without a white hairline — so it compresses to the cap.
+        let heavy = ThemeTransform.transformBorder(
+            OKLCH(SRGB(hex: "#000000")!), on: white, newBackdrop: darkGround)
+        #expect(abs((heavy.l - darkGround.l) - ThemeTransform.borderEmphasisCap) < 0.01)
+        #expect(heavy.l < 0.75)  // firmly not a white line
+    }
+
+    @Test("Stronger in, stronger out — always")
+    func monotonic() {
+        var previous = -1.0
+        for hex in ["#fafafa", "#e0e0e0", "#bbbbbb", "#888888", "#444444", "#000000"] {
+            let result = ThemeTransform.transformBorder(
+                OKLCH(SRGB(hex: hex)!), on: white, newBackdrop: darkGround)
+            #expect(result.l >= previous)
+            previous = result.l
+        }
+    }
+
+    @Test("A rule lifts off a dark page and sinks into a light one")
+    func directionFollowsThePage() {
+        let onDark = ThemeTransform.transformBorder(
+            OKLCH(SRGB(hex: "#cccccc")!), on: white, newBackdrop: darkGround)
+        #expect(onDark.l > darkGround.l)
+
+        let lightGround = OKLCH(SRGB(hex: "#f7f7f7")!)
+        let onLight = ThemeTransform.transformBorder(
+            OKLCH(SRGB(hex: "#333333")!), on: OKLCH(SRGB(hex: "#111111")!),
+            newBackdrop: lightGround)
+        #expect(onLight.l < lightGround.l)
+    }
+
+    @Test("A brand-coloured rule keeps its hue")
+    func hueSurvives() {
+        for hex in ["#1d9bf0", "#635bff", "#1db954"] {
+            let border = OKLCH(SRGB(hex: hex)!)
+            let result = ThemeTransform.transformBorder(
+                border, on: white, newBackdrop: darkGround)
+            #expect(result.h == border.h)
+            #expect(result.rgb.isInGamut)
+        }
+    }
+}

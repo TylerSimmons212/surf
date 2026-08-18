@@ -140,6 +140,49 @@ public enum ThemeTransform {
         color.c >= accentChroma ? .accent : .surface
     }
 
+    // MARK: - Borders
+
+    /// The most a border may separate from what it sits on.
+    ///
+    /// A black rule on white is the strongest line a designer can draw, and
+    /// reproducing that separation literally in dark mode means a white
+    /// hairline — which is harsher on a dark page than the original ever was on
+    /// a light one. Emphasis is preserved up to here and compressed beyond it.
+    public static let borderEmphasisCap = 0.45
+
+    /// Remaps a border by how far it stood from its background.
+    ///
+    /// Borders are the one place the surface curve and the contrast repair pull
+    /// in opposite directions, and both are wrong. The curve compresses
+    /// everything into the surface band, so a black rule and a faint grey one
+    /// end up a few percent apart. The repair then lifts whatever it is handed
+    /// to the same minimum, so they come back identical — and a deliberately
+    /// heavy divider arrives as the same hairline as a decorative one.
+    ///
+    /// What carries meaning in a border is not its colour but its *separation*
+    /// from what it sits on. So that is what is preserved: the perceptual gap
+    /// is measured against the original background and re-established against
+    /// the new one, which keeps a strong rule strong and a faint one faint.
+    ///
+    /// Deliberately no minimum. WCAG asks 3:1 of a border that carries state or
+    /// boundary information, not of every hairline on the page, and forcing a
+    /// decorative 1.2:1 divider up to 3:1 doesn't rescue it — it promotes it
+    /// over the content it was drawn to separate.
+    public static func transformBorder(
+        _ border: OKLCH, on backdrop: OKLCH, newBackdrop: OKLCH
+    ) -> OKLCH {
+        let separation = min(abs(border.l - backdrop.l), borderEmphasisCap)
+
+        // Away from the background, on whichever side has the room. On a dark
+        // page that means lighter, which is also how dark themes are drawn by
+        // hand: a rule that reads is one lifted off the surface, not sunk into
+        // it.
+        let direction: Double = newBackdrop.l < 0.5 ? 1 : -1
+        let lightness = min(max(newBackdrop.l + direction * separation, 0), 1)
+
+        return OKLCH(l: lightness, c: border.c, h: border.h).gamutMapped()
+    }
+
     // MARK: - Gradients
 
     /// Remaps a gradient's stops as one shape rather than one at a time.

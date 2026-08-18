@@ -120,11 +120,29 @@ enum ThemeBridge {
 
       note(style.backgroundColor, 'background', area, interactive, large, '');
       note(style.color, 'text', area, interactive, large, backdrop);
-      note(style.borderTopColor, 'border', area, interactive, large, backdrop);
-      note(style.borderBottomColor, 'border', area, interactive, large, backdrop);
-      note(style.borderLeftColor, 'border', area, interactive, large, backdrop);
-      note(style.borderRightColor, 'border', area, interactive, large, backdrop);
-      note(style.outlineColor, 'outline', area, interactive, large, backdrop);
+
+      // Only where a border is actually drawn.
+      //
+      // An element without one still reports a border colour, because the
+      // initial value is currentColor — so every element on the page claims a
+      // border in its own text colour. That is not merely noise: html and body
+      // cover the whole viewport, so their phantom black border wins the
+      // aggregation on area, and the real hairline's backdrop is never seen.
+      // Emphasis is measured against that backdrop, so losing it costs the
+      // border its weight.
+      function noteEdge(width, style_, color) {
+        if (style_ === 'none' || style_ === 'hidden') { return; }
+        if (!(parseFloat(width) > 0)) { return; }
+        note(color, 'border', area, interactive, large, backdrop);
+      }
+      noteEdge(style.borderTopWidth, style.borderTopStyle, style.borderTopColor);
+      noteEdge(style.borderBottomWidth, style.borderBottomStyle, style.borderBottomColor);
+      noteEdge(style.borderLeftWidth, style.borderLeftStyle, style.borderLeftColor);
+      noteEdge(style.borderRightWidth, style.borderRightStyle, style.borderRightColor);
+
+      if (style.outlineStyle !== 'none' && parseFloat(style.outlineWidth) > 0) {
+        note(style.outlineColor, 'outline', area, interactive, large, backdrop);
+      }
 
       // Gradients only. A url() is an image, and images are never recoloured.
       const image = style.backgroundImage;
