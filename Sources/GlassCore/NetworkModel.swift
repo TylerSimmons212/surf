@@ -223,12 +223,7 @@ public struct NetworkRequest: Sendable, Identifiable, Equatable {
 
     public var endedAt: Double { startedAt + (duration ?? 0) }
 
-    public static func formatBytes(_ bytes: Int) -> String {
-        if bytes < 1024 { return "\(bytes) B" }
-        let kilobytes = Double(bytes) / 1024
-        if kilobytes < 1024 { return String(format: "%.1f kB", kilobytes) }
-        return String(format: "%.2f MB", kilobytes / 1024)
-    }
+    public static func formatBytes(_ bytes: Int) -> String { ByteSize.format(bytes) }
 }
 
 /// The recorded requests for one document.

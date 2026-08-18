@@ -15,7 +15,7 @@ import SwiftUI
 final class DevToolsSession: Identifiable {
 
     enum Pane: String, CaseIterable, Identifiable {
-        case elements, styles, network, console
+        case elements, styles, network, storage, console
 
         var id: String { rawValue }
 
@@ -24,6 +24,7 @@ final class DevToolsSession: Identifiable {
             case .elements: "Elements"
             case .styles: "Styles"
             case .network: "Network"
+            case .storage: "Storage"
             case .console: "Console"
             }
         }
@@ -33,6 +34,7 @@ final class DevToolsSession: Identifiable {
             case .elements: "chevron.left.forwardslash.chevron.right"
             case .styles: "paintbrush"
             case .network: "arrow.up.arrow.down"
+            case .storage: "externaldrive"
             case .console: "terminal"
             }
         }
@@ -907,6 +909,144 @@ final class DevToolsSession: Identifiable {
         refreshNetworkView()
     }
 
+    // MARK: - Storage
+
+    var storageArea: StorageArea = .cookies {
+        didSet { if storageArea != oldValue { Task { @MainActor in await loadStorage() } } }
+    }
+    var storageQuery = "" {
+        didSet { if storageQuery != oldValue { refreshStorageView() } }
+    }
+    /// Cookies for every origin, not just this page's. Off by default because
+    /// the question is nearly always "what does this site have".
+    var showsAllCookies = false {
+        didSet { if showsAllCookies != oldValue { Task { @MainActor in await loadStorage() } } }
+    }
+
+    private(set) var cookies: [StorageCookie] = []
+    private(set) var storageItems: [StorageItem] = []
+    private(set) var siteData: [SiteDataRecord] = []
+    private(set) var storageUsage: (used: Int, quota: Int)?
+    private(set) var storageError: String?
+    private(set) var isLoadingStorage = false
+
+    private(set) var visibleCookies: [StorageCookie] = []
+    private(set) var visibleItems: [StorageItem] = []
+    private(set) var visibleSiteData: [SiteDataRecord] = []
+
+    private func refreshStorageView() {
+        visibleCookies = StorageFilter.cookies(cookies, query: storageQuery)
+        visibleItems = StorageFilter.items(storageItems, query: storageQuery)
+        visibleSiteData = StorageFilter.siteData(siteData, query: storageQuery)
+    }
+
+    func loadStorage() async {
+        isLoadingStorage = true
+        storageError = nil
+        defer { isLoadingStorage = false }
+        let issued = generation
+
+        switch storageArea {
+        case .cookies:
+            guard let tab else { return }
+            cookies = showsAllCookies
+                ? await CookieStore.cookies(for: tab)
+                : await CookieStore.cookies(for: tab, matching: pageURL)
+
+        case .local, .session:
+            guard let reply = try? await bridge.call(
+                .storageRead, ["area": storageArea.rawValue]
+            ), issued == generation else { return }
+            // A sandboxed document denies access outright. Saying so beats an
+            // empty table, which reads as "nothing stored".
+            if let message = reply["error"] as? String {
+                storageError = message
+                storageItems = []
+            } else {
+                storageItems = decodeItems(reply["items"])
+            }
+
+        case .caches:
+            guard let reply = try? await bridge.call(.storageListCaches),
+                  issued == generation else { return }
+            storageItems = decodeItems(reply["items"])
+
+        case .databases:
+            guard let reply = try? await bridge.call(.storageListDatabases),
+                  issued == generation else { return }
+            storageItems = decodeItems(reply["items"])
+
+        case .siteData:
+            guard let tab else { return }
+            siteData = await CookieStore.siteData(for: tab)
+        }
+
+        if let estimate = try? await bridge.call(.storageEstimate), issued == generation,
+           let used = estimate["usage"] as? Int, let quota = estimate["quota"] as? Int, quota > 0 {
+            storageUsage = (used, quota)
+        }
+        guard issued == generation else { return }
+        refreshStorageView()
+    }
+
+    private func decodeItems(_ value: Any?) -> [StorageItem] {
+        guard let raw = value as? [[String: Any]] else { return [] }
+        return raw.compactMap { entry in
+            guard let key = entry["key"] as? String else { return nil }
+            return StorageItem(
+                key: key,
+                value: entry["value"] as? String ?? "",
+                detail: entry["detail"] as? String ?? ""
+            )
+        }
+    }
+
+    func setStorageValue(_ value: String, for key: String) async {
+        guard storageArea.isEditable else { return }
+        _ = try? await bridge.call(
+            .storageWrite, ["area": storageArea.rawValue, "key": key, "value": value]
+        )
+        await loadStorage()
+    }
+
+    func removeStorageItem(_ key: String) async {
+        guard storageArea.isEditable else { return }
+        _ = try? await bridge.call(
+            .storageRemove, ["area": storageArea.rawValue, "key": key]
+        )
+        await loadStorage()
+    }
+
+    func deleteCookie(_ cookie: StorageCookie) async {
+        guard let tab else { return }
+        await CookieStore.delete(cookie, in: tab)
+        await loadStorage()
+    }
+
+    /// Clears whatever the current area holds.
+    ///
+    /// Deliberately scoped to the area on screen rather than offering one
+    /// button that wipes everything: "clear site data" and "delete these three
+    /// cookies" are very different actions to take by accident.
+    func clearStorageArea() async {
+        switch storageArea {
+        case .cookies:
+            guard let tab else { return }
+            await CookieStore.deleteAll(visibleCookies, in: tab)
+        case .local, .session:
+            _ = try? await bridge.call(.storageRemove, ["area": storageArea.rawValue])
+        case .caches, .databases, .siteData:
+            return
+        }
+        await loadStorage()
+    }
+
+    func clearSiteData(_ record: SiteDataRecord) async {
+        guard let tab else { return }
+        await CookieStore.clear(record, in: tab)
+        await loadStorage()
+    }
+
     // MARK: - Console
 
     private(set) var console = ConsoleBuffer()
@@ -1189,6 +1329,11 @@ final class DevToolsSession: Identifiable {
         computed = [:]
         computedColors = [:]
         stylePseudo = nil
+        cookies = []
+        storageItems = []
+        siteData = []
+        storageError = nil
+        refreshStorageView()
         recoveredSheets.removeAll()
         failedRecoveries.removeAll()
         recoveryAttempted.removeAll()

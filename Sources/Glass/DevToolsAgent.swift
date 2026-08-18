@@ -1123,6 +1123,85 @@ enum DevToolsAgent {
                 return JSON.stringify(applyStyleText(rule.style, original, key));
               }
 
+              case 'Storage.read': {
+                // Reachable from the isolated world: web storage is scoped to
+                // the origin, which this world shares, rather than to the
+                // page's globals, which it doesn't. So no always-on script is
+                // needed for any of this — it is read when someone looks.
+                const which = params && params.area;
+                const store = which === 'session' ? sessionStorage : localStorage;
+                const items = [];
+                try {
+                  for (let i = 0; i < store.length; i++) {
+                    const key = store.key(i);
+                    items.push({ key: key, value: store.getItem(key) || '' });
+                  }
+                } catch (e) {
+                  // A sandboxed or opaque-origin document denies access
+                  // outright, which is a fact worth reporting rather than an
+                  // empty list that reads as "nothing stored".
+                  return JSON.stringify({ error: String((e && e.message) || e) });
+                }
+                return JSON.stringify({ items: items });
+              }
+
+              case 'Storage.write': {
+                const which = params && params.area;
+                const store = which === 'session' ? sessionStorage : localStorage;
+                store.setItem(params.key, params.value);
+                return JSON.stringify({ ok: true });
+              }
+
+              case 'Storage.remove': {
+                const which = params && params.area;
+                const store = which === 'session' ? sessionStorage : localStorage;
+                if (params && params.key !== undefined) { store.removeItem(params.key); }
+                else { store.clear(); }
+                return JSON.stringify({ ok: true });
+              }
+
+              case 'Storage.listCaches': {
+                if (typeof caches === 'undefined') { return JSON.stringify({ items: [] }); }
+                return caches.keys().then(function (names) {
+                  return Promise.all(names.map(function (name) {
+                    return caches.open(name).then(function (cache) {
+                      return cache.keys().then(function (entries) {
+                        return { key: name, detail: entries.length + ' entries' };
+                      });
+                    });
+                  }));
+                }).then(function (items) {
+                  return JSON.stringify({ items: items });
+                });
+              }
+
+              case 'Storage.listDatabases': {
+                if (typeof indexedDB === 'undefined' || !indexedDB.databases) {
+                  return JSON.stringify({ items: [] });
+                }
+                return indexedDB.databases().then(function (databases) {
+                  return JSON.stringify({
+                    items: databases.map(function (database) {
+                      return {
+                        key: database.name || '(unnamed)',
+                        detail: 'version ' + (database.version || 1)
+                      };
+                    })
+                  });
+                });
+              }
+
+              case 'Storage.estimate': {
+                if (!navigator.storage || !navigator.storage.estimate) {
+                  return JSON.stringify({});
+                }
+                return navigator.storage.estimate().then(function (estimate) {
+                  return JSON.stringify({
+                    usage: estimate.usage || 0, quota: estimate.quota || 0
+                  });
+                });
+              }
+
               case 'Overlay.setInspectMode': {
                 setPicking(!!(params && params.enabled));
                 return JSON.stringify({ ok: true });

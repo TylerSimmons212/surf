@@ -36,6 +36,13 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// natively. Parsed in the page so its selectors can be matched there.
     case cssAddRecoveredSheet = "CSS.addRecoveredSheet"
 
+    case storageRead = "Storage.read"
+    case storageWrite = "Storage.write"
+    case storageRemove = "Storage.remove"
+    case storageListCaches = "Storage.listCaches"
+    case storageListDatabases = "Storage.listDatabases"
+    case storageEstimate = "Storage.estimate"
+
     case overlaySetInspectMode = "Overlay.setInspectMode"
 
     case networkDrain = "Network.drain"
@@ -76,6 +83,8 @@ extension DevToolsMethod {
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
              .cssAddRecoveredSheet,
+             .storageRead, .storageWrite, .storageRemove,
+             .storageListCaches, .storageListDatabases, .storageEstimate,
              .overlaySetInspectMode:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
