@@ -1,19 +1,24 @@
 import SwiftUI
 
-/// A board seen from above, lying on its side: full through the middle, drawn
-/// out to soft points at both ends.
+/// A board seen from above, lying on its side: pointed nose on the right,
+/// fuller tail on the left, widest just behind the middle.
 ///
-/// The outline is a superellipse rather than a hand-placed set of curves, so
-/// it stays symmetric at any size and the taper scales with the length instead
-/// of being a fixed inset that looks wrong on a short field.
+/// The outline is a superellipse rather than a hand-placed set of curves, so it
+/// scales with the field instead of being a fixed inset that looks wrong at a
+/// different width. Each half gets its own exponent, which is what makes it a
+/// board rather than a lens: a real one is not symmetric end to end, and drawing
+/// it that way is exactly what made the first version read as a damaged capsule.
 ///
-/// `fullness` is that superellipse's exponent, and it is the whole design. At 2
-/// this is an ellipse — a lens, too pointed to type in. Climbing from there
-/// squares the middle out while leaving the ends drawn: at 3.4 the field is
-/// full height across the middle two thirds and only the last sixth tapers,
-/// which reads as a board rather than as a damaged capsule.
+/// - `nose` is the right half, and lower means more pointed. Below about 2 it
+///   stops being somewhere you can put text.
+/// - `tail` is the left half, and higher means blunter — this end holds the
+///   search glyph, so it stays close to full height.
+/// - `peak` is where the widest point sits. Behind the middle, as on a board,
+///   which is what gives the nose the longer run.
 struct SurfboardShape: InsettableShape {
-    var fullness: CGFloat = 3.4
+    var nose: CGFloat = 2.3
+    var tail: CGFloat = 4.2
+    var peak: CGFloat = 0.40
     var inset: CGFloat = 0
 
     func path(in rect: CGRect) -> Path {
@@ -27,8 +32,12 @@ struct SurfboardShape: InsettableShape {
         // the sharp corner an ellipse's ends would make against a stroke.
         func h(_ t: CGFloat) -> CGFloat {
             let u = min(max(t, 0), 1)
-            let d = abs(2 * u - 1)
-            return halfHeight * pow(max(0, 1 - pow(d, fullness)), 1 / fullness)
+            // Each half is measured from the widest point outward, so the two
+            // exponents meet there at full height and the join is smooth.
+            let (d, n) = u < peak
+                ? ((peak - u) / peak, tail)
+                : ((u - peak) / (1 - peak), nose)
+            return halfHeight * pow(max(0, 1 - pow(d, n)), 1 / n)
         }
 
         // Sampled and smoothed rather than solved: the curve has no exact Bézier
@@ -63,6 +72,6 @@ struct SurfboardShape: InsettableShape {
     }
 
     func inset(by amount: CGFloat) -> SurfboardShape {
-        SurfboardShape(fullness: fullness, inset: inset + amount)
+        SurfboardShape(nose: nose, tail: tail, peak: peak, inset: inset + amount)
     }
 }

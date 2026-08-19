@@ -25,10 +25,17 @@ struct EmptyTabView: View {
             // Large, because this is the one place the name is the subject
             // rather than a label — and because Outfit's low x-height only
             // pays off at a size where the lowercase has room to breathe.
-            Text("Surf")
+            // Caps, and tracked out. Outfit's caps are nearly circular, so at
+            // this size they close up on each other at the default fit — the
+            // letterspacing is what makes it read as a mark rather than as a
+            // word someone shouted.
+            Text("SURF")
                 .font(Typeface.outfit(size: 72))
+                .tracking(14)
+                // The tracking is trailing space too, so the word sits left of
+                // centre by half of it without this.
+                .padding(.leading, 14)
                 .foregroundStyle(.primary.opacity(0.45))
-                .kerning(1)
 
             VStack(spacing: 8) {
                 field
@@ -70,10 +77,12 @@ struct EmptyTabView: View {
                 }
             }
         }
-        // Wider than the palette's inset, and for a reason the shape dictates:
-        // the board is only at full height across its middle, so text starting
-        // where a capsule's would start would sit against the taper.
-        .padding(.horizontal, 46)
+        // Asymmetric, because the shape is. The tail end is blunt and needs
+        // little; the nose runs out for the last third and is down to half
+        // height by x=576 of 620, so text ending where a capsule's would end
+        // would sit outside the board.
+        .padding(.leading, 40)
+        .padding(.trailing, 100)
         .padding(.vertical, 17)
         .frame(width: barWidth)
         .glassEffect(
@@ -84,14 +93,15 @@ struct EmptyTabView: View {
             in: SurfboardShape()
         )
         .background { SurfboardShape().fill(.thickMaterial) }
-        .overlay {
-            // The stringer, and the one place the shape is stated outright:
-            // a line down the middle reads as a board rather than as a field
-            // whose corners went wrong. Short of the tips, where the outline
-            // has closed in on it.
+        .overlay(alignment: .trailing) {
+            // The stringer, kept to the nose run. Full length is what a board
+            // actually has and it drew a line straight through the placeholder;
+            // typed text can reach x=520 of 620, so this starts at 536 and
+            // there is nothing for it to cross.
             Capsule()
                 .fill(.white.opacity(0.22))
-                .frame(width: barWidth * 0.66, height: 1.5)
+                .frame(width: 48, height: 1.5)
+                .padding(.trailing, 36)
                 .allowsHitTesting(false)
         }
         .overlay {
