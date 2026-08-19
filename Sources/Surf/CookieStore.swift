@@ -13,11 +13,16 @@ import WebKit
 /// * `WKWebsiteDataStore` reports **per-origin, per-type** records. A page can
 ///   ask `navigator.storage.estimate()` for one blended number about itself; it
 ///   cannot enumerate other origins or say which type the bytes are in.
+///
+/// Everything here reads `tab.dataStore` rather than `tab.webView`'s
+/// configuration. Both name the same store, but touching `webView` *builds*
+/// one — so asking a sleeping tab what cookies it holds used to wake it and
+/// spawn a web content process, which is exactly the trap `Tab` documents.
 @MainActor
 enum CookieStore {
 
     static func cookies(for tab: Tab) async -> [StorageCookie] {
-        let store = tab.webView.configuration.websiteDataStore.httpCookieStore
+        let store = tab.dataStore.httpCookieStore
         return await store.allCookies().map { cookie in
             StorageCookie(
                 name: cookie.name,
@@ -41,7 +46,7 @@ enum CookieStore {
     }
 
     static func delete(_ cookie: StorageCookie, in tab: Tab) async {
-        let store = tab.webView.configuration.websiteDataStore.httpCookieStore
+        let store = tab.dataStore.httpCookieStore
         // Matched on the identifying triple, not the name: two cookies can
         // share a name and be different things, and deleting by name alone
         // would take the wrong one.
@@ -76,7 +81,7 @@ enum CookieStore {
     // MARK: - Site data
 
     static func siteData(for tab: Tab) async -> [SiteDataRecord] {
-        let store = tab.webView.configuration.websiteDataStore
+        let store = tab.dataStore
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         let records = await store.dataRecords(ofTypes: types)
 
@@ -93,7 +98,7 @@ enum CookieStore {
     }
 
     static func clear(_ record: SiteDataRecord, in tab: Tab) async {
-        let store = tab.webView.configuration.websiteDataStore
+        let store = tab.dataStore
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         let all = await store.dataRecords(ofTypes: types)
         let matching = all.filter { $0.displayName == record.origin }

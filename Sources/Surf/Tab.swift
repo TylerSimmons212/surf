@@ -159,9 +159,25 @@ final class Tab: NSObject, Identifiable {
         return livePageAgent!
     }
 
+    /// The island's storage — cookies, local storage, IndexedDB — held for the
+    /// tab's whole life.
+    ///
+    /// On the tab rather than on the configuration, and that is the difference
+    /// between this working and appearing to work. `providedConfiguration` is
+    /// consumed on first build, so a hibernated tab rebuilds from a *fresh*
+    /// configuration — and a store read only off the configuration would revert
+    /// to `.default()` there, silently folding the tab's cookies back into the
+    /// user's main identity at some arbitrary moment an hour later.
+    @ObservationIgnored let dataStore: WKWebsiteDataStore
+
     /// `configuration` is non-nil only when WebKit hands us one for a popup or
     /// `target="_blank"` link — those must use the configuration WebKit supplies.
-    init(configuration: WKWebViewConfiguration? = nil) {
+    init(dataStore: WKWebsiteDataStore, configuration: WKWebViewConfiguration? = nil) {
+        // WebKit's configuration for a popup already carries the opener's
+        // store, by construction. Adopt that rather than the island's, so that
+        // waking this tab later reproduces exactly what WebKit linked it to
+        // rather than something merely equivalent.
+        self.dataStore = configuration?.websiteDataStore ?? dataStore
         providedConfiguration = configuration
 
         super.init()
@@ -188,8 +204,13 @@ final class Tab: NSObject, Identifiable {
     private func buildWebView() -> WKWebView {
         let config = providedConfiguration ?? WKWebViewConfiguration()
         if providedConfiguration == nil {
-            // Shared by default, so cookies and logins carry across tabs.
-            config.websiteDataStore = .default()
+            // The island's store, re-read on every build rather than captured
+            // once: this is the line hibernation would otherwise undo.
+            //
+            // Assigned *before* the web view is constructed, because the
+            // configuration is copied at construction — assigning afterwards
+            // has no effect at all, silently.
+            config.websiteDataStore = dataStore
             // Left at the default (false): scripted `window.open` without a
             // user gesture is blocked, while real link clicks still open tabs.
             // This is the popup blocker.

@@ -52,7 +52,7 @@ final class BrowserSession {
         if let restored, !restored.tabs.isEmpty {
             isRestoring = true
             let tabs = restored.tabs.map { persisted -> Tab in
-                let tab = Tab()
+                let tab = Tab(dataStore: Self.defaultStore)
                 tab.prepareRestore(from: persisted)
                 return tab
             }
@@ -66,7 +66,7 @@ final class BrowserSession {
             // the starting tab is told it's on screen by hand.
             selected.didBecomeVisible()
         } else {
-            let first = Tab()
+            let first = Tab(dataStore: Self.defaultStore)
             self.tabs = [first]
             self.selectedTab = first
             self.selectedTabID = first.id
@@ -253,9 +253,41 @@ final class BrowserSession {
 
     // MARK: - Lifecycle
 
+    /// The storage every tab in this session gets.
+    ///
+    /// One island for now, and deliberately the *default* store: those are the
+    /// cookies the browser has been accumulating since before islands existed,
+    /// and there is no supported way to move them into an identified store. So
+    /// the first island is defined as the one that doesn't have an identifier,
+    /// and nobody gets signed out of anything.
+    ///
+    /// Static rather than a stored property because `init` builds tabs before
+    /// the session is far enough along to touch `self`.
+    private static var defaultStore: WKWebsiteDataStore {
+        IslandStores.shared.store(forIdentifier: nil)
+    }
+
+    /// The only place a `Tab` is constructed.
+    ///
+    /// A tab without a data store isn't a tab that browses badly, it's a tab
+    /// that browses as the wrong person — so the one thing worth guaranteeing
+    /// structurally is that there is no way to make one without saying whose
+    /// storage it uses.
+    private func makeTab(configuration: WKWebViewConfiguration? = nil) -> Tab {
+        Tab(dataStore: Self.defaultStore, configuration: configuration)
+    }
+
     @discardableResult
     func addTab(configuration: WKWebViewConfiguration? = nil, select: Bool = true) -> Tab {
-        let tab = Tab(configuration: configuration)
+        let tab = makeTab(configuration: configuration)
+        // WebKit's configuration for a popup carries the opener's store, which
+        // in a one-island browser must be the store we'd have handed it anyway.
+        // Worth saying out loud rather than assuming: if WebKit ever stops
+        // doing that, popups quietly browse as somebody else, and nothing else
+        // in the app would notice.
+        if let configuration, configuration.websiteDataStore !== Self.defaultStore {
+            debugLog("popup arrived with a data store that isn't its island's")
+        }
         tab.session = self
         // Insert next to the current tab, like Safari, rather than at the end —
         // a tab opened from a link belongs beside its opener.
@@ -293,7 +325,7 @@ final class BrowserSession {
         guard let nextIndex else {
             // Last tab closed: keep the window alive with a fresh home tab
             // rather than tearing the window down.
-            let fresh = Tab()
+            let fresh = makeTab()
             fresh.session = self
             tabs = [fresh]
             adoptSelection(fresh)
@@ -314,7 +346,7 @@ final class BrowserSession {
     func reopenClosedTab() {
         guard !recentlyClosed.isEmpty else { return }
         let persisted = recentlyClosed.removeFirst()
-        let tab = Tab()
+        let tab = makeTab()
         tab.session = self
         tab.prepareRestore(from: persisted)
         let insertAt = (tabs.firstIndex { $0.id == selectedTabID }).map { $0 + 1 } ?? tabs.count
