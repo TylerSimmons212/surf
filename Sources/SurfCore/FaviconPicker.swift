@@ -1,7 +1,7 @@
 import Foundation
 
 /// One `<link rel="icon">` found in a page's head.
-public struct FaviconCandidate: Equatable, Sendable {
+public struct FaviconCandidate: Equatable, Sendable, Decodable {
     public var href: String
     /// The raw `sizes` attribute: "32x32", "16x16 32x32", "any", or empty.
     public var sizes: String

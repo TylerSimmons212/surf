@@ -23,18 +23,20 @@ import WebKit
 enum ConsoleAgent {
 
     static let eventHandlerName = "surfDevToolsConsole"
+    static let globalName = "__surfConsole"
 
-    /// Runs in the page world, where `__surfConsole` lives.
-    static let dispatchScript = """
-    if (!globalThis.__surfConsole) { return null; }
-    return globalThis.__surfConsole.dispatch(method, params);
-    """
+    /// Runs in the page world, where the console runtime lives.
+    static var dispatchScript: String { PageRuntime.dispatchSource(global: globalName) }
 
-    static let script = """
+    static var script: String { """
+    \(PageRuntime.source(global: globalName, eventHandler: eventHandlerName))
     (function () {
-      if (globalThis.__surfConsole) { return; }
-
-      const HANDLER = '\(eventHandlerName)';
+      const runtime = globalThis['\(globalName)'];
+      // Guarded on the domain, not on the runtime: the runtime is shared and
+      // already installed above, so re-entering would replace the page's
+      // console a second time and capture every line twice.
+      if (!runtime || runtime.state.consoleInstalled) { return; }
+      runtime.state.consoleInstalled = true;
       // Deep enough to hold a page's startup chatter, small enough to be free.
       const BACKLOG_CAP = 200;
       const BATCH_CAP = 50;
@@ -83,7 +85,7 @@ enum ConsoleAgent {
 
       function post(payload) {
         try {
-          window.webkit.messageHandlers[HANDLER].postMessage(payload);
+          runtime.post(payload);
         } catch (e) {
           // The handler is removed on detach while this document lives on.
           // Falling back to buffering is exactly right.
@@ -482,24 +484,24 @@ enum ConsoleAgent {
       function __surfEvaluate(params) {
         const src = (params && params.source) || '';
         const shouldAwait = !!(params && params.usesAwait);
-        if (!src) { return JSON.stringify({ value: describe(undefined, false) }); }
+        if (!src) { return ({ value: describe(undefined, false) }); }
 
         let value;
         try {
           value = (0, eval)(src);
         } catch (e) {
-          return JSON.stringify({ thrown: true, value: describe(e, false) });
+          return ({ thrown: true, value: describe(e, false) });
         }
 
         if (!shouldAwait || !value || typeof value.then !== 'function') {
-          return JSON.stringify({ value: describe(value, false) });
+          return ({ value: describe(value, false) });
         }
         // A promise is returned to Swift as a promise: `callAsyncJavaScript`
         // awaits it for us, so a rejection still arrives as a value we can
         // describe rather than as an opaque WebKit error.
         return value.then(
-          function (resolved) { return JSON.stringify({ value: describe(resolved, false) }); },
-          function (reason) { return JSON.stringify({ thrown: true, value: describe(reason, false) }); }
+          function (resolved) { return ({ value: describe(resolved, false) }); },
+          function (reason) { return ({ thrown: true, value: describe(reason, false) }); }
         );
       }
 
@@ -713,63 +715,58 @@ enum ConsoleAgent {
         return names;
       }
 
-      globalThis.__surfConsole = {
-        dispatch: function (method, params) {
-          try {
-            switch (method) {
-              case 'Console.drain': {
-                const entries = backlog;
-                backlog = [];
-                live = true;
-                return JSON.stringify({ entries: entries, backlog: true });
-              }
-              case 'Console.setLive': {
-                live = !!(params && params.live);
-                if (!live) {
-                  pending = [];
-                  // Nothing can expand these any more, and holding them would
-                  // pin page objects alive for the life of the document.
-                  objects.clear();
-                }
-                return JSON.stringify({ ok: true });
-              }
-              case 'Runtime.evaluate': {
-                return __surfEvaluate(params);
-              }
-              case 'Runtime.getProperties': {
-                const offset = (params && params.offset) || 0;
-                const limit = (params && params.limit) || 100;
-                const reply = __surfProperties(params && params.objectId, offset, limit);
-                // The real size travels with the page, so the panel can say how
-                // much it is not showing rather than implying the object is
-                // smaller than it is.
-                return JSON.stringify({
-                  properties: reply.items,
-                  offset: offset,
-                  total: Math.max(reply.total, offset + reply.items.length)
-                });
-              }
-              case 'Runtime.completions': {
-                return JSON.stringify({ names: __surfCompletions(params) });
-              }
-              case 'Runtime.releaseObject': {
-                const ids = (params && params.objectIds) || [];
-                for (let i = 0; i < ids.length; i++) { objects.delete(ids[i]); }
-                return JSON.stringify({ ok: true });
-              }
-              case 'Console.ack': {
-                lastAck = Math.max(lastAck, (params && params.sequence) || 0);
-                schedule();
-                return JSON.stringify({ ok: true });
-              }
-              default:
-                return JSON.stringify({ error: 'unknown method: ' + method });
-            }
-          } catch (e) {
-            return JSON.stringify({ error: String((e && e.message) || e) });
-          }
+      runtime.define('Console.drain', (params) => {
+        const entries = backlog;
+        backlog = [];
+        live = true;
+        return ({ entries: entries, backlog: true });
+      });
+
+      runtime.define('Console.setLive', (params) => {
+        live = !!(params && params.live);
+        if (!live) {
+          pending = [];
+          // Nothing can expand these any more, and holding them would
+          // pin page objects alive for the life of the document.
+          objects.clear();
         }
-      };
+        return ({ ok: true });
+      });
+
+      runtime.define('Runtime.evaluate', (params) => {
+        return __surfEvaluate(params);
+      });
+
+      runtime.define('Runtime.getProperties', (params) => {
+        const offset = (params && params.offset) || 0;
+        const limit = (params && params.limit) || 100;
+        const reply = __surfProperties(params && params.objectId, offset, limit);
+        // The real size travels with the page, so the panel can say how
+        // much it is not showing rather than implying the object is
+        // smaller than it is.
+        return ({
+          properties: reply.items,
+          offset: offset,
+          total: Math.max(reply.total, offset + reply.items.length)
+        });
+      });
+
+      runtime.define('Runtime.completions', (params) => {
+        return ({ names: __surfCompletions(params) });
+      });
+
+      runtime.define('Runtime.releaseObject', (params) => {
+        const ids = (params && params.objectIds) || [];
+        for (let i = 0; i < ids.length; i++) { objects.delete(ids[i]); }
+        return ({ ok: true });
+      });
+
+      runtime.define('Console.ack', (params) => {
+        lastAck = Math.max(lastAck, (params && params.sequence) || 0);
+        schedule();
+        return ({ ok: true });
+      });
     })();
     """
+    }
 }

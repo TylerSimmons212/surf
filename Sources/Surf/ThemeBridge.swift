@@ -14,8 +14,37 @@ import WebKit
 /// site's own scripts.
 enum ThemeBridge {
 
-    /// The channel the page uses to say it has changed under us.
-    static let handlerName = "surfTheme"
+    /// The isolated-world domain: every theme method the agent answers to.
+    ///
+    /// The scripts below are unchanged in substance — they are the same
+    /// measuring and painting passes, registered as named methods instead of
+    /// being posted as fresh source for each call. `collect` still hands back
+    /// a JSON string, so it is parsed here and the agent's own envelope
+    /// carries the result; that keeps the walk itself untouched.
+    static var domainScript: String {
+        """
+        (function () {
+          const agent = window['\(PageRuntime.handle)'];
+          if (!agent) { return; }
+
+          agent.define('theme.collect', () => JSON.parse((() => {
+        \(collectScript)
+          })()));
+
+          agent.define('theme.apply', ({ plan, inverts, hueInverts, ground, scheme }) => {
+        \(applyScript)
+          });
+
+          agent.define('theme.revert', () => {
+        \(revertScript)
+          });
+
+          agent.define('theme.dismissPreflight', () => {
+        \(dismissPreflightScript)
+          });
+        })();
+        """
+    }
 
 
     /// Walking and styling the page, shared by the survey and the apply pass so
@@ -96,7 +125,13 @@ enum ThemeBridge {
     /// paints" — a masthead, or a badge repeated forty times.
     static let collectScript = """
     if (document.readyState === 'loading') {
-      return JSON.stringify({ ground: '', themed: false, ready: false, colors: [] });
+      // `images` is not optional on the Swift side, so leaving it out made
+      // this reply undecodable — and the `ready` guard waiting on it dead
+      // code. The old call site swallowed the decode failure and returned,
+      // which looked identical from the outside and hid it.
+      return JSON.stringify({
+        ground: '', themed: false, ready: false, colors: [], images: []
+      });
     }
 
     \(traversal)
@@ -469,7 +504,7 @@ enum ThemeBridge {
         if (window.__surfPending) { return; }
         window.__surfPending = setTimeout(function () {
           window.__surfPending = null;
-          window.webkit.messageHandlers.\(handlerName).postMessage('changed');
+          agent.emit('theme', 'mutated');
         }, 250);
       });
     }

@@ -146,6 +146,52 @@ signals — a meta tag, a `prefers-color-scheme` rule — say what a site claims
 reading what it painted says what it did, and cross-origin stylesheets can't
 hide it.
 
+### Talking to a page
+
+Everything Surf wants from a page — the colours it painted, what it is
+playing, which icons it declares — goes through one resident agent per content
+world, installed at document start and addressed by method name.
+
+The alternative, and what this replaced, is handing WebKit a fresh block of
+JavaScript source for every question. That works, and it is how most of this
+started, but it means each feature arrives with its own conventions for
+arguments, for errors, and for what "nothing" looks like — which is what makes
+a browser feel like something wrapped around WebKit rather than something built
+on it.
+
+Two worlds, because the split is forced: media has to run in the page's own,
+where `navigator.mediaSession` and the site's media elements are, and the theme
+has to run outside it, where nothing it defines can collide with the site's
+scripts. `PageProtocol.Method` names every method once and says which world it
+belongs to, so a call site can't pick the wrong one.
+
+Dev tools uses the same runtime. It reaches a page through three more instances
+— its own isolated world for the DOM, and two in the page world for console
+capture and for network capture — because those have different lifetimes and
+different reasons to exist, not because they are a different kind of thing.
+Five instances of one implementation, then, rather than the four hand-written
+dispatchers this replaced. Each of those carried its own copy of the same
+`switch`, the same `try`, its own spelling of "unknown method", and — between
+the page agent and dev tools — two different ideas of what a reply even looks
+like. A domain now says `define('DOM.getDocument', …)` and returns a value; the
+runtime owns everything around it.
+
+Nothing is interpolated into JavaScript at a call site. `callAsyncJavaScript`
+binds arguments as real variables, so a method name and its parameters are
+values and can never become script.
+
+A reply is an envelope rather than a bare result, which is what lets the three
+ways a call comes back empty stay apart: the page reported a failure, the reply
+wasn't the shape the method promised, or there was legitimately nothing to
+report. Only the last is ordinary. Collapsing them — which is what a `try?`
+around a raw evaluation does — is how a page that had been failing to answer
+for months looked exactly like a page with nothing to say.
+
+The page agent hangs off a property name chosen fresh each launch. In the
+isolated world that is invisible either way; in the page world a fixed name is
+a reliable way for a site to tell which browser it is being read in. Dev tools'
+instances keep fixed names, which is only defensible because they exist solely
+while a panel is attached — a page being inspected is already being watched.
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content
@@ -418,6 +464,14 @@ makes it unit-testable — the UI targets can't be.
   the page's substitutions
 - `Sources/SurfCore/ImageAnalysis.swift` — decides which artwork would vanish,
   and what to back it with
+- `Sources/SurfCore/PageProtocol.swift` — the wire format Surf and the page
+  agree on: method names, which world each runs in, and the reply envelope
+- `Sources/Surf/PageAgent.swift` — Surf's side of one content world: typed
+  calls out, decoded events back
+- `Sources/Surf/PageRuntime.swift` — the agent itself, and the only property
+  Surf adds to a page's globals
+- `Sources/Surf/PageScripts.swift` — the one place that decides what is
+  injected, and into which world
 - `Sources/Surf/SurfApp.swift` — app entry, `NSApplication` setup, ⌘-shortcuts
 - `Sources/Surf/BrowserSession.swift` — owns the tabs and the selection
 - `Sources/Surf/Tab.swift` — one tab: its `WKWebView` and observed state
@@ -433,10 +487,10 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/SettingsView.swift` — the Settings window
 - `Sources/Surf/Preferences.swift` — defaults keys and WebKit data clearing
 - `Sources/Surf/Appearance.swift` — maps the setting onto `NSAppearance`
-- `Sources/Surf/ThemeBridge.swift` — measures a page's colours and writes the
-  plan back onto it
+- `Sources/Surf/ThemeBridge.swift` — the theme domain: measures a page's
+  colours and writes the plan back onto it
 - `Sources/Surf/EmptyTabView.swift` — the new-tab backdrop
-- `Sources/Surf/MediaBridge.swift` — media detection script and JS↔Swift bridge
+- `Sources/Surf/MediaBridge.swift` — the media and find domains of the agent
 - `Sources/Surf/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
 - `Sources/Surf/DownloadManager.swift` — download history, progress, and disk writes;
   routes each source to WebKit or to yt-dlp
@@ -478,6 +532,31 @@ results to stderr — handy for exercising navigation without clicking.
 Comma-separate to open several tabs: `SURF_URL=example.com,apple.com swift run`.
 
 State lives in `~/Library/Application Support/Surf/session.json`.
+
+`SURF_DEVTOOLS=elements` alongside `SURF_URL` opens the panel on that pane at
+launch. The injected half of dev tools exists only while a panel is attached,
+so without it there is no way to exercise the largest thing Surf puts into a
+page except by hand.
+
+Every web view is inspectable, so Safari's Develop menu opens a full Web
+Inspector on any tab. Safari ships with that menu hidden, so it costs nothing
+until someone goes looking for it.
+
+An injected contract has two halves in two languages — a case in an enum, and
+a registration in a script — and the compiler only sees the first.
+`./scripts/check-js.sh` closes that gap: it dumps the real scripts, installs
+them in a real JavaScript engine, and asks whether they answer to everything
+the enums claim. Needs `node` on `PATH`.
+
+Both contracts are checked: `PageProtocol.Method` against the always-resident
+page agent, and `DevToolsMethod` against the three scripts dev tools installs
+while attached. Dev tools also gets a routing check, because that is where this
+has already gone wrong once — `Runtime.evaluate` sent to the inspection agent
+instead of the page fails as "unknown method", which reads like a missing
+feature rather than a misroute. So every method is asked of the two targets it
+*doesn't* belong to as well, and answering there is a failure. The dispatch
+sources are the real ones, dumped from Swift rather than restated in the
+checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 

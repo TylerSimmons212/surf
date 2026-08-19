@@ -136,6 +136,29 @@ final class Tab: NSObject, Identifiable {
 
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
 
+    /// One resident agent per content world. Every question Glass asks this
+    /// tab's page goes through one of these, by method name.
+    /// Optional for the same reason the view is: a sleeping tab holds neither,
+    /// and an agent outliving the view it posts into would be talking to a
+    /// released page.
+    @ObservationIgnored private var liveIsolatedAgent: PageAgent?
+    @ObservationIgnored private var livePageAgent: PageAgent?
+
+    /// Waking accessors, matching `webView` above — asking a sleeping tab a
+    /// question is what builds it. `buildWebView()` assigns both alongside the
+    /// view, so reaching one of these after it is the same guarantee `webView`
+    /// itself makes.
+    private var isolatedAgent: PageAgent {
+        if let liveIsolatedAgent { return liveIsolatedAgent }
+        _ = webView
+        return liveIsolatedAgent!
+    }
+    private var pageAgent: PageAgent {
+        if let livePageAgent { return livePageAgent }
+        _ = webView
+        return livePageAgent!
+    }
+
     /// `configuration` is non-nil only when WebKit hands us one for a popup or
     /// `target="_blank"` link — those must use the configuration WebKit supplies.
     init(configuration: WKWebViewConfiguration? = nil) {
@@ -192,6 +215,12 @@ final class Tab: NSObject, Identifiable {
         // `target="_blank"` tabs skip that branch, and they need this too.
         created.isInspectable = true
 
+        // Rebuilt with the view, not with the tab: hibernation releases the web
+        // view and builds another, and an agent still pointed at the released
+        // one would post into nothing.
+        liveIsolatedAgent = PageAgent(world: .isolated, webView: created)
+        livePageAgent = PageAgent(world: .page, webView: created)
+
         liveWebView = created
 
         // Before anything can be loaded into it. A view that starts a page load
@@ -199,7 +228,7 @@ final class Tab: NSObject, Identifiable {
         // requests through, which is the wave the ads are in.
         ContentBlocker.shared.apply(to: config)
 
-        installBridgeHandlers()
+        installAgents()
         reinstallUserScripts()
         observeWebViewState()
 
@@ -294,26 +323,28 @@ final class Tab: NSObject, Identifiable {
         }
     }
 
-    // MARK: - Media
+    // MARK: - The page agent
 
-    private func installBridgeHandlers() {
+    /// Claims both worlds' channels and injects the agent into every page.
+    private func installAgents() {
         let controller = webView.configuration.userContentController
-        // Popup tabs inherit WebKit's configuration, which may already carry
-        // this handler; adding a duplicate name throws.
-        controller.removeScriptMessageHandler(forName: MediaBridge.handlerName)
-        controller.add(WeakScriptMessageProxy(target: self), name: MediaBridge.handlerName)
+        // Both agent channels, and the events each world reports on its own.
+        isolatedAgent.register(on: controller)
+        pageAgent.register(on: controller)
 
-        // The theme runs in an isolated world, so its channel has to be
-        // registered for that world specifically — a handler added for the page
-        // world simply isn't there when the observer reaches for it.
-        controller.removeScriptMessageHandler(
-            forName: ThemeBridge.handlerName, contentWorld: .defaultClient
-        )
-        controller.add(
-            WeakScriptMessageProxy(target: self),
-            contentWorld: .defaultClient,
-            name: ThemeBridge.handlerName
-        )
+        isolatedAgent.onEvent = { [weak self] header, _, _ in
+            guard header.domain == "theme", header.event == "mutated" else { return }
+            self?.pageDidMutate()
+        }
+        pageAgent.onEvent = { [weak self] header, data, frame in
+            guard let self, header.domain == "media", header.event == "report" else { return }
+            guard let event = try? JSONDecoder().decode(
+                PageProtocol.Event<MediaReport>.self, from: data
+            ) else { return }
+            // A whole frame's worth, not one element: which of them the player
+            // should show is a judgement, and it belongs in `MediaRanking`.
+            receiveMedia(event.payload, from: frame)
+        }
 
         controller.removeScriptMessageHandler(forName: BlockBridge.handlerName)
         controller.add(WeakScriptMessageProxy(target: self), name: BlockBridge.handlerName)
@@ -350,95 +381,19 @@ final class Tab: NSObject, Identifiable {
     /// pop-out would die on the next navigation with no error anywhere. Every
     /// install goes through here instead, and rebuilds the whole set.
     func reinstallUserScripts() {
-        let controller = webView.configuration.userContentController
-        controller.removeAllUserScripts()
-
-        controller.addUserScript(
-            WKUserScript(
-                source: MediaBridge.script,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false,
-                in: .page
-            )
+        guard let live = liveWebView else { return }
+        let target = ThemePreferences.isEnabled ? AppearanceController.resolved : nil
+        PageScripts.install(
+            on: live.configuration.userContentController,
+            themePreflight: target,
+            blocking: ContentBlocker.isEnabled,
+            devTools: devToolsBridge?.isAttached == true
         )
-
-        if ContentBlocker.isEnabled {
-            controller.addUserScript(
-                WKUserScript(
-                    source: BlockBridge.script,
-                    injectionTime: .atDocumentStart,
-                    // Every frame: a third-party iframe is where much of an ad
-                    // stack does its work, and a panel blind to it would report
-                    // one request where a page made forty.
-                    forMainFrameOnly: false,
-                    in: .page
-                )
-            )
+        live.underPageBackgroundColor = target.map {
+            ThemeBridge.preflightGround(for: $0).nsColor
         }
-
-        // Always, on every tab — the whole point is that a log fired before you
-        // opened dev tools is already waiting when you do. Costs one small
-        // in-page ring buffer and zero messages until something attaches.
-        controller.addUserScript(
-            WKUserScript(
-                source: ConsoleAgent.script,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false,
-                in: .page
-            )
-        )
-
-        // Always, for the same reason as the console: the request you want to
-        // look at is nearly always the one that already failed, and a network
-        // pane that only starts recording when you open it would miss it.
-        // Zero messages cross the process boundary until a panel attaches.
-        controller.addUserScript(
-            WKUserScript(
-                source: NetworkAgent.script,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: false,
-                in: .page
-            )
-        )
-
-        if devToolsBridge?.isAttached == true {
-            // Main frame only, so the node id space has exactly one authority.
-            // Multi-frame inspection needs a frame id in every message, which
-            // the protocol can absorb later without reshaping anything else.
-            controller.addUserScript(
-                WKUserScript(
-                    source: DevToolsAgent.script,
-                    injectionTime: .atDocumentStart,
-                    forMainFrameOnly: true,
-                    in: DevToolsAgent.world
-                )
-            )
-        }
-
-        // The theme's preflight, last — and deliberately not behind an early
-        // return. Returning here when theming is off would skip every dev tools
-        // script above it, which is precisely the silent, one-owner failure the
-        // whole function exists to prevent.
-        guard ThemePreferences.isEnabled else {
-            liveWebView?.underPageBackgroundColor = nil
-            return
-        }
-
-        let target = AppearanceController.resolved
-        controller.addUserScript(
-            WKUserScript(
-                source: ThemeBridge.preflightScript(for: target),
-                injectionTime: .atDocumentStart,
-                // Main frame only: an iframe is a document we don't theme, and
-                // painting a holding colour over one we then leave alone would
-                // be a flash of our own making.
-                forMainFrameOnly: true,
-                in: .defaultClient
-            )
-        )
-        // What shows between pages, before the next document exists at all.
-        liveWebView?.underPageBackgroundColor = ThemeBridge.preflightGround(for: target).nsColor
     }
+
 
     /// The scheme, or the decision to synthesise one, has changed.
     private func appearanceSettingsChanged() {
@@ -512,19 +467,39 @@ final class Tab: NSObject, Identifiable {
     /// Puts the page back exactly as its authors drew it.
     private func revertTheme() {
         themeTask?.cancel()
-        Task { @MainActor in
-            _ = try? await webView.callAsyncJavaScript(
-                ThemeBridge.revertScript, arguments: [:], in: nil, contentWorld: .defaultClient
-            )
-        }
+        isolatedAgent.send(.themeRevert)
     }
 
-    /// Runs one of the media scripts against the frame that owns the element.
+    /// Runs one of the media methods against the frame that owns the element.
     ///
     /// Falls back to the main frame when there's no remembered frame, or when
-    /// the remembered one has gone away — a frame that has navigated or been
-    /// removed makes WebKit throw, and the main frame is both the right answer
-    /// for the common case and a harmless no-op for the rest.
+    /// the remembered one has gone away. `unreachable` is the whole reason the
+    /// agent tells that apart from `noValue`: a frame that has navigated
+    /// should stop being addressed, while an element that simply isn't there
+    /// any more is an answer, and retrying it in the main frame would only ask
+    /// the wrong document the same question.
+    private func runInMediaFrame<Value: Decodable>(
+        _ method: PageProtocol.Method,
+        _ params: [String: Any] = [:],
+        as type: Value.Type
+    ) async -> Value? {
+        guard let mediaElementID else { return nil }
+        var params = params
+        params["id"] = mediaElementID
+
+        if let mediaFrame {
+            do {
+                return try await pageAgent.call(method, params, as: type, in: mediaFrame)
+            } catch PageProtocol.Failure.unreachable {
+                // Don't keep addressing a frame that's no longer answering.
+                self.mediaFrame = nil
+            } catch {
+                return nil
+            }
+        }
+        return await pageAgent.value(method, params, as: type)
+    }
+
     /// Takes one frame's report and works out what the player should show.
     ///
     /// The old rule was that the newest `play` event won. That is right until a
@@ -574,6 +549,12 @@ final class Tab: NSObject, Identifiable {
         media = winner.state
         mediaElementID = winner.state.elementID
         mediaFrame = mediaFrames[winner.frameID]?.frame
+        let s = winner.state.signals
+        debugLog(
+            "media: chose \(winner.state.elementID) of \(candidates.count) "
+            + "\(Int(s.width))x\(Int(s.height)), metadata=\(s.hasMetadata), "
+            + "muted=\(s.isMuted), loop=\(s.loops), frames=\(mediaFrames.count)"
+        )
     }
 
     private func clearMediaFrames() {
@@ -623,13 +604,12 @@ final class Tab: NSObject, Identifiable {
     /// off has to happen where the element is. Both halves are idempotent, so
     /// the usual case of one frame simply runs the same thing twice.
     func setPageScrollLocked(_ locked: Bool) {
-        let script = locked ? MediaBridge.lockScrollScript : MediaBridge.unlockScrollScript
+        let method: PageProtocol.Method = locked ? .mediaLockScroll : .mediaUnlockScroll
         Task { @MainActor in
-            _ = try? await webView.callAsyncJavaScript(
-                script, arguments: ["id": mediaElementID ?? ""],
-                in: nil, contentWorld: .page
-            )
-            if mediaFrame != nil { _ = await runInMediaFrame(script) }
+            pageAgent.send(method, ["id": mediaElementID ?? ""])
+            if mediaFrame != nil {
+                _ = await runInMediaFrame(method, as: PageProtocol.Empty.self)
+            }
         }
     }
 
@@ -642,28 +622,24 @@ final class Tab: NSObject, Identifiable {
     /// offset can't be established; a lens aimed at the wrong part of the page
     /// is worse than a pop-out that declines.
     func measureVideoFrame() async -> CGRect? {
-        guard let json = await runInMediaFrame(MediaBridge.measureScript),
-            let v = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double],
-            v.count == 4
-        else { return nil }
-        return CGRect(x: v[0], y: v[1], width: v[2], height: v[3])
+        await runInMediaFrame(.mediaFrame, as: MediaFrame.self)?.rect
     }
 
     func seekMedia(to seconds: Double) {
         Task { @MainActor in
-            _ = await runInMediaFrame(MediaBridge.seekScript, arguments: ["time": seconds])
+            _ = await runInMediaFrame(.mediaSeek, ["time": seconds], as: PageProtocol.Empty.self)
         }
     }
 
     func skipMedia(by seconds: Double) {
         Task { @MainActor in
-            _ = await runInMediaFrame(MediaBridge.skipScript, arguments: ["delta": seconds])
+            _ = await runInMediaFrame(.mediaSkip, ["delta": seconds], as: PageProtocol.Empty.self)
         }
     }
 
     func toggleMediaPlayback() {
         Task { @MainActor in
-            _ = await runInMediaFrame(MediaBridge.toggleScript)
+            _ = await runInMediaFrame(.mediaToggle, as: PageProtocol.Empty.self)
         }
     }
 
@@ -711,8 +687,10 @@ final class Tab: NSObject, Identifiable {
         // until it happens to be evicted.
         live.isHidden = false
         live.removeFromSuperview()
-        live.configuration.userContentController
-            .removeScriptMessageHandler(forName: MediaBridge.handlerName)
+        liveIsolatedAgent?.unregister(from: live.configuration.userContentController)
+        livePageAgent?.unregister(from: live.configuration.userContentController)
+        liveIsolatedAgent = nil
+        livePageAgent = nil
         live.configuration.userContentController
             .removeScriptMessageHandler(forName: BlockBridge.handlerName)
 
@@ -906,11 +884,8 @@ final class Tab: NSObject, Identifiable {
     }
 
     private func sampleTopColor() async {
-        guard let json = try? await webView.callAsyncJavaScript(
-            Self.topColorScript, arguments: [:], in: nil, contentWorld: .defaultClient
-        ) as? String,
-            let rgb = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [Double],
-            rgb.count >= 3
+        guard let rgb = await isolatedAgent.value(.pageTopColor, as: [Double].self),
+              rgb.count >= 3
         else { return }
 
         sampledTopColor = NSColor(
@@ -984,12 +959,9 @@ final class Tab: NSObject, Identifiable {
     private func synthesizeTheme() async {
         let target = AppearanceController.resolved
 
-        guard let json = try? await webView.callAsyncJavaScript(
-            ThemeBridge.collectScript, arguments: [:], in: nil, contentWorld: .defaultClient
-        ) as? String,
-            let survey = try? JSONDecoder().decode(
-                ThemeBridge.Survey.self, from: Data(json.utf8))
-        else { return }
+        guard let survey = await isolatedAgent.value(
+            .themeCollect, as: ThemeBridge.Survey.self
+        ) else { return }
 
         // Measured, not asked. A site that already paints in the scheme the
         // user wants needs nothing from us, and restyling it would swap its
@@ -1037,10 +1009,7 @@ final class Tab: NSObject, Identifiable {
            SchemeDecision.alreadySatisfies(target, ground: decisionGround) {
             let lightness = OKLCH(decisionGround.rgb).l
             debugLog("theme: site already \(target.rawValue) (L=\(rounded(lightness))) — left alone")
-            _ = try? await webView.callAsyncJavaScript(
-                ThemeBridge.dismissPreflightScript,
-                arguments: [:], in: nil, contentWorld: .defaultClient
-            )
+            isolatedAgent.send(.themeDismissPreflight)
             return
         }
 
@@ -1099,24 +1068,17 @@ final class Tab: NSObject, Identifiable {
 
         guard !plan.isEmpty || !inverts.isEmpty || !hueInverts.isEmpty else {
             debugLog("theme: nothing to change — left alone")
-            _ = try? await webView.callAsyncJavaScript(
-                ThemeBridge.dismissPreflightScript,
-                arguments: [:], in: nil, contentWorld: .defaultClient
-            )
+            isolatedAgent.send(.themeDismissPreflight)
             return
         }
 
-        _ = try? await webView.callAsyncJavaScript(
-            ThemeBridge.applyScript,
-            arguments: [
-                "plan": plan.replacements,
-                "inverts": inverts,
-                "hueInverts": hueInverts,
-                "ground": plan.pageBackground.css,
-                "scheme": target.rawValue,
-            ],
-            in: nil, contentWorld: .defaultClient
-        )
+        isolatedAgent.send(.themeApply, [
+            "plan": plan.replacements,
+            "inverts": inverts,
+            "hueInverts": hueInverts,
+            "ground": plan.pageBackground.css,
+            "scheme": target.rawValue,
+        ])
 
         debugLog("""
             theme: applied \(plan.replacements.count) substitutions, \
@@ -1145,24 +1107,9 @@ final class Tab: NSObject, Identifiable {
         }
         guard FaviconStore.shared.shouldFetch(forHost: host) else { return }
 
-        // `link.href` is already absolute — the DOM resolves it against the
-        // document, so relative paths and <base> tags are handled for free.
-        let script = """
-        return JSON.stringify(
-          Array.from(document.querySelectorAll('link[rel~="icon" i]'))
-            .map((l) => ({ href: l.href || '', sizes: l.getAttribute('sizes') || '' }))
-        );
-        """
-
-        var candidates: [FaviconCandidate] = []
-        if let json = try? await webView.callAsyncJavaScript(
-            script, arguments: [:], in: nil, contentWorld: .defaultClient
-        ) as? String,
-           let raw = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: String]] {
-            candidates = raw.map {
-                FaviconCandidate(href: $0["href"] ?? "", sizes: $0["sizes"] ?? "")
-            }
-        }
+        let candidates = await isolatedAgent.value(
+            .pageFavicons, as: [FaviconCandidate].self
+        ) ?? []
 
         var origin = ""
         if let scheme = pageURL.scheme { origin = "\(scheme)://\(host)" }
@@ -1361,35 +1308,13 @@ final class Tab: NSObject, Identifiable {
     /// something, so the tally has to come from somewhere.
     func countMatches(of query: String) async -> Int {
         guard !query.isEmpty else { return 0 }
-        let count = try? await webView.callAsyncJavaScript(
-            """
-            const needle = query.toLowerCase();
-            const text = (document.body?.innerText ?? '').toLowerCase();
-            if (!needle) { return 0; }
-            let total = 0;
-            let index = text.indexOf(needle);
-            while (index !== -1) {
-                total += 1;
-                index = text.indexOf(needle, index + needle.length);
-            }
-            return total;
-            """,
-            arguments: ["query": query],
-            contentWorld: .page
-        )
-        return (count as? Int) ?? 0
+        return await pageAgent.value(.findCount, ["query": query], as: Int.self) ?? 0
     }
 
     /// Drops the highlight when the find bar closes, so a stale selection isn't
     /// left sitting on the page.
     func clearFindSelection() {
-        Task { @MainActor in
-            _ = try? await webView.callAsyncJavaScript(
-                "window.getSelection()?.removeAllRanges(); return true;",
-                arguments: [:],
-                contentWorld: .page
-            )
-        }
+        pageAgent.send(.findClearSelection)
     }
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
@@ -1530,17 +1455,10 @@ extension Tab: WKScriptMessageHandler {
     ) {
         let name = message.name
         let body = message.body
-        let frame = message.frameInfo
         MainActor.assumeIsolated {
             switch name {
-            case MediaBridge.handlerName:
-                guard let report = MediaBridge.decode(body) else { return }
-                receiveMedia(report, from: frame)
             case BlockBridge.handlerName:
                 recordRequests(BlockBridge.decode(body))
-
-            case ThemeBridge.handlerName:
-                pageDidMutate()
 
             case DevToolsAgent.eventHandlerName, ConsoleAgent.eventHandlerName,
                  NetworkAgent.eventHandlerName:

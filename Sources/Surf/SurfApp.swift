@@ -12,12 +12,14 @@ struct SurfApp: App {
     init() {
         // Must precede BrowserSession, which consults these on construction.
         PrivacySettings.registerDefaults()
+        // First of all: it prints what would be injected and exits, so it
+        // should not pay for anything set up after it.
+        PageScripts.dumpAndExitIfAsked()
 
         // Also before the session, and for a sharper reason: the session may
         // start loading a page the moment it exists, and rules that arrive
         // after the first request arrive too late for it.
         ContentBlocker.shared.prepare()
-
         _session = State(initialValue: BrowserSession())
     }
 

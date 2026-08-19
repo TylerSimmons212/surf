@@ -24,17 +24,19 @@ import WebKit
 enum NetworkAgent {
 
     static let eventHandlerName = "surfNetworkEvents"
+    static let globalName = "__surfNetwork"
 
-    static let dispatchScript = """
-    if (!globalThis.__surfNetwork) { return null; }
-    return globalThis.__surfNetwork.dispatch(method, params);
-    """
+    static var dispatchScript: String { PageRuntime.dispatchSource(global: globalName) }
 
-    static let script = """
+    static var script: String { """
+    \(PageRuntime.source(global: globalName, eventHandler: eventHandlerName))
     (function () {
-      if (globalThis.__surfNetwork) { return; }
-
-      const HANDLER = '\(eventHandlerName)';
+      const runtime = globalThis['\(globalName)'];
+      // Guarded on the domain, not on the runtime: the runtime is shared and
+      // already installed by the line above, so re-entering here would patch
+      // `fetch` a second time.
+      if (!runtime || runtime.state.networkInstalled) { return; }
+      runtime.state.networkInstalled = true;
       const MAX_RECORDS = 400;
       const ACK_WINDOW = 8;
       // Bodies live in the page until asked for. A panel that quietly grew an
@@ -115,7 +117,7 @@ enum NetworkAgent {
 
       const post = (payload) => {
         try {
-          window.webkit.messageHandlers[HANDLER].postMessage(payload);
+          runtime.post(payload);
         } catch (e) {
           // No handler means no panel; fall back to buffering.
           live = false;
@@ -442,144 +444,136 @@ enum NetworkAgent {
 
       // ---- Commands -------------------------------------------------------
 
-      globalThis.__surfNetwork = {
-        dispatch(method, params) {
+      runtime.define('Network.drain', (params) => {
+        const all = [];
+        records.forEach(function (record) { all.push(withoutBodies(record)); });
+        const count = dropped;
+        dropped = 0;
+        return ({ requests: all, dropped: count });
+      });
+
+      runtime.define('Network.setLive', (params) => {
+        live = !!(params && params.live);
+        return ({ ok: true });
+      });
+
+      runtime.define('Network.ack', (params) => {
+        lastAck = Math.max(lastAck, (params && params.sequence) || 0);
+        return ({ ok: true });
+      });
+
+      runtime.define('Network.getBody', (params) => {
+        const record = records.get(params && params.id);
+        if (!record) { return ({ missing: true }); }
+        return ({
+          requestBody: record.requestBody,
+          requestBodyBytes: record.requestBodyBytes,
+          requestBodyTruncated: record.requestBodyTruncated,
+          requestBodyType: record.requestBodyType,
+          requestBodyOmission: record.requestBodyOmission,
+          responseBody: record.responseBody,
+          responseBodyBytes: record.responseBodyBytes,
+          responseBodyTruncated: record.responseBodyTruncated,
+          responseBodyType: record.responseBodyType,
+          responseBodyOmission: record.responseBodyOmission
+        });
+      });
+
+      runtime.define('Tags.detect', (params) => {
+        // Page world, necessarily. An isolated world shares the DOM but
+        // not the page's globals, so `window.fbq` is invisible from
+        // there — which is exactly how the first version of this found
+        // nothing at all while looking like it worked.
+        // A tag that has loaded but not yet fired leaves a global
+        // behind, which is the only way to tell "installed and silent"
+        // — usually a tag that threw — from "not installed".
+        const wanted = (params && params.globals) || [];
+        const found = [];
+        for (let i = 0; i < wanted.length; i++) {
+          const entry = wanted[i];
+          const names = entry.names || [];
+          const hits = [];
+          for (let n = 0; n < names.length; n++) {
+            try {
+              if (typeof window[names[n]] !== 'undefined') {
+                hits.push('window.' + names[n]);
+              }
+            } catch (e) { /* a getter that throws is not a detection */ }
+          }
+          if (hits.length) { found.push({ id: entry.id, evidence: hits }); }
+        }
+
+        // Consent managers, which decide whether the ordering of
+        // everything else is worth remarking on.
+        const consent = [];
+        const managers = [
+          ['OneTrust', 'OneTrust'], ['Optanon', 'OneTrust'],
+          ['Cookiebot', 'Cookiebot'], ['Osano', 'Osano'],
+          ['UC_UI', 'Usercentrics'], ['Didomi', 'Didomi'],
+          ['klaro', 'Klaro'], ['truste', 'TrustArc'],
+          ['__tcfapi', 'IAB TCF'], ['CookieYes', 'CookieYes']
+        ];
+        for (let i = 0; i < managers.length; i++) {
           try {
-            switch (method) {
-              case 'Network.drain': {
-                const all = [];
-                records.forEach(function (record) { all.push(withoutBodies(record)); });
-                const count = dropped;
-                dropped = 0;
-                return JSON.stringify({ requests: all, dropped: count });
-              }
-              case 'Network.setLive': {
-                live = !!(params && params.live);
-                return JSON.stringify({ ok: true });
-              }
-              case 'Network.ack': {
-                lastAck = Math.max(lastAck, (params && params.sequence) || 0);
-                return JSON.stringify({ ok: true });
-              }
-              case 'Network.getBody': {
-                const record = records.get(params && params.id);
-                if (!record) { return JSON.stringify({ missing: true }); }
-                return JSON.stringify({
-                  requestBody: record.requestBody,
-                  requestBodyBytes: record.requestBodyBytes,
-                  requestBodyTruncated: record.requestBodyTruncated,
-                  requestBodyType: record.requestBodyType,
-                  requestBodyOmission: record.requestBodyOmission,
-                  responseBody: record.responseBody,
-                  responseBodyBytes: record.responseBodyBytes,
-                  responseBodyTruncated: record.responseBodyTruncated,
-                  responseBodyType: record.responseBodyType,
-                  responseBodyOmission: record.responseBodyOmission
-                });
-              }
-
-              case 'Tags.detect': {
-                // Page world, necessarily. An isolated world shares the DOM but
-                // not the page's globals, so `window.fbq` is invisible from
-                // there — which is exactly how the first version of this found
-                // nothing at all while looking like it worked.
-                // A tag that has loaded but not yet fired leaves a global
-                // behind, which is the only way to tell "installed and silent"
-                // — usually a tag that threw — from "not installed".
-                const wanted = (params && params.globals) || [];
-                const found = [];
-                for (let i = 0; i < wanted.length; i++) {
-                  const entry = wanted[i];
-                  const names = entry.names || [];
-                  const hits = [];
-                  for (let n = 0; n < names.length; n++) {
-                    try {
-                      if (typeof window[names[n]] !== 'undefined') {
-                        hits.push('window.' + names[n]);
-                      }
-                    } catch (e) { /* a getter that throws is not a detection */ }
-                  }
-                  if (hits.length) { found.push({ id: entry.id, evidence: hits }); }
-                }
-
-                // Consent managers, which decide whether the ordering of
-                // everything else is worth remarking on.
-                const consent = [];
-                const managers = [
-                  ['OneTrust', 'OneTrust'], ['Optanon', 'OneTrust'],
-                  ['Cookiebot', 'Cookiebot'], ['Osano', 'Osano'],
-                  ['UC_UI', 'Usercentrics'], ['Didomi', 'Didomi'],
-                  ['klaro', 'Klaro'], ['truste', 'TrustArc'],
-                  ['__tcfapi', 'IAB TCF'], ['CookieYes', 'CookieYes']
-                ];
-                for (let i = 0; i < managers.length; i++) {
-                  try {
-                    if (typeof window[managers[i][0]] !== 'undefined') {
-                      consent.push(managers[i][1]);
-                    }
-                  } catch (e) { /* ignore */ }
-                }
-
-                const generator = document.querySelector('meta[name="generator"]');
-                // What the site calls itself. Ad libraries are indexed by
-                // advertiser name, not by domain, so this is the term that
-                // actually finds anything.
-                // What the site declares about its own accounts. A Facebook
-                // Page id addresses one advertiser exactly, where a name search
-                // returns everyone who shares the name — and it is unrelated to
-                // the pixel id, so having one says nothing about the other.
-                const metaPages = [];
-                const pageTags = document.querySelectorAll(
-                  'meta[property="fb:pages"], meta[name="fb:pages"], '
-                  + 'meta[property="fb:page_id"], meta[name="fb:page_id"]'
-                );
-                for (let i = 0; i < pageTags.length; i++) {
-                  const content = pageTags[i].getAttribute('content');
-                  if (content) { metaPages.push(content); }
-                }
-
-                const links = [];
-                const anchors = document.querySelectorAll('a[href]');
-                for (let i = 0; i < anchors.length && links.length < 400; i++) {
-                  const href = anchors[i].getAttribute('href') || '';
-                  if (href.indexOf('facebook.com') >= 0 || href.indexOf('instagram.com') >= 0
-                      || href.indexOf('linkedin.com') >= 0 || href.indexOf('tiktok.com') >= 0
-                      || href.indexOf('x.com') >= 0 || href.indexOf('twitter.com') >= 0
-                      || href.indexOf('youtube.com') >= 0) {
-                    try { links.push(new URL(href, location.href).href); } catch (e) {}
-                  }
-                }
-
-                const siteName = document.querySelector('meta[property="og:site_name"]');
-                const appName = document.querySelector('meta[name="application-name"]');
-                return JSON.stringify({
-                  found: found,
-                  consent: consent,
-                  siteName: (siteName && siteName.getAttribute('content'))
-                    || (appName && appName.getAttribute('content')) || '',
-                  title: document.title || '',
-                  metaPages: metaPages,
-                  links: links,
-                  generator: generator ? generator.getAttribute('content') : '',
-                  dataLayerLength: (window.dataLayer && window.dataLayer.length) || 0
-                });
-              }
-
-              case 'Network.clear': {
-                records.clear();
-                pending = [];
-                dropped = 0;
-                bodyBytes = 0;
-                return JSON.stringify({ ok: true });
-              }
-              default:
-                return JSON.stringify({ error: 'unknown method: ' + method });
+            if (typeof window[managers[i][0]] !== 'undefined') {
+              consent.push(managers[i][1]);
             }
-          } catch (e) {
-            return JSON.stringify({ error: String((e && e.message) || e) });
+          } catch (e) { /* ignore */ }
+        }
+
+        const generator = document.querySelector('meta[name="generator"]');
+        // What the site calls itself. Ad libraries are indexed by
+        // advertiser name, not by domain, so this is the term that
+        // actually finds anything.
+        // What the site declares about its own accounts. A Facebook
+        // Page id addresses one advertiser exactly, where a name search
+        // returns everyone who shares the name — and it is unrelated to
+        // the pixel id, so having one says nothing about the other.
+        const metaPages = [];
+        const pageTags = document.querySelectorAll(
+          'meta[property="fb:pages"], meta[name="fb:pages"], '
+          + 'meta[property="fb:page_id"], meta[name="fb:page_id"]'
+        );
+        for (let i = 0; i < pageTags.length; i++) {
+          const content = pageTags[i].getAttribute('content');
+          if (content) { metaPages.push(content); }
+        }
+
+        const links = [];
+        const anchors = document.querySelectorAll('a[href]');
+        for (let i = 0; i < anchors.length && links.length < 400; i++) {
+          const href = anchors[i].getAttribute('href') || '';
+          if (href.indexOf('facebook.com') >= 0 || href.indexOf('instagram.com') >= 0
+              || href.indexOf('linkedin.com') >= 0 || href.indexOf('tiktok.com') >= 0
+              || href.indexOf('x.com') >= 0 || href.indexOf('twitter.com') >= 0
+              || href.indexOf('youtube.com') >= 0) {
+            try { links.push(new URL(href, location.href).href); } catch (e) {}
           }
         }
-      };
+
+        const siteName = document.querySelector('meta[property="og:site_name"]');
+        const appName = document.querySelector('meta[name="application-name"]');
+        return ({
+          found: found,
+          consent: consent,
+          siteName: (siteName && siteName.getAttribute('content'))
+            || (appName && appName.getAttribute('content')) || '',
+          title: document.title || '',
+          metaPages: metaPages,
+          links: links,
+          generator: generator ? generator.getAttribute('content') : '',
+          dataLayerLength: (window.dataLayer && window.dataLayer.length) || 0
+        });
+      });
+
+      runtime.define('Network.clear', (params) => {
+        records.clear();
+        pending = [];
+        dropped = 0;
+        bodyBytes = 0;
+        return ({ ok: true });
+      });
     })();
     """
+    }
 }
