@@ -303,6 +303,13 @@ final class Tab: NSObject, Identifiable {
 
     var isAwaitingRestore: Bool { pendingRestore != nil }
 
+    /// The group this tab is filed under, if any.
+    ///
+    /// Membership lives on the tab rather than in a list on the group, so there
+    /// is one copy of it and no way for the two to disagree. What a group *is*,
+    /// then, is the run of consecutive tabs naming it — see `TabGrouping`.
+    var groupID: UUID?
+
     /// Set once the user (or code) navigates deliberately. A pending restore
     /// must never overwrite that — restoring a tab you've already typed into
     /// would silently throw the new page away.
@@ -312,6 +319,7 @@ final class Tab: NSObject, Identifiable {
     /// the sidebar shows real titles immediately on launch.
     func prepareRestore(from persisted: PersistedTab) {
         pendingRestore = persisted
+        groupID = persisted.groupID
         pageTitle = persisted.title
         addressText = persisted.url ?? ""
         if persisted.isRestorable { mode = .browsing }
@@ -1141,14 +1149,24 @@ final class Tab: NSObject, Identifiable {
         // A tab restored but never opened — or one that has been put back to
         // sleep — has no web view to ask. Hand back what we were holding, so
         // its history survives another quit.
-        if let pendingRestore { return pendingRestore }
+        // Stamped onto whatever this returns rather than into each branch:
+        // a sleeping tab hands back the blob it was restored from, and a tab
+        // refiled while asleep would otherwise be written out still wearing
+        // the group it had at launch.
+        func filed(_ tab: PersistedTab) -> PersistedTab {
+            var tab = tab
+            tab.groupID = groupID
+            return tab
+        }
+
+        if let pendingRestore { return filed(pendingRestore) }
 
         guard let live = liveWebView else {
-            return PersistedTab(
+            return filed(PersistedTab(
                 url: currentURL,
                 title: pageTitle,
                 interactionState: cachedInteractionState
-            )
+            ))
         }
 
         if refreshingState || interactionStateIsStale {
@@ -1156,11 +1174,11 @@ final class Tab: NSObject, Identifiable {
             interactionStateIsStale = false
         }
 
-        return PersistedTab(
+        return filed(PersistedTab(
             url: live.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
             title: pageTitle,
             interactionState: cachedInteractionState
-        )
+        ))
     }
 
     /// KVO is the only route to these — `WKNavigationDelegate` has no callbacks

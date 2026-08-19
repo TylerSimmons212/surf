@@ -83,42 +83,124 @@ struct Sidebar: View {
     // MARK: - Tabs
 
     private var tabList: some View {
-        ScrollView {
-            LazyVStack(spacing: 4) {
-                ForEach(entries) { entry in
-                    switch entry {
-                    case .single(let tab):
-                        row(for: tab)
-                    case .pair(let anchor, let leading, let trailing):
-                        SplitPairRow(
-                            session: session,
-                            dragContext: dragContext,
-                            leading: leading,
-                            trailing: trailing
-                        )
-                        // The pair is one row as far as the list is concerned,
-                        // so a tab dropped on it lands where the group sits
-                        // rather than between its halves.
+        // The geometry is for the stack's `minHeight` below — a scroll view
+        // sizes its content to the content, so without it the list is only as
+        // tall as its rows and the empty space beneath them belongs to nothing.
+        GeometryReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(sections) { section in
+                        if let group = section.group {
+                            GroupHeaderRow(
+                                session: session,
+                                dragContext: dragContext,
+                                group: group,
+                                tabCount: section.tabCount,
+                                holdsSelection: section.holdsSelection
+                            )
+                            if !group.isCollapsed {
+                                ForEach(section.entries) { entry in
+                                    content(for: entry)
+                                        // Indented, and over a rule that runs the
+                                        // height of the section: the header alone
+                                        // says where a section starts but nothing
+                                        // says where it ends, and two sections in a
+                                        // row read as one long list otherwise.
+                                        .padding(.leading, 12)
+                                        .background(alignment: .leading) {
+                                            Rectangle()
+                                                .fill(Color.primary.opacity(0.10))
+                                                .frame(width: 1)
+                                                .padding(.leading, 4)
+                                        }
+                                }
+                            }
+                        } else {
+                            ForEach(section.entries) { entry in
+                                content(for: entry)
+                            }
+                        }
+                    }
+                    newTabButton
+                        // Dropping below the last row — on the New Tab button —
+                        // files the tab at the end rather than dead-ending the drag.
                         .onDrop(of: [.text], delegate: TabReorderDropDelegate(
-                            targetID: anchor,
+                            targetID: nil,
                             drag: dragContext,
                             session: session
                         ))
-                    }
                 }
-                newTabButton
-                    // Dropping below the last row — on the New Tab button —
-                    // files the tab at the end rather than dead-ending the drag.
-                    .onDrop(of: [.text], delegate: TabReorderDropDelegate(
-                        targetID: nil,
-                        drag: dragContext,
-                        session: session
-                    ))
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+                .animation(.snappy(duration: 0.26, extraBounce: 0), value: session.split)
+                // Right-clicking past the last row is the one place in the
+                // sidebar with no tab under the pointer, so it's where "start a
+                // section from scratch" belongs. `minHeight` is what makes that
+                // space part of the list rather than bare scroll view — and it
+                // is a floor, not a size, so a list longer than the panel still
+                // scrolls.
+                .frame(minHeight: proxy.size.height, alignment: .top)
+                .contentShape(Rectangle())
+                .contextMenu {
+                    // A section has to contain something — an empty one has no
+                    // position in the list and nothing to draw — so this makes
+                    // the tab as well.
+                    Button("New Group") { session.createGroupWithNewTab() }
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
-            .animation(.snappy(duration: 0.26, extraBounce: 0), value: session.split)
         }
+    }
+
+    @ViewBuilder
+    private func content(for entry: SidebarEntry) -> some View {
+        switch entry {
+        case .single(let tab):
+            row(for: tab)
+        case .pair(let anchor, let leading, let trailing):
+            SplitPairRow(
+                session: session,
+                dragContext: dragContext,
+                leading: leading,
+                trailing: trailing
+            )
+            // The pair is one row as far as the list is concerned, so a tab
+            // dropped on it lands where the group sits rather than between its
+            // halves.
+            .onDrop(of: [.text], delegate: TabReorderDropDelegate(
+                targetID: anchor,
+                drag: dragContext,
+                session: session
+            ))
+        }
+    }
+
+    /// The list as sections: runs of consecutive tabs sharing a group, and runs
+    /// of ungrouped ones.
+    ///
+    /// Sections come from the tab order rather than from a list held on each
+    /// group, so there is nothing to keep in step — where a section sits *is*
+    /// where its tabs sit.
+    private var sections: [SidebarSection] {
+        var sections: [SidebarSection] = []
+        for entry in entries {
+            let groupID = entry.groupID
+            let selected = entry.holds(session.selectedTabID)
+            if var last = sections.last, last.group?.id == groupID {
+                last.entries.append(entry)
+                last.holdsSelection = last.holdsSelection || selected
+                sections[sections.count - 1] = last
+            } else {
+                sections.append(SidebarSection(
+                    group: groupID.flatMap { session.group($0) },
+                    entries: [entry],
+                    holdsSelection: selected
+                ))
+            }
+        }
+        // A group whose tabs somehow aren't consecutive would draw as two
+        // sections wearing the same name. `Island.normalizeGroups` is what
+        // prevents it; this is only the reader.
+        return sections
     }
 
     /// The list as rows: tabs on their own, plus the split pair drawn as a
@@ -192,6 +274,7 @@ struct Sidebar: View {
             drag: dragContext,
             session: session
         ))
+        .contextMenu { TabRowMenu(session: session, tab: tab) }
     }
 
     private var newTabButton: some View {
@@ -226,19 +309,283 @@ struct Sidebar: View {
     }
 }
 
+// MARK: - Sections
+
+/// One run of the list: a named section, or the ungrouped rows between two.
+@MainActor
+private struct SidebarSection: Identifiable {
+    var group: TabGroup?
+    var entries: [SidebarEntry]
+    /// Whether the tab on screen is in here. Passed in rather than derived,
+    /// because only the caller knows what's selected.
+    var holdsSelection = false
+
+    /// Group ids and tab ids are both UUIDs from disjoint sets, so either
+    /// serves as identity and a section never collides with a loose run.
+    ///
+    /// `nonisolated` because `Identifiable` is: both sources are `let`
+    /// constants that never move off the main actor's word, so the conformance
+    /// doesn't have to hop onto it to read them.
+    nonisolated var id: UUID { group?.id ?? entries[0].id }
+
+    /// Tabs, not rows — a split pair is one row holding two.
+    var tabCount: Int {
+        entries.reduce(0) { count, entry in
+            switch entry {
+            case .single: count + 1
+            case .pair: count + 2
+            }
+        }
+    }
+
+}
+
+/// A section's header: its name, how many tabs are in it, and the control that
+/// folds it away.
+///
+/// Also the handle for the section as a whole — dragging it moves every tab
+/// under it at once, the way the split pair's spine moves both its halves.
+private struct GroupHeaderRow: View {
+    let session: BrowserSession
+    let dragContext: TabDragContext
+    let group: TabGroup
+    let tabCount: Int
+    /// Whether the tab on screen is inside this section. Only interesting while
+    /// it's collapsed, when the row that would have shown it is folded away.
+    let holdsSelection: Bool
+
+    @State private var isHovered = false
+    @State private var isRenaming = false
+    @State private var draft = ""
+    @FocusState private var isFieldFocused: Bool
+
+    private var isCarried: Bool { dragContext.draggedGroupID == group.id }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.secondary)
+                .rotationEffect(.degrees(group.isCollapsed ? 0 : 90))
+                .animation(.snappy(duration: 0.22, extraBounce: 0), value: group.isCollapsed)
+
+            if isRenaming {
+                TextField("", text: $draft)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .focused($isFieldFocused)
+                    .onSubmit(commitRename)
+                    // Escape abandons the edit. Without it the only way out of
+                    // the field is to commit, so a rename begun by accident has
+                    // to be undone by hand.
+                    .onExitCommand { isRenaming = false }
+            } else {
+                Text(group.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            // Says what's folded away. Shown expanded too, because a section's
+            // size is worth knowing before you decide to collapse it.
+            Text("\(tabCount)")
+                .font(.system(size: 10, weight: .medium).monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background { Capsule().fill(Color.primary.opacity(0.07)) }
+
+            // The page you're looking at is in here somewhere. Collapsing a
+            // section that holds the current tab is allowed — you may well want
+            // it out of the way — but the sidebar can't then be showing nothing
+            // selected at all.
+            if group.isCollapsed, holdsSelection {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 5, height: 5)
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .background {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
+                .animation(.easeOut(duration: 0.16), value: isHovered)
+        }
+        .opacity(isCarried ? 0 : 1)
+        .onHover { isHovered = $0 }
+        // A single click folds; the whole header is the target, because a
+        // chevron alone is a 9pt hit area on a row that has room to spare.
+        .onTapGesture {
+            guard !isRenaming else { return }
+            withAnimation(.snappy(duration: 0.26, extraBounce: 0)) {
+                session.toggleGroup(group.id)
+            }
+        }
+        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .onDrag {
+            beginGroupDrag()
+        } preview: {
+            dragPreview
+        }
+        .onDrop(of: [.text], delegate: GroupHeaderDropDelegate(
+            group: group,
+            drag: dragContext,
+            session: session
+        ))
+        .contextMenu {
+            Button(group.isCollapsed ? "Expand" : "Collapse") {
+                session.toggleGroup(group.id)
+            }
+            Button("Rename…") { beginRename() }
+            Divider()
+            Button("Ungroup") { session.ungroup(group.id) }
+            Button("Close \(tabCount) Tabs") { session.closeGroup(group.id) }
+        }
+    }
+
+    private func beginRename() {
+        draft = group.name
+        isRenaming = true
+        // After the field exists to receive it.
+        Task { @MainActor in isFieldFocused = true }
+    }
+
+    private func commitRename() {
+        session.renameGroup(group.id, to: draft)
+        isRenaming = false
+    }
+
+    private func beginGroupDrag() -> NSItemProvider {
+        // The section stands in for itself by its first tab, which is also the
+        // slot the reorder moves.
+        guard let first = session.tabs(in: group.id).first else {
+            return NSItemProvider(object: group.id.uuidString as NSString)
+        }
+        return dragContext.beginGroup(group.id, firstID: first.id) {
+            session.commitTabReorder()
+        }
+    }
+
+    /// Named rather than snapshotted: the header is a thin strip, and dragging
+    /// it should look like carrying a section, not a caption.
+    private var dragPreview: some View {
+        HStack(spacing: 7) {
+            Image(systemName: "folder")
+                .font(.system(size: 11))
+            Text(group.name)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+            Text("\(tabCount)")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(width: Sidebar.width - 16, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.primary.opacity(0.12))
+        }
+    }
+}
+
+/// Dropping onto a section's header files the tab at the end of that section.
+///
+/// The header is the one part of a section that stays put when it's collapsed,
+/// which makes it the only way to put a tab into a section you've folded away.
+private struct GroupHeaderDropDelegate: DropDelegate {
+    let group: TabGroup
+    let drag: TabDragContext
+    let session: BrowserSession
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let dragged = drag.draggedID
+        let carriedGroup = drag.draggedGroupID
+        defer { drag.end() }
+
+        guard let dragged else { return false }
+
+        withAnimation(.snappy(duration: 0.26, extraBounce: 0)) {
+            if let carriedGroup, carriedGroup != group.id {
+                // Section onto section: go ahead of it, since they don't nest.
+                if let first = session.tabs(in: group.id).first {
+                    session.moveGroup(carriedGroup, before: first.id)
+                    session.commitTabReorder()
+                }
+            } else if carriedGroup == nil, let tab = session.tabs.first(where: { $0.id == dragged }) {
+                session.addTab(tab, to: group.id)
+            }
+        }
+        return true
+    }
+}
+
+/// What right-clicking a tab offers, beyond what its own buttons already do.
+private struct TabRowMenu: View {
+    let session: BrowserSession
+    let tab: Tab
+
+    var body: some View {
+        Button("New Group with This Tab") { session.createGroup(with: tab) }
+
+        // Only worth offering when there is somewhere else to put it.
+        let others = session.groups.filter { $0.id != tab.groupID }
+        if !others.isEmpty {
+            Menu("Add to Group") {
+                ForEach(others) { group in
+                    Button(group.name) { session.addTab(tab, to: group.id) }
+                }
+            }
+        }
+
+        if tab.groupID != nil {
+            Button("Remove from Group") { session.removeFromGroup(tab) }
+        }
+
+        Divider()
+
+        Button("Close Tab") { session.close(tab) }
+    }
+}
+
 // MARK: - Split pair
 
 /// One line of the tab list.
+@MainActor
 private enum SidebarEntry: Identifiable {
     case single(Tab)
     /// The two tabs on screen together, drawn as one row. `anchor` is the tab
     /// whose slot the group occupies — the earlier of the two in the list.
     case pair(anchor: Tab.ID, leading: Tab, trailing: Tab)
 
-    var id: Tab.ID {
+    nonisolated var id: Tab.ID {
         switch self {
         case .single(let tab): tab.id
         case .pair(let anchor, _, _): anchor
+        }
+    }
+
+    /// Which section this row sits in. A split's two halves are always filed
+    /// together — `setSplit` sees to that — so the leading one answers for both.
+    var groupID: UUID? {
+        switch self {
+        case .single(let tab): tab.groupID
+        case .pair(_, let leading, _): leading.groupID
+        }
+    }
+
+    func holds(_ id: Tab.ID) -> Bool {
+        switch self {
+        case .single(let tab): tab.id == id
+        case .pair(_, let leading, let trailing): leading.id == id || trailing.id == id
         }
     }
 }
@@ -505,7 +852,7 @@ private struct PaneSlotDropDelegate: DropDelegate {
         let dragged = drag.draggedID
         defer { drag.end() }
 
-        guard let dragged, dragged != targetID, !drag.isDraggingPair,
+        guard let dragged, dragged != targetID, !drag.isDraggingPair, !drag.isDraggingGroup,
               let split = session.split,
               let side = split.side(of: targetID)
         else { return false }
@@ -563,6 +910,11 @@ final class TabDragContext {
 
     func noteMoved() { didMove = true }
 
+    /// The group being dragged by its header, if that's what this drag is.
+    @ObservationIgnored private(set) var draggedGroupID: UUID?
+
+    var isDraggingGroup: Bool { draggedGroupID != nil }
+
     /// Whether the split pair is being dragged as one, rather than a single tab.
     ///
     /// `draggedID` still names the leading half, so the empty slot and the
@@ -576,7 +928,7 @@ final class TabDragContext {
     /// Whether a *single* tab is being carried. The split drop zones over the
     /// page only mean anything for one: dropping a pair on the page would be
     /// asking to split a tab against its own partner.
-    var isDraggingLoneTab: Bool { isDragging && !isDraggingPair }
+    var isDraggingLoneTab: Bool { isDragging && !isDraggingPair && !isDraggingGroup }
 
     /// Stamps each drag so a stale sentinel — drag N's provider released after
     /// drag N+1 already began — can't clear the wrong session.
@@ -589,6 +941,18 @@ final class TabDragContext {
     /// went back.
     @ObservationIgnored private var onEnd: (@MainActor () -> Void)?
 
+    /// Starts a drag of a whole section. `firstID` — its first tab — stands in
+    /// for it, so the empty slot and the reorder have something to key off.
+    func beginGroup(
+        _ groupID: UUID,
+        firstID: Tab.ID,
+        onEnd: @escaping @MainActor () -> Void
+    ) -> NSItemProvider {
+        let provider = begin(firstID, onEnd: onEnd)
+        draggedGroupID = groupID
+        return provider
+    }
+
     /// Starts a drag of the whole split pair. `leadingID` stands in for it.
     func beginPair(_ leadingID: Tab.ID, onEnd: @escaping @MainActor () -> Void) -> NSItemProvider {
         let provider = begin(leadingID, onEnd: onEnd)
@@ -600,6 +964,7 @@ final class TabDragContext {
         draggedID = id
         didMove = false
         isDraggingPair = false
+        draggedGroupID = nil
         self.onEnd = onEnd
         generation += 1
         let gen = generation
@@ -632,6 +997,7 @@ final class TabDragContext {
         draggedID = nil
         settledDragID = nil
         isDraggingPair = false
+        draggedGroupID = nil
         let onEnd = self.onEnd
         self.onEnd = nil
         onEnd?()
@@ -665,7 +1031,10 @@ private struct TabReorderDropDelegate: DropDelegate {
         // read as lag. This lands before the next row is reached.
         withAnimation(.snappy(duration: 0.18, extraBounce: 0)) {
             let moved: Bool
-            if drag.isDraggingPair {
+            if let groupID = drag.draggedGroupID {
+                moved = targetID.map { session.moveGroup(groupID, before: $0) }
+                    ?? session.moveGroupToEnd(groupID)
+            } else if drag.isDraggingPair {
                 moved = targetID.map { session.moveSplitPair(before: $0) }
                     ?? session.moveSplitPairToEnd()
             } else {
@@ -693,7 +1062,7 @@ private struct TabReorderDropDelegate: DropDelegate {
         // picking a tab up and changing your mind, and it leaves the pair
         // alone. The focused pane is the one kept, so ending the split this way
         // never also changes which page you were reading.
-        if let dragged, drag.didMove, !drag.isDraggingPair,
+        if let dragged, drag.didMove, !drag.isDraggingPair, !drag.isDraggingGroup,
            session.split?.contains(dragged) == true {
             withAnimation(.snappy(duration: 0.26, extraBounce: 0)) {
                 session.closeSplit()

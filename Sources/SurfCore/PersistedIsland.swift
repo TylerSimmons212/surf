@@ -1,5 +1,21 @@
 import Foundation
 
+/// One tab group as written to disk.
+///
+/// Only the things a group *is* — the tabs it holds are the tabs that name it,
+/// so membership is never stored twice and the two copies can never disagree.
+public struct PersistedTabGroup: Codable, Equatable, Sendable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var isCollapsed: Bool
+
+    public init(id: UUID = UUID(), name: String, isCollapsed: Bool = false) {
+        self.id = id
+        self.name = name
+        self.isCollapsed = isCollapsed
+    }
+}
+
 /// One island as written to disk: an identity, a cookie jar, and the tabs
 /// filed under it.
 ///
@@ -26,6 +42,9 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
     public var dataStoreID: UUID?
     public var tabs: [PersistedTab]
     public var selectedIndex: Int
+    /// Optional for the same reason `PersistedTab.groupID` is: files written
+    /// before groups existed have no key here and must still decode.
+    public var groups: [PersistedTabGroup]?
 
     public init(
         id: UUID = UUID(),
@@ -34,7 +53,8 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         tint: IslandTint,
         dataStoreID: UUID?,
         tabs: [PersistedTab] = [],
-        selectedIndex: Int = 0
+        selectedIndex: Int = 0,
+        groups: [PersistedTabGroup]? = nil
     ) {
         self.id = id
         self.name = name
@@ -43,6 +63,7 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         self.dataStoreID = dataStoreID
         self.tabs = tabs
         self.selectedIndex = selectedIndex
+        self.groups = groups
     }
 
     /// The island the browser starts life as, and the only one that may use the
@@ -84,6 +105,12 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         var result = self
         result.tabs = kept
         result.selectedIndex = newSelection ?? 0
+        // A group whose every tab was just dropped has nothing left to name.
+        // Groups are defined by their members, so an empty one isn't an empty
+        // folder waiting to be filled — it's a section header with no section,
+        // and nothing in the sidebar could draw it or reach it.
+        let surviving = Set(kept.compactMap(\.groupID))
+        result.groups = groups?.filter { surviving.contains($0.id) }
         return result
     }
 }

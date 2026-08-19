@@ -116,6 +116,19 @@ struct SurfApp: App {
 
             Divider()
 
+            Button("New Group with Current Tab") {
+                session.createGroup(with: session.selectedTab)
+            }
+            .keyboardShortcut("g", modifiers: [.command, .control])
+
+            Button("Remove Tab from Group") {
+                session.removeFromGroup(session.selectedTab)
+            }
+            .keyboardShortcut("g", modifiers: [.command, .control, .shift])
+            .disabled(session.selectedTab.groupID == nil)
+
+            Divider()
+
             Button("Open Location…") { session.requestAddressFocus() }
                 .keyboardShortcut("l", modifiers: .command)
 

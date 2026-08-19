@@ -41,6 +41,11 @@ final class Island: Identifiable {
     /// its back.
     private(set) var tabs: [Tab] = []
 
+    /// The groups in this island. Order is not meaningful — where a group sits
+    /// in the sidebar is decided by where its tabs sit, which is the only
+    /// answer that can't drift out of step with what's drawn.
+    private(set) var groups: [TabGroup] = []
+
     /// The tab to return to when this island is selected again.
     ///
     /// Only meaningful while the island is in the background — the live
@@ -79,6 +84,7 @@ final class Island: Identifiable {
             tint: persisted.tint,
             dataStoreID: persisted.dataStoreID
         )
+        groups = (persisted.groups ?? []).map(TabGroup.init)
     }
 
     // MARK: - Tabs
@@ -143,6 +149,44 @@ final class Island: Identifiable {
         index(of: tab) != nil
     }
 
+    // MARK: - Groups
+
+    /// The tab list as `TabGrouping` wants it: ids paired with their group.
+    var slots: [TabSlot] { tabs.map { TabSlot(id: $0.id, group: $0.groupID) } }
+
+    func group(_ id: UUID) -> TabGroup? { groups.first { $0.id == id } }
+
+    func addGroup(_ group: TabGroup) { groups.append(group) }
+
+    /// Removes the group and unfiles anything still in it, so no tab is ever
+    /// left naming a group that isn't there — a tab like that would vanish from
+    /// the sidebar, since nothing draws a section that doesn't exist.
+    func removeGroup(_ id: UUID) {
+        for tab in tabs where tab.groupID == id { tab.groupID = nil }
+        groups.removeAll { $0.id == id }
+    }
+
+    /// Drops groups that have no tabs left.
+    ///
+    /// A group is its members, so an empty one isn't an empty folder waiting to
+    /// be filled — it has no position in the list, nothing to draw, and no way
+    /// to reach it. Closing the last tab in a section therefore closes the
+    /// section, which is also what it looks like from the outside.
+    func pruneEmptyGroups() {
+        let occupied = Set(tabs.compactMap(\.groupID))
+        groups.removeAll { !occupied.contains($0.id) }
+    }
+
+    /// Restores the one thing a group needs to be drawable: its tabs together.
+    ///
+    /// Cheap and idempotent, so it can be called after anything that moves a
+    /// tab rather than each such place having to reason about whether it broke
+    /// a run.
+    func normalizeGroups() {
+        guard let order = TabGrouping.normalized(slots) else { return }
+        reorder(to: order)
+    }
+
     // MARK: - Persistence
 
     /// `refreshingState` is expensive — it asks each live tab for its
@@ -157,7 +201,8 @@ final class Island: Identifiable {
             tint: tint,
             dataStoreID: dataStoreID,
             tabs: tabs.map { $0.snapshot(refreshingState: refreshingState) },
-            selectedIndex: tabs.firstIndex { $0.id == selectedID } ?? 0
+            selectedIndex: tabs.firstIndex { $0.id == selectedID } ?? 0,
+            groups: groups.isEmpty ? nil : groups.map(\.snapshot)
         )
     }
 }

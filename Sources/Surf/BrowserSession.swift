@@ -106,6 +106,13 @@ final class BrowserSession {
             island.rememberedSelection = island.tabs.indices.contains(stored.selectedIndex)
                 ? island.tabs[stored.selectedIndex].id
                 : island.tabs.first?.id
+            // A file can name a group no tab is in, or scatter one that was
+            // whole when it was written — an older build, a hand edit, or tabs
+            // dropped by the privacy filter on the way out. Repaired on the way
+            // in, so nothing downstream has to cope with a section in two
+            // pieces.
+            island.pruneEmptyGroups()
+            island.normalizeGroups()
             return island
         }
 
@@ -281,6 +288,16 @@ final class BrowserSession {
         // fills the window, and a pair that outlived the selection would leave
         // a pane on screen belonging to neither.
         if let split, !split.contains(tab.id) { setSplit(nil) }
+
+        // Arriving inside a collapsed section opens it. Selection can come from
+        // outside the list — command-1, control-tab, a link opening a tab — and
+        // landing on a page whose row is folded away leaves the sidebar showing
+        // nothing selected at all. Collapsing a section that already holds the
+        // current tab is left alone: that one is deliberate, and the header
+        // says so.
+        if let groupID = tab.groupID, let group = currentIsland.group(groupID), group.isCollapsed {
+            group.isCollapsed = false
+        }
 
         // Losing focus is not the same as leaving the screen. The other pane of
         // a split is still right there, and telling it otherwise stops its
@@ -596,6 +613,9 @@ final class BrowserSession {
         }
 
         rememberClosedTab(tab, in: island)
+        // Read before teardown, so the group is pruned against the list as it
+        // will be, not as it was.
+        defer { island.pruneEmptyGroups() }
 
         // Explicit teardown, not just dropping the reference: a web view with
         // audio playing keeps its content process alive, so a closed tab would
@@ -736,13 +756,23 @@ final class BrowserSession {
         // answer to where the group should land when it's dragged. Pulling the
         // trailing tab up to its partner is also what makes swapping the panes
         // swap the halves in the list.
-        if let new,
-           let order = TabOrder.placing(
-               new.trailing,
-               immediatelyAfter: new.leading,
-               in: currentIsland.tabs.map(\.id)
-           ) {
-            currentIsland.reorder(to: order)
+        if let new {
+            // Pulling the trailing tab to sit beside its partner moves it
+            // across whatever section boundary is in the way, so it has to be
+            // refiled to match — otherwise it ends up drawn inside a section it
+            // doesn't belong to, and the run it left behind is broken in two.
+            // Put beside a tab is put with it.
+            if let leading = tab(new.leading), let trailing = tab(new.trailing) {
+                trailing.groupID = leading.groupID
+            }
+            if let order = TabOrder.placing(
+                new.trailing,
+                immediatelyAfter: new.leading,
+                in: currentIsland.tabs.map(\.id)
+            ) {
+                currentIsland.reorder(to: order)
+            }
+            currentIsland.pruneEmptyGroups()
         }
 
         for id in before.subtracting(after) {
@@ -751,6 +781,137 @@ final class BrowserSession {
         for id in after.subtracting(before) {
             allTabs.first { $0.id == id }?.didBecomeVisible()
         }
+    }
+
+    // MARK: - Groups
+
+    var groups: [TabGroup] { currentIsland.groups }
+
+    func group(_ id: UUID) -> TabGroup? { currentIsland.group(id) }
+
+    /// The tabs in a group, in list order.
+    func tabs(in groupID: UUID) -> [Tab] {
+        currentIsland.tabs.filter { $0.groupID == groupID }
+    }
+
+    /// Files `tab` into a new group of its own, and hands it back so the caller
+    /// can put the sidebar straight into renaming it.
+    @discardableResult
+    func createGroup(with tab: Tab) -> TabGroup? {
+        guard currentIsland.contains(tab) else { return nil }
+        let group = TabGroup(name: TabGroup.defaultName(existing: currentIsland.groups))
+        currentIsland.addGroup(group)
+        tab.groupID = group.id
+        currentIsland.pruneEmptyGroups()
+        currentIsland.normalizeGroups()
+        scheduleSave()
+        return group
+    }
+
+    /// A new group with a new tab in it — what "New Group" means when it's asked
+    /// for from empty space rather than from a tab.
+    ///
+    /// A group has to start with a tab. Groups are defined by their members, so
+    /// an empty one has no position in the list and nothing to draw; making one
+    /// would put a section on screen that the next redraw would have to remove.
+    @discardableResult
+    func createGroupWithNewTab() -> TabGroup? {
+        let tab = addTab()
+        return createGroup(with: tab)
+    }
+
+    func renameGroup(_ id: UUID, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let group = currentIsland.group(id), !trimmed.isEmpty else { return }
+        group.name = trimmed
+        scheduleSave()
+    }
+
+    func setGroup(_ id: UUID, collapsed: Bool) {
+        guard let group = currentIsland.group(id), group.isCollapsed != collapsed else { return }
+        group.isCollapsed = collapsed
+        scheduleSave()
+    }
+
+    func toggleGroup(_ id: UUID) {
+        guard let group = currentIsland.group(id) else { return }
+        setGroup(id, collapsed: !group.isCollapsed)
+    }
+
+    /// Dissolves the group, leaving its tabs where they are.
+    func ungroup(_ id: UUID) {
+        guard currentIsland.group(id) != nil else { return }
+        currentIsland.removeGroup(id)
+        scheduleSave()
+    }
+
+    /// Files `tab` at the end of a group's run.
+    func addTab(_ tab: Tab, to groupID: UUID) {
+        guard currentIsland.contains(tab),
+              let group = currentIsland.group(groupID),
+              tab.groupID != group.id
+        else { return }
+
+        let members = TabGrouping.members(of: group.id, in: currentIsland.slots)
+        tab.groupID = group.id
+        // Placed by hand rather than left to `normalizeGroups`, which anchors a
+        // group at its first member — a tab joining from above would otherwise
+        // pull the whole section up to meet it.
+        if let last = members.last,
+           let order = TabOrder.placing(tab.id, immediatelyAfter: last, in: currentIsland.tabs.map(\.id)) {
+            currentIsland.reorder(to: order)
+        }
+        currentIsland.pruneEmptyGroups()
+        currentIsland.normalizeGroups()
+        scheduleSave()
+    }
+
+    func removeFromGroup(_ tab: Tab) {
+        guard tab.groupID != nil else { return }
+        tab.groupID = nil
+        currentIsland.pruneEmptyGroups()
+        currentIsland.normalizeGroups()
+        scheduleSave()
+    }
+
+    /// Closes every tab in the group. The group goes with them.
+    func closeGroup(_ id: UUID) {
+        for tab in tabs(in: id) { close(tab) }
+        currentIsland.pruneEmptyGroups()
+        scheduleSave()
+    }
+
+    /// Moves a whole group, the way the split's grip moves a pair.
+    @discardableResult
+    func moveGroup(_ id: UUID, before targetID: Tab.ID) -> Bool {
+        let members = TabGrouping.members(of: id, in: currentIsland.slots)
+        guard !members.isEmpty else { return false }
+
+        // Landing on a row inside *another* section would file this one into
+        // the middle of that one, which is a section cut in half rather than
+        // the nesting it looks like. Sections don't nest, so the drop is read
+        // as "before that section" — aim anywhere in it and the whole thing
+        // moves ahead of the whole thing.
+        var target = targetID
+        if let host = tab(targetID)?.groupID, host != id,
+           let first = TabGrouping.members(of: host, in: currentIsland.slots).first {
+            target = first
+        }
+
+        guard let order = TabOrder.moving(members, before: target, in: currentIsland.tabs.map(\.id))
+        else { return false }
+        currentIsland.reorder(to: order)
+        return true
+    }
+
+    @discardableResult
+    func moveGroupToEnd(_ id: UUID) -> Bool {
+        let members = TabGrouping.members(of: id, in: currentIsland.slots)
+        guard !members.isEmpty,
+              let order = TabOrder.movingToEnd(members, in: currentIsland.tabs.map(\.id))
+        else { return false }
+        currentIsland.reorder(to: order)
+        return true
     }
 
     // MARK: - Reordering
@@ -773,6 +934,12 @@ final class BrowserSession {
               from != to
         else { return false }
         island.move(fromIndex: from, toIndex: to)
+        // Where a tab lands is what decides whether it's in a group. Dropping it
+        // among a section's rows files it there; dropping it outside takes it
+        // out. Anything else would mean a tab sitting visibly inside a section
+        // it isn't part of.
+        island.tabs[to].groupID = island.tabs.first { $0.id == targetID }?.groupID
+        island.pruneEmptyGroups()
         return true
     }
 
@@ -784,6 +951,9 @@ final class BrowserSession {
               from != island.tabs.count - 1
         else { return false }
         island.move(fromIndex: from, toIndex: island.tabs.count - 1)
+        // Past the last row is past every section, so the tab lands unfiled.
+        island.tabs[island.tabs.count - 1].groupID = nil
+        island.pruneEmptyGroups()
         return true
     }
 

@@ -10,11 +10,21 @@ public struct PersistedTab: Codable, Equatable, Sendable {
     public var url: String?
     public var title: String
     public var interactionState: Data?
+    /// The group this tab is filed under, if any. Optional so the synthesized
+    /// decoder reaches for `decodeIfPresent` and a session written before
+    /// groups existed still reads.
+    public var groupID: UUID?
 
-    public init(url: String?, title: String, interactionState: Data? = nil) {
+    public init(
+        url: String?,
+        title: String,
+        interactionState: Data? = nil,
+        groupID: UUID? = nil
+    ) {
         self.url = url
         self.title = title
         self.interactionState = interactionState
+        self.groupID = groupID
     }
 
     /// A tab sitting on the home screen has nothing worth restoring.
