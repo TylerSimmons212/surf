@@ -34,7 +34,7 @@ struct DeclarationRow: View {
         VStack(alignment: .leading, spacing: 0) {
             row
             if isTracing, let trace {
-                CascadeTraceCard(trace: trace, session: session)
+                CascadeTraceCard(trace: trace)
                     .padding(.top, 4)
                     .padding(.bottom, 2)
                     .transition(.opacity.combined(with: .move(edge: .top)))
@@ -296,17 +296,32 @@ struct DeclarationRow: View {
         withAnimation(.easeOut(duration: 0.14)) { isTracing.toggle() }
     }
 
+    /// The way into the cascade card, and the pane's best idea — so it says
+    /// what it is and how much is behind it, at rest.
+    ///
+    /// It used to be a bare 9pt question mark that only grew the word "why" on
+    /// hover. That made the one feature no other inspector has discoverable
+    /// exclusively by accident: you had to already suspect a property was
+    /// contested, hover the right row, and notice a glyph appear. The count is
+    /// the honest hook — "3 rules" on a line whose value looks perfectly
+    /// settled is the thing that makes you look.
     private var whyButton: some View {
         Button(action: toggleTrace) {
-            HStack(spacing: 2) {
-                Image(systemName: "questionmark.circle")
-                    .font(.system(size: 9, weight: .semibold))
-                if isHovering || isTracing {
-                    Text("why")
-                        .font(.system(size: 9, weight: .semibold))
-                }
+            HStack(spacing: 3) {
+                Image(systemName: isTracing ? "chevron.down" : "questionmark.circle")
+                    .font(DevToolsTheme.badge)
+                Text("\(trace?.entries.count ?? 0) rules")
+                    .font(DevToolsTheme.caption)
             }
             .foregroundStyle(isTracing ? Color.accentColor : Color.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background {
+                Capsule().fill(
+                    isTracing ? Color.accentColor.opacity(0.14) : DevToolsTheme.hoverFill
+                )
+            }
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help("Show every rule that set this, and why the others lost")

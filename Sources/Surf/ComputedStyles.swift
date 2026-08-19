@@ -115,7 +115,7 @@ struct ComputedRow: View {
             }
 
             if isTracing, let trace {
-                CascadeTraceCard(trace: trace, session: session)
+                CascadeTraceCard(trace: trace)
                     .padding(.vertical, 4)
             }
         }
