@@ -563,39 +563,6 @@ final class Tab: NSObject, Identifiable {
         mediaElementID = nil
     }
 
-    /// Runs one of the media scripts against the frame that owns the chosen
-    /// element, addressing that element by id.
-    ///
-    /// Returns the script's result only when it's a string, which is all any
-    /// caller here wants — the commands are fire-and-forget and only the
-    /// measurement has an answer to give.
-    ///
-    /// Falls back to the main frame when the remembered one has gone away: a
-    /// frame that has navigated or been removed makes WebKit throw, and the
-    /// main frame is a harmless no-op when it doesn't hold the element either.
-    private func runInMediaFrame(
-        _ script: String, arguments: [String: Any] = [:]
-    ) async -> String? {
-        guard let mediaElementID else { return nil }
-        var arguments = arguments
-        arguments["id"] = mediaElementID
-        let view = webView
-
-        if let mediaFrame {
-            do {
-                return try await view.callAsyncJavaScript(
-                    script, arguments: arguments, in: mediaFrame, contentWorld: .page
-                ) as? String
-            } catch {
-                // Don't keep addressing a frame that's no longer answering.
-                self.mediaFrame = nil
-            }
-        }
-        return try? await view.callAsyncJavaScript(
-            script, arguments: arguments, in: nil, contentWorld: .page
-        ) as? String
-    }
-
     /// Prevents or restores page scrolling while the lens panel is showing.
     ///
     /// Run in both frames when the media is embedded. The top document is what
