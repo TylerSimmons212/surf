@@ -166,9 +166,19 @@ struct SurfApp: App {
 
         CommandMenu("Islands") {
             Button("New Island") {
-                session.select(island: session.createIsland())
+                let island = session.createIsland()
+                session.select(island: island)
+                // Straight into the editor, exactly as the sidebar's + does.
+                // The moment you make an island is the moment you know what
+                // it's for.
+                session.islandBeingEdited = island
             }
             .keyboardShortcut("n", modifiers: [.command, .option])
+
+            Button("Edit Island…") {
+                session.islandBeingEdited = session.currentIsland
+            }
+            .keyboardShortcut("e", modifiers: [.command, .option])
 
             Divider()
 

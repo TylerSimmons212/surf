@@ -9,6 +9,14 @@ struct PersistedIslandTests {
         PersistedTab(url: url, title: title)
     }
 
+    /// A minimal island document with the tint written verbatim, so a test can
+    /// hand it either shape the decoder has to cope with.
+    private func islandJSON(tint: String) -> String {
+        let id = UUID().uuidString
+        return "{\"id\":\"\(id)\",\"name\":\"Work\",\"symbol\":\"W\","
+            + "\"tint\":\(tint),\"tabs\":[],\"selectedIndex\":0}"
+    }
+
     private func island(_ name: String, tabs: [PersistedTab] = [], selected: Int = 0)
         -> PersistedIsland
     {
@@ -154,13 +162,65 @@ struct PersistedIslandTests {
 
     /// So the first few islands are told apart at a glance without anyone
     /// having to choose a colour.
-    @Test("A new island's tint is the least-used one")
+    @Test("A new island's tint is the least-used preset")
     func tintsSpread() {
         #expect(IslandTint.next(after: []) == .surf)
         #expect(IslandTint.next(after: [.surf]) == .lagoon)
         #expect(IslandTint.next(after: [.surf, .lagoon]) == .kelp)
-        // Once the palette wraps, it starts reusing from the front rather than
-        // running out.
-        #expect(IslandTint.next(after: IslandTint.allCases) == .surf)
+        // Once the palette wraps it reuses from the front rather than running
+        // out of colours.
+        #expect(IslandTint.next(after: IslandTint.presets) == .surf)
+    }
+
+    /// A colour the user mixed themselves must not push new islands onto a
+    /// preset it happens to sit near — `next` counts presets, not neighbours.
+    @Test("A custom colour doesn't consume a preset")
+    func customTintDoesNotConsumePreset() {
+        let custom = IslandTint(red: 0.11, green: 0.61, blue: 0.86)
+        #expect(custom != IslandTint.surf)
+        #expect(IslandTint.next(after: [custom]) == .surf)
+    }
+
+    /// The upgrade that has to be silent. A session file written before the
+    /// colour picker existed says `"tint": "surf"`, and failing to read it
+    /// would drop every island's colour on the first launch after updating.
+    @Test("A tint stored as a preset name still decodes")
+    func legacyTintNameDecodes() throws {
+        let island = try JSONDecoder().decode(
+            PersistedIsland.self, from: Data(islandJSON(tint: "\"kelp\"").utf8)
+        )
+        #expect(island.tint == .kelp)
+    }
+
+    /// An unknown name has no sensible colour to become, and must fail rather
+    /// than silently pick one — the island's identity is what it looks like.
+    @Test("An unknown tint name fails to decode rather than guessing")
+    func unknownTintNameFails() {
+        let json = islandJSON(tint: "\"chartreuse\"")
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(PersistedIsland.self, from: Data(json.utf8))
+        }
+    }
+
+    @Test("A custom tint round-trips through JSON")
+    func customTintRoundTrips() throws {
+        let custom = IslandTint(red: 0.42, green: 0.13, blue: 0.77)
+        let island = PersistedIsland(
+            name: "Work", symbol: "💼", tint: custom, dataStoreID: UUID()
+        )
+        let data = try JSONEncoder().encode(island)
+        let decoded = try JSONDecoder().decode(PersistedIsland.self, from: data)
+        #expect(decoded.tint == custom)
+        #expect(decoded.tint.presetName == nil)
+    }
+
+    /// A picker on a wide-gamut display can hand back values just past both
+    /// ends, and a colour outside 0...1 isn't a colour.
+    @Test("Out-of-range components are clamped")
+    func componentsClamped() {
+        let wild = IslandTint(red: 1.4, green: -0.2, blue: 0.5)
+        #expect(wild.red == 1)
+        #expect(wild.green == 0)
+        #expect(wild.blue == 0.5)
     }
 }

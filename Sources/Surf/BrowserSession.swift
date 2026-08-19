@@ -311,6 +311,14 @@ final class BrowserSession {
         }
     }
 
+    /// The island whose editor sheet is open, if any.
+    ///
+    /// On the session rather than in the sidebar's own state because the sheet
+    /// is presented from the window, not the strip: the sidebar can be a
+    /// floating panel that hides when the pointer leaves it, and a sheet
+    /// anchored to something that disappears goes with it.
+    var islandBeingEdited: Island?
+
     /// The island a tab belongs to.
     ///
     /// A search rather than a back-pointer on `Tab`: islands hold few enough

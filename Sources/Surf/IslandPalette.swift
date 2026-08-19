@@ -1,50 +1,77 @@
+import AppKit
 import SurfCore
 import SwiftUI
 
-/// The colours islands are told apart by.
+/// Bridging an island's stored colour to and from SwiftUI.
 ///
-/// Fixed, like `OceanTide`, and for the same reason: an island's colour is how
-/// you know at a glance which identity you're browsing as, so it can't be
-/// whatever blue the system accent happens to be this week. Two of them are
-/// lifted straight from the tide so the strip sits in the same water as the
-/// loading border rather than beside it.
+/// `IslandTint` holds bare components so `SurfCore` can stay free of SwiftUI;
+/// the conversions live here, on the one side that has both.
 extension IslandTint {
 
     var color: Color {
-        switch self {
-        case .surf: OceanTide.surf
-        case .lagoon: OceanTide.shallow
-        case .kelp: Color(red: 0.20, green: 0.68, blue: 0.48)
-        case .coral: Color(red: 0.95, green: 0.44, blue: 0.42)
-        case .sand: Color(red: 0.88, green: 0.72, blue: 0.42)
-        case .dusk: Color(red: 0.55, green: 0.45, blue: 0.85)
-        }
+        Color(.sRGB, red: red, green: green, blue: blue)
     }
 
-    /// Human-readable, for the tint picker.
-    var label: String {
-        switch self {
-        case .surf: "Surf"
-        case .lagoon: "Lagoon"
-        case .kelp: "Kelp"
-        case .coral: "Coral"
-        case .sand: "Sand"
-        case .dusk: "Dusk"
+    /// Reads a colour back out of the picker.
+    ///
+    /// Converted through sRGB deliberately. The system picker will hand back
+    /// colours in Display P3 or a named catalog space, and asking those for
+    /// `.redComponent` directly either throws or silently answers in the wrong
+    /// space — so a colour picked from the wide-gamut wheel would be stored as
+    /// something else entirely and come back changed.
+    init(_ color: Color) {
+        let resolved = NSColor(color).usingColorSpace(.sRGB)
+            ?? NSColor(color).usingColorSpace(.deviceRGB)
+        guard let resolved else {
+            self = .surf
+            return
         }
+        self.init(
+            red: Double(resolved.redComponent),
+            green: Double(resolved.greenComponent),
+            blue: Double(resolved.blueComponent)
+        )
+    }
+
+    /// Human-readable, for the picker's accessibility label. A colour the user
+    /// mixed themselves gets its hex rather than an invented name.
+    var label: String {
+        presetName?.capitalized ?? hex
+    }
+
+    var hex: String {
+        String(
+            format: "#%02X%02X%02X",
+            Int((red * 255).rounded()),
+            Int((green * 255).rounded()),
+            Int((blue * 255).rounded())
+        )
     }
 }
 
-/// The emoji offered when naming an island.
+/// The emoji offered as quick picks when naming an island.
 ///
-/// A short list rather than the system emoji picker: the strip shows these at
-/// 13pt beside each other, and most emoji are unreadable at that size or carry
-/// so much detail they fight the tint behind them. These are all legible as a
-/// silhouette.
+/// A short list *beside* the system picker rather than instead of it: the strip
+/// shows these small, and most emoji are unreadable at that size or carry so
+/// much detail they fight the tint behind them. These all read as a silhouette.
+/// Anything else is a click away in Emoji & Symbols.
 enum IslandSymbols {
-    static let all = [
+    static let quickPicks = [
         "🏝️", "🌴", "🐚", "🏄", "🐠", "⛵️", "🪸", "🌊",
         "💼", "🏠", "🎓", "🔬", "🎮", "🛒", "✉️", "🎧",
     ]
 
     static let fallback = "🏝️"
+
+    /// One emoji, whatever was typed or pasted.
+    ///
+    /// Measured in grapheme clusters, not characters: a flag, a skin-toned
+    /// hand, or 🏝️ itself are each several scalars, and taking `first` on
+    /// unicodeScalars would saw one in half and render a stray variation
+    /// selector.
+    static func firstSymbol(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let cluster = trimmed.first else { return nil }
+        return String(cluster)
+    }
 }

@@ -147,6 +147,11 @@ struct ContentView: View {
         }
         // A find is about one page; carrying the bar to another tab would
         // search something you never asked it to.
+        // Presented from the window rather than from the strip that opens it:
+        // a floating sidebar hides when the pointer leaves, and a sheet anchored
+        // to it would go with it — taking the emoji viewer and colour panel's
+        // reason for being open with it.
+        .islandEditor(session: session)
         .onChange(of: session.selectedTabID) { _, _ in
             isFindBarOpen = false
         }

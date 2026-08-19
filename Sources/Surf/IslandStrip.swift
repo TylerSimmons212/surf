@@ -12,12 +12,6 @@ struct IslandStrip: View {
     let session: BrowserSession
     let hold: SidebarHold
 
-    /// Which island's editor is open, if any. Held here rather than per-chip so
-    /// two popovers can't be up at once.
-    @State private var editing: Island.ID?
-
-    private static let holdReason = "islands"
-
     var body: some View {
         HStack(spacing: 4) {
             ForEach(session.islands) { island in
@@ -25,23 +19,9 @@ struct IslandStrip: View {
                     island: island,
                     isCurrent: island.id == session.currentIsland.id,
                     onSelect: { session.select(island: island) },
-                    onEdit: { editing = island.id; hold.set(Self.holdReason, true) },
+                    onEdit: { session.islandBeingEdited = island },
                     onDelete: island.isHome ? nil : { session.requestDeleteIsland(island) }
                 )
-                .popover(
-                    isPresented: Binding(
-                        get: { editing == island.id },
-                        set: { presented in
-                            if !presented, editing == island.id {
-                                editing = nil
-                                hold.set(Self.holdReason, false)
-                            }
-                        }
-                    ),
-                    arrowEdge: .top
-                ) {
-                    IslandEditor(session: session, island: island)
-                }
             }
 
             Spacer(minLength: 0)
@@ -56,15 +36,15 @@ struct IslandStrip: View {
             ) {
                 let island = session.createIsland()
                 session.select(island: island)
-                editing = island.id
-                hold.set(Self.holdReason, true)
+                // Straight into the editor: the moment you make an island is
+                // the moment you know what it's for.
+                session.islandBeingEdited = island
             }
         }
         .padding(.horizontal, 10)
         .padding(.top, 6)
         .padding(.bottom, 8)
         .overlay(alignment: .top) { Divider().opacity(0.5) }
-        .onDisappear { hold.set(Self.holdReason, false) }
     }
 }
 
@@ -129,87 +109,5 @@ private struct IslandChip: View {
                 Button("Delete Island and Its Data", role: .destructive, action: onDelete)
             }
         }
-    }
-}
-
-/// Rename, re-emoji, re-tint. Opened from the chip's context menu, and
-/// automatically for a freshly created island — which is the moment you
-/// actually know what you're making it for.
-private struct IslandEditor: View {
-    let session: BrowserSession
-    let island: Island
-
-    @State private var name: String = ""
-    @FocusState private var isNameFocused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            TextField("Island name", text: $name)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 13))
-                .focused($isNameFocused)
-                .onSubmit { commit() }
-                .frame(width: 220)
-
-            FlowLayout(spacing: 6) {
-                ForEach(IslandSymbols.all, id: \.self) { symbol in
-                    Button {
-                        island.symbol = symbol
-                        session.scheduleSave()
-                    } label: {
-                        Text(symbol)
-                            .font(.system(size: 15))
-                            .frame(width: 26, height: 26)
-                            .background {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(Color.primary.opacity(island.symbol == symbol ? 0.12 : 0))
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .frame(width: 220)
-
-            HStack(spacing: 6) {
-                ForEach(IslandTint.allCases, id: \.self) { tint in
-                    Button {
-                        island.tint = tint
-                        session.scheduleSave()
-                    } label: {
-                        Circle()
-                            .fill(tint.color)
-                            .frame(width: 18, height: 18)
-                            .overlay {
-                                Circle().strokeBorder(
-                                    Color.primary.opacity(island.tint == tint ? 0.55 : 0),
-                                    lineWidth: 2
-                                )
-                            }
-                    }
-                    .buttonStyle(.plain)
-                    .help(tint.label)
-                }
-            }
-
-            if island.isHome {
-                // The one island whose isolation isn't real, said plainly. Its
-                // jar is the shared default store — which is exactly why it
-                // still has every login from before islands existed.
-                Text("Your original browsing data lives here.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 220, alignment: .leading)
-            }
-        }
-        .padding(14)
-        .onAppear {
-            name = island.name
-            isNameFocused = true
-        }
-        .onDisappear(perform: commit)
-    }
-
-    private func commit() {
-        session.rename(island, to: name)
     }
 }
