@@ -25,9 +25,16 @@ struct LoadingBorder: View {
     /// Keeps the stroke clear of the window's own rounded mask, which would
     /// otherwise shave the outer half off along the corners.
     private let inset: CGFloat = 2.5
-    /// macOS's window corner radius. The mask belongs to the system and isn't
-    /// published anywhere, so this is matched by eye.
-    private let windowRadius: CGFloat = 14
+    /// macOS's window corner radius.
+    ///
+    /// Measured, not eyeballed: the window server rounds the frame itself, so
+    /// there's no layer to read and no public API for it — but `NSWindow` does
+    /// carry the number internally, and on this OS it is 16. It was 14 here
+    /// before, guessed, and the two-point deficit plus a plain-arc corner was
+    /// enough to make the border visibly cut inside the window it traces.
+    ///
+    /// If a future macOS changes it, this is the one number to change.
+    private let windowRadius: CGFloat = 16
     /// How far the glow reaches into the page.
     private let glowWidth: CGFloat = 26
     /// One lap of the crest, in seconds. Slow enough to read as a swell rather
@@ -39,21 +46,17 @@ struct LoadingBorder: View {
         ZStack {
             innerGlow
 
+            // The traced arc is one flat colour. Running the whole ramp along
+            // it made every part of the border a different blue, which read as
+            // decoration rather than as a measurement — and the eye had nothing
+            // to fix on, because there was no one place the colour was going.
+            // Flat body, loud tip: the tip is the thing that's actually moving.
             shape
                 .trim(from: 0, to: progress.value)
-                .stroke(Color.accentColor, style: strokeStyle)
-                // The glow is what makes it read as light rather than as a
-                // border the window suddenly grew.
-                .shadow(color: Color.accentColor.opacity(0.55), radius: 5)
+                .stroke(OceanTide.shallow, style: strokeStyle)
+                .shadow(color: OceanTide.shallow.opacity(0.5), radius: 5)
 
-            // A brighter head just ahead of the fill, so the eye follows the
-            // leading edge rather than the whole arc at once.
-            if !reduceMotion, progress.value > 0.04 {
-                shape
-                    .trim(from: max(0, progress.value - 0.05), to: progress.value)
-                    .stroke(Color.white.opacity(0.9), style: strokeStyle)
-                    .blur(radius: 2.5)
-            }
+            waveHead
         }
         .padding(inset)
         .opacity(progress.isVisible ? 1 : 0)
@@ -73,90 +76,123 @@ struct LoadingBorder: View {
         .onDisappear { trickle?.cancel() }
     }
 
-    // MARK: - Inner glow
+    // MARK: - The wave
 
-    /// Light bleeding inward from the traced edge, with a crest that keeps
-    /// sweeping along it.
+    /// The breaking crest at the leading edge, and the only place the full
+    /// palette appears.
     ///
-    /// Clipped to the perimeter so the glow only ever falls *into* the page —
-    /// spilling outward would just be a fatter border.
+    /// Built as a short band at the tip rather than as a gradient along the
+    /// whole arc, because a wave is a local event: the water behind it is just
+    /// water. Three things stack up over the same few points of arc —
     ///
-    /// The motion is a rotation rather than a redraw. Regenerating the crest's
-    /// geometry every frame meant rebuilding paths and re-running four blurs at
-    /// display rate, all on the main thread; rotating one pre-drawn gradient is
-    /// a transform, so Core Animation runs it on the render thread and this
-    /// body is evaluated once per load instead of sixty times a second.
+    /// - the **curl**, a wide soft band of deep water gathering behind the
+    ///   crest, which is what gives the tip somewhere to break *from*;
+    /// - the **flow**, the mixed ocean ramp streaming through the tip, drawn as
+    ///   a rotating angular gradient masked to the band so the colours travel
+    ///   through it instead of sitting still on it;
+    /// - the **spray**, a short foam cap right at the leading point.
     @ViewBuilder
-    private var innerGlow: some View {
-        // Removed outright when nothing is drawn, which also stops the
-        // animations rather than leaving them running against a hidden view.
-        if progress.value > 0 {
+    private var waveHead: some View {
+        if progress.value > 0.004 {
             ZStack {
-                wash
-                if !reduceMotion { sweep }
+                band(span: curlSpan, width: lineWidth * 2.6, blur: 5)
+                    .foregroundStyle(OceanTide.ocean.opacity(0.5))
+
+                flow
+
+                band(span: spraySpan, width: lineWidth, blur: 0.7)
+                    .foregroundStyle(OceanTide.foam)
             }
-            .clipShape(shape)
+            // The glow belongs to the crest, not to the whole border — it's
+            // what makes the tip read as lit from inside rather than painted.
+            .shadow(color: OceanTide.shallow.opacity(0.85), radius: 7)
+            .shadow(color: OceanTide.surf.opacity(0.5), radius: 14)
+            .opacity(isSweeping && !reduceMotion ? 1 : 0.85)
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeInOut(duration: breathPeriod / 2).repeatForever(autoreverses: true),
+                value: isSweeping
+            )
             .onAppear { isSweeping = true }
         }
     }
 
-    /// A broad, soft band under everything traced so far. Redrawn only when
-    /// progress actually changes; the breathing is an opacity animation, which
-    /// costs nothing to keep running.
-    private var wash: some View {
+    /// How much arc each part of the crest covers, as a fraction of the
+    /// perimeter. Deliberately small: a crest that spans a whole side of the
+    /// window stops being a crest and becomes a gradient again.
+    private let curlSpan: CGFloat = 0.055
+    private let flowSpan: CGFloat = 0.038
+    private let spraySpan: CGFloat = 0.012
+
+    /// One band of the crest — the arc from `span` behind the leading edge up
+    /// to it, stroked and softened.
+    ///
+    /// Untinted here so callers style it; the shape work is identical for all
+    /// three and only the paint differs.
+    private func band(span: CGFloat, width: CGFloat, blur: CGFloat) -> some View {
         shape
-            .trim(from: 0, to: progress.value)
-            .stroke(
-                Color.accentColor.opacity(0.42),
-                style: StrokeStyle(lineWidth: glowWidth, lineCap: .round)
-            )
-            .blur(radius: glowWidth * 0.55)
-            .opacity(isSweeping && !reduceMotion ? 0.62 : 1)
-            .animation(
-                reduceMotion
-                    ? nil
-                    : .easeInOut(duration: breathPeriod).repeatForever(autoreverses: true),
-                value: isSweeping
-            )
+            .trim(from: max(0, progress.value - span), to: progress.value)
+            .stroke(.foreground, style: StrokeStyle(lineWidth: width, lineCap: .round))
+            .blur(radius: blur)
     }
 
-    /// The wave: a bright wedge in an angular gradient, spun about the window's
-    /// centre and masked to the traced band, so it reads as a crest travelling
-    /// around the edge.
+    /// The palette streaming through the crest.
     ///
-    /// A rotating wedge crosses the corners a little faster than the middle of
-    /// each side — angle sweeps evenly, perimeter doesn't. At this speed it
-    /// looks like a swell gathering at the corners, which is no worse than
-    /// uniform, and it buys a per-frame cost of nothing.
-    private var sweep: some View {
+    /// The colours rotate rather than the geometry: one pre-drawn angular
+    /// gradient spun about the window's centre is a transform, so Core
+    /// Animation runs it on the render thread and this body is evaluated once
+    /// per progress change instead of once per frame. Masked to the crest band,
+    /// which is what turns a spinning wheel of colour into water moving through
+    /// one point.
+    private var flow: some View {
         AngularGradient(
-            gradient: Gradient(stops: [
-                .init(color: .clear, location: 0),
-                .init(color: Color.accentColor.opacity(0.75), location: 0.06),
-                .init(color: Color.accentColor.opacity(0.28), location: 0.17),
-                .init(color: .clear, location: 0.34),
-                .init(color: .clear, location: 1),
+            gradient: Gradient(colors: [
+                OceanTide.surf, OceanTide.shallow, OceanTide.foam,
+                OceanTide.shallow, OceanTide.ocean, OceanTide.surf,
             ]),
             center: .center
         )
-        // Oversized because a rotated rectangle doesn't cover its own corners:
-        // at 45 degrees the crest would vanish exactly where the mask needs it.
         .scaleEffect(1.5)
-        .rotationEffect(.degrees(isSweeping ? 360 : 0))
+        .rotationEffect(.degrees(isSweeping && !reduceMotion ? 360 : 0))
         .animation(
-            .linear(duration: wavePeriod).repeatForever(autoreverses: false),
+            reduceMotion
+                ? nil
+                : .linear(duration: wavePeriod).repeatForever(autoreverses: false),
             value: isSweeping
         )
-        .mask {
-            // Static per progress value, so this renders once and is reused
-            // while the gradient spins underneath it.
+        .mask { band(span: flowSpan, width: lineWidth * 1.5, blur: 1.4) }
+    }
+
+    // MARK: - Inner glow
+
+    /// Light bleeding inward from the traced edge.
+    ///
+    /// Clipped to the perimeter so the glow only ever falls *into* the page —
+    /// spilling outward would just be a fatter border. One flat colour, for the
+    /// same reason the stroke is: this is the water, and the wave above is the
+    /// only thing with colours in it.
+    @ViewBuilder
+    private var innerGlow: some View {
+        // Removed outright when nothing is drawn, which also stops the
+        // animation rather than leaving it running against a hidden view.
+        if progress.value > 0 {
             shape
                 .trim(from: 0, to: progress.value)
                 .stroke(
-                    Color.white,
-                    style: StrokeStyle(lineWidth: glowWidth * 1.4, lineCap: .round)
+                    OceanTide.shallow.opacity(0.34),
+                    style: StrokeStyle(lineWidth: glowWidth, lineCap: .round)
                 )
-                .blur(radius: glowWidth * 0.5)
+                .blur(radius: glowWidth * 0.55)
+                .clipShape(shape)
+                .opacity(isSweeping && !reduceMotion ? 0.62 : 1)
+                .animation(
+                    reduceMotion
+                        ? nil
+                        : .easeInOut(duration: breathPeriod).repeatForever(autoreverses: true),
+                    value: isSweeping
+                )
+                .onAppear { isSweeping = true }
         }
     }
 
@@ -210,55 +246,39 @@ struct LoadingBorder: View {
 
 /// A rounded rectangle whose path *starts at top centre* and runs clockwise.
 ///
-/// `RoundedRectangle` starts halfway down the right edge, so trimming it would
-/// begin the sweep at the side of the window — arbitrary-looking, and it puts
-/// the finish line there too. Twelve o'clock is where an indicator is read from.
+/// Two things have to be true at once, and neither comes for free.
 ///
-/// The corners are plain arcs rather than the squircle `.continuous` uses. At a
-/// 12-point radius on a window-sized rectangle the difference isn't visible,
-/// and a hand-built path is the only way to choose where it starts.
+/// **The corners have to be the window's corners.** macOS rounds windows with
+/// continuous curvature — a squircle, not a circular arc — and the difference
+/// is not subtle at this radius: the squircle starts bending about 1.53× the
+/// radius out from the corner, so against a plain arc the two part company for
+/// a third of the way along each edge. Hand-rolling that curve means copying
+/// Apple's coefficients and hoping; `RoundedRectangle(style: .continuous)`
+/// already *is* the curve, exactly, so this borrows it rather than imitating it.
+///
+/// **The sweep has to start at twelve o'clock.** `RoundedRectangle` begins its
+/// path halfway down the right edge, which would put the start and the finish
+/// line of a progress arc at the side of the window — arbitrary-looking, and
+/// nowhere the eye goes first.
+///
+/// So the path is re-cut: take the last quarter, then append the first three.
+/// The 0.75 is exact rather than approximate, and holds for any width, height
+/// or radius — a rounded rectangle is symmetric enough that right-centre to
+/// top-centre going clockwise is three quarters of the perimeter, the same as
+/// it would be on a circle. `trimmedPath` measures by arc length, so the two
+/// pieces meet with no seam and `.trim(from:to:)` on the result runs from the
+/// top exactly as a caller would expect.
 struct WindowPerimeter: Shape {
     var cornerRadius: CGFloat
 
+    /// Where twelve o'clock falls in `RoundedRectangle`'s own parameterization.
+    private static let topCentre: CGFloat = 0.75
+
     func path(in rect: CGRect) -> Path {
-        let radius = min(cornerRadius, min(rect.width, rect.height) / 2)
-        var path = Path()
-
-        // Path coordinates are y-down, which is why every arc below sweeps with
-        // `clockwise: false` to come out visually clockwise.
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-
-        path.addLine(to: CGPoint(x: rect.maxX - radius, y: rect.minY))
-        path.addArc(
-            center: CGPoint(x: rect.maxX - radius, y: rect.minY + radius),
-            radius: radius, startAngle: .degrees(-90), endAngle: .degrees(0),
-            clockwise: false
-        )
-
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - radius))
-        path.addArc(
-            center: CGPoint(x: rect.maxX - radius, y: rect.maxY - radius),
-            radius: radius, startAngle: .degrees(0), endAngle: .degrees(90),
-            clockwise: false
-        )
-
-        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
-        path.addArc(
-            center: CGPoint(x: rect.minX + radius, y: rect.maxY - radius),
-            radius: radius, startAngle: .degrees(90), endAngle: .degrees(180),
-            clockwise: false
-        )
-
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
-        path.addArc(
-            center: CGPoint(x: rect.minX + radius, y: rect.minY + radius),
-            radius: radius, startAngle: .degrees(180), endAngle: .degrees(270),
-            clockwise: false
-        )
-
-        // Closes along the top edge, back to where the sweep began.
-        path.closeSubpath()
+        let full = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .path(in: rect)
+        var path = full.trimmedPath(from: Self.topCentre, to: 1)
+        path.addPath(full.trimmedPath(from: 0, to: Self.topCentre))
         return path
     }
 }
-
