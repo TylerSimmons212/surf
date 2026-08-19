@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The bottom of the home screen, as water for the board to sit on.
@@ -37,6 +38,15 @@ struct WaterBackground: View {
     /// Where the surface sits, as a fraction of the height.
     var surface: Double = 0.5
 
+    /// Whether the window this sea lives in is actually on screen.
+    ///
+    /// Occlusion, not focus: a minimised window, one covered by another app, or
+    /// one on a Space you've left is drawing for nobody, and without this the
+    /// timeline goes on waking the process thirty times a second to paint it.
+    /// The schedule's own `paused` flag is the off switch; the clock is
+    /// absolute, so on resume the sea is simply where it would have been.
+    @State private var windowIsVisible = true
+
     /// When set, the sea rises: over `riseDuration` the surface climbs from
     /// `surface` to above the top edge, the water deepens toward opaque, and
     /// bubbles stream up through it. Everything is computed from this date in
@@ -64,7 +74,7 @@ struct WaterBackground: View {
     var body: some View {
         // 30fps rather than the display's rate: this is a backdrop running
         // behind whatever the browser is actually doing.
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !windowIsVisible)) { timeline in
             Canvas(rendersAsynchronously: true) { context, size in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let band = min(max(size.height * 0.17, 90), 155)
@@ -83,8 +93,15 @@ struct WaterBackground: View {
                 let surface = self.surface + (Self.risenSurface - self.surface) * dive
 
                 if let mark {
-                    context.drawLayer { layer in
-                        layer.fill(mark(size), with: markShading)
+                    // The erase pass composites through an offscreen layer, and
+                    // an unclipped one is allocated at the full canvas every
+                    // frame. The mark's own bounds are the only part that can
+                    // survive the erasing, so the layer is confined to them.
+                    let markPath = mark(size)
+                    var scoped = context
+                    scoped.clip(to: Path(markPath.boundingRect))
+                    scoped.drawLayer { layer in
+                        layer.fill(markPath, with: markShading)
                         // The same wave paths the water is about to draw, but
                         // as erasers: destinationOut with opaque black removes
                         // everything under them regardless of how transparent
@@ -170,6 +187,7 @@ struct WaterBackground: View {
             }
             .allowsHitTesting(false)
         }
+        .background(WindowVisibility { windowIsVisible = $0 })
     }
 
     /// The stream of bubbles, each a pure function of its index and the clock.
@@ -274,5 +292,48 @@ struct WaterBackground: View {
         path.addLine(to: CGPoint(x: px(first), y: size.height))
         path.closeSubpath()
         return path
+    }
+}
+
+/// Reports whether the window this view sits in is visible on screen.
+///
+/// AppKit is the only party that actually knows — SwiftUI has no occlusion
+/// concept — so a zero-sized NSView rides along, watches its window's
+/// occlusion state, and phones the answer back.
+private struct WindowVisibility: NSViewRepresentable {
+    var onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Probe { Probe(onChange: onChange) }
+    func updateNSView(_ probe: Probe, context: Context) { probe.onChange = onChange }
+
+    final class Probe: NSView {
+        var onChange: (Bool) -> Void
+        private var observer: NSObjectProtocol?
+
+        init(onChange: @escaping (Bool) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        // Also the teardown: leaving the hierarchy arrives here with a nil
+        // window, which drops the observation. No deinit — a main-actor view's
+        // nonisolated deinit can't touch this state, and by the time one runs
+        // the view has already left its window.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+            guard let window else { return }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window, queue: .main
+            ) { [weak self, weak window] _ in
+                guard let self, let window else { return }
+                self.onChange(window.occlusionState.contains(.visible))
+            }
+            onChange(window.occlusionState.contains(.visible))
+        }
     }
 }
