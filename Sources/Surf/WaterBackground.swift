@@ -37,6 +37,17 @@ struct WaterBackground: View {
     /// Where the surface sits, as a fraction of the height.
     var surface: Double = 0.5
 
+    /// When set, the sea rises: over `riseDuration` the surface climbs from
+    /// `surface` to above the top edge, the water deepens toward opaque, and
+    /// bubbles stream up through it. Everything is computed from this date in
+    /// the canvas, so there is no animation state to keep in step — a frame is
+    /// a pure function of the clock.
+    var diveStartedAt: Date?
+
+    private static let riseDuration: TimeInterval = 1.5
+    /// Above 0 so the crests clear the top edge and nothing peeks back down.
+    private static let risenSurface: Double = -0.30
+
     /// The water's own colour at the surface, fading out below.
     var tint = Color(red: 0.44, green: 0.78, blue: 0.98)
 
@@ -57,6 +68,19 @@ struct WaterBackground: View {
             Canvas(rendersAsynchronously: true) { context, size in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let band = min(max(size.height * 0.17, 90), 155)
+
+                // Smoothstepped rise progress: 0 at rest, 1 once the water owns
+                // the screen. Eased here rather than by SwiftUI because the
+                // canvas redraws every frame anyway — the clock is the animator.
+                let dive: Double
+                if let start = diveStartedAt {
+                    let raw = min(max(t - start.timeIntervalSinceReferenceDate, 0)
+                                  / Self.riseDuration, 1)
+                    dive = raw * raw * (3 - 2 * raw)
+                } else {
+                    dive = 0
+                }
+                let surface = self.surface + (Self.risenSurface - self.surface) * dive
 
                 if let mark {
                     context.drawLayer { layer in
@@ -104,6 +128,28 @@ struct WaterBackground: View {
                     )
                 )
 
+                // The deep, arriving with the dive: under every crest, nearly
+                // opaque at full rise, darker toward the bottom the way water
+                // is. Kept below the lowest crest so it never draws its own
+                // edge above one.
+                if dive > 0 {
+                    let veil = Self.wave(size: size, surface: surface, band: band,
+                                         depth: 9, shift: 40)
+                    context.fill(
+                        veil,
+                        with: .linearGradient(
+                            Gradient(colors: [
+                                tint.opacity(0.90 * dive),
+                                Color(red: 0.16, green: 0.42, blue: 0.72).opacity(0.96 * dive),
+                            ]),
+                            startPoint: CGPoint(x: 0, y: max(size.height * surface, 0)),
+                            endPoint: CGPoint(x: 0, y: size.height)
+                        )
+                    )
+                    Self.drawBubbles(in: &context, size: size, surface: surface,
+                                     time: t, intensity: dive)
+                }
+
                 for layer in Self.layers {
                     let progress = ((t - layer.delay) / layer.period).truncatingRemainder(dividingBy: 1)
                     let shift = Self.start + Self.travel * CGFloat(progress < 0 ? progress + 1 : progress)
@@ -123,6 +169,52 @@ struct WaterBackground: View {
                 }
             }
             .allowsHitTesting(false)
+        }
+    }
+
+    /// The stream of bubbles, each a pure function of its index and the clock.
+    ///
+    /// No particle state: bubble `i` has a size, a lane, a period and a sway
+    /// derived from hashing its index, and its position is where that puts it
+    /// at time `t`. Frames are independent, which is what lets the canvas be
+    /// redrawn from nothing thirty times a second — and what made the waves
+    /// loop seamlessly — so the bubbles work the same way.
+    private static func drawBubbles(
+        in context: inout GraphicsContext, size: CGSize,
+        surface: Double, time: Double, intensity: Double
+    ) {
+        func rnd(_ i: Int, _ salt: Double) -> Double {
+            abs(sin(Double(i) * 127.1 + salt * 311.7) * 43758.5453)
+                .truncatingRemainder(dividingBy: 1)
+        }
+        let top = size.height * surface + 6
+        let bottom = size.height + 24
+        guard bottom > top else { return }
+
+        for i in 0..<46 {
+            // The stream thickens as the water rises: each bubble has a turn.
+            guard rnd(i, 7) < intensity else { continue }
+            let period = 2.1 + 2.9 * rnd(i, 3)
+            let u = ((time / period) + rnd(i, 4)).truncatingRemainder(dividingBy: 1)
+            let y = bottom - (bottom - top) * u
+
+            // Small bubbles are common, big ones rare — the power skews it.
+            let r = 2.4 + 7.5 * pow(rnd(i, 2), 1.7)
+            let sway = (5 + 11 * rnd(i, 5))
+                * sin(time * (0.7 + 0.9 * rnd(i, 6)) + rnd(i, 4) * 6.28)
+            let x = size.width * rnd(i, 1) + sway
+
+            // Born small and faint, gone just before the surface.
+            let fade = min(u / 0.10, min(1, (1 - u) / 0.08))
+            let alpha = fade * intensity
+            let rect = CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)
+            context.fill(Path(ellipseIn: rect), with: .color(.white.opacity(0.15 * alpha)))
+            context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.50 * alpha)),
+                           lineWidth: 1.2)
+            // The highlight that says sphere rather than ring.
+            let hl = CGRect(x: x - r * 0.45, y: y - r * 0.55,
+                            width: r * 0.55, height: r * 0.55)
+            context.fill(Path(ellipseIn: hl), with: .color(.white.opacity(0.42 * alpha)))
         }
     }
 

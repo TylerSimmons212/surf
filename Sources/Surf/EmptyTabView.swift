@@ -27,13 +27,14 @@ struct EmptyTabView: View {
             // layers are translucent, so anything merely behind them ghosts
             // through. The water erases the mark with its own wave shapes
             // instead, and the letters' bottom edge becomes the crest line.
-            WaterBackground(surface: waterline, mark: Self.markPath)
+            WaterBackground(surface: waterline, diveStartedAt: tab.diveStartedAt,
+                            mark: Self.markPath)
                 .ignoresSafeArea()
 
             // On the water, at its own surface.
             VStack(spacing: 8) {
                 field
-                if completions.isShowing {
+                if completions.isShowing && !tab.isDiving {
                     SuggestionList(
                         suggestions: completions.suggestions,
                         highlighted: completions.highlighted,
@@ -43,8 +44,31 @@ struct EmptyTabView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            // The board goes under as the water comes up — slipping below the
+            // rising surface rather than blinking out, which is the one wrong
+            // note a disappearing control could hit here.
+            .offset(y: tab.isDiving ? 130 : 0)
+            .opacity(tab.isDiving ? 0 : 1)
+            .animation(.easeIn(duration: 0.55), value: tab.isDiving)
+            .allowsHitTesting(!tab.isDiving)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The reveal. Time answers for the rise; the tab answers for the page.
+        // Both have to be true: fading out while the water is still climbing
+        // would show the page through a half-risen sea.
+        .task(id: tab.isDiving) {
+            guard tab.isDiving else { return }
+            let minimumRise: TimeInterval = 1.9
+            while !Task.isCancelled && tab.isDiving {
+                if let start = tab.diveStartedAt,
+                   Date().timeIntervalSince(start) >= minimumRise,
+                   !tab.isLoading {
+                    tab.completeDive()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
     }
 
     /// Where the surface sits. The board is centred, so this is where the two

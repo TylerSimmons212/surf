@@ -20,6 +20,12 @@ final class Tab: NSObject, Identifiable {
 
     private(set) var mode: Mode = .home
 
+    /// The home screen's exit. Submitting from home starts the load at once,
+    /// but the mode holds at `.home` while the water rises over the screen —
+    /// the page is revealed by `completeDive()`, not by the load starting.
+    private(set) var isDiving = false
+    private(set) var diveStartedAt: Date?
+
     /// What the address field shows. Held separately from the page's real URL so
     /// mid-edit typing isn't overwritten by an unrelated navigation.
     var addressText: String = ""
@@ -1210,8 +1216,10 @@ final class Tab: NSObject, Identifiable {
                     self.media = nil
                     self.clearMediaFrames()
                     // A popup tab starts in .home but is loaded by WebKit
-                    // directly, so the mode has to follow the URL.
-                    if self.mode == .home { self.mode = .browsing }
+                    // directly, so the mode has to follow the URL. Not during
+                    // a dive, though: there the load starting is precisely the
+                    // moment the home screen must stay up.
+                    if self.mode == .home && !self.isDiving { self.mode = .browsing }
                     // Swap the icon as soon as the host changes, so a stale
                     // favicon never sits next to a different site's title.
                     if url.host != self.faviconHost {
@@ -1232,8 +1240,24 @@ final class Tab: NSObject, Identifiable {
         hasNavigatedExplicitly = true
         pendingRestore = nil
         lastError = nil
-        mode = .browsing
+        if mode == .home {
+            // The screen stays on the home view while the page loads behind
+            // it: the water rises to cover everything, and the flip to
+            // `.browsing` is the reveal at the end, not this line.
+            isDiving = true
+            diveStartedAt = Date()
+        } else {
+            mode = .browsing
+        }
         webView.load(URLRequest(url: url))
+    }
+
+    /// The reveal: the page is ready and the water has risen, so show it.
+    func completeDive() {
+        guard isDiving else { return }
+        isDiving = false
+        diveStartedAt = nil
+        mode = .browsing
     }
 
     func reload() {
@@ -1310,6 +1334,10 @@ final class Tab: NSObject, Identifiable {
     /// Returns to the search screen without tearing down the web view, so the
     /// page and its history are still there if the user navigates again.
     func goHome() {
+        // A dive abandoned mid-rise would otherwise complete later, on a page
+        // the user has already walked away from.
+        isDiving = false
+        diveStartedAt = nil
         mode = .home
         addressText = ""
         lastError = nil
