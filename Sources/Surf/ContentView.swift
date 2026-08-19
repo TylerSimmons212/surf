@@ -310,7 +310,7 @@ private struct TabContent: View {
         Group {
             switch tab.mode {
             case .home:
-                EmptyTabView(onOpenAddressBar: onOpenAddressBar)
+                EmptyTabView(session: session, tab: tab)
             case .browsing:
                 ZStack {
                     if PopOutController.shared.isPoppedOut(tab) {

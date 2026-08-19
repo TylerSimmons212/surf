@@ -1,77 +1,135 @@
+import SurfCore
 import SwiftUI
 
-/// What a new tab shows behind the address palette.
+/// The home screen: the name, and the thing you type into.
 ///
-/// Deliberately almost nothing. A new tab immediately opens the floating
-/// address bar, so this is a backdrop rather than a screen — anything more
-/// would compete with the palette sitting on top of it, and would be a second
-/// place to type an address when there should only ever be one.
+/// This used to be a backdrop — a button shaped like the palette, which opened
+/// the palette on top of it. Clicking a text field and being handed a second
+/// text field is a seam you can feel, so the field here is the real one. The
+/// palette still exists for every other tab, where there is a page underneath
+/// that has to stay visible; on home there is nothing to float over.
 struct EmptyTabView: View {
-    let onOpenAddressBar: () -> Void
+    let session: BrowserSession
+    let tab: Tab
 
+    @State private var text = ""
+    @State private var completions = SuggestionController()
     @State private var isHovering = false
 
-    /// Matches the palette's width exactly — the click is supposed to look
-    /// like this bar coming forward, not like a second control appearing.
+    /// The palette's width, still — the two are different presentations of one
+    /// control, and a different measure would say otherwise.
     private let barWidth: CGFloat = 620
 
     var body: some View {
-        VStack(spacing: 22) {
+        VStack(spacing: 30) {
+            // Large, because this is the one place the name is the subject
+            // rather than a label — and because Outfit's low x-height only
+            // pays off at a size where the lowercase has room to breathe.
             Text("Surf")
-                .font(Typeface.outfit(size: 40))
-                .foregroundStyle(.primary.opacity(0.5))
+                .font(Typeface.outfit(size: 72))
+                .foregroundStyle(.primary.opacity(0.45))
+                .kerning(1)
 
-            searchBar
+            VStack(spacing: 8) {
+                field
+                if completions.isShowing {
+                    SuggestionList(
+                        suggestions: completions.suggestions,
+                        highlighted: completions.highlighted,
+                        onPick: navigate
+                    )
+                    .frame(width: barWidth)
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: session.focusAddressToken) { _, _ in
+            // ⌘L on home means this field, not a panel over it.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
     }
 
-    /// Shaped like the field it opens, at the size the palette will appear —
-    /// so clicking it reads as the same object coming forward rather than one
-    /// control being swapped for another.
-    private var searchBar: some View {
-        Button(action: onOpenAddressBar) {
-            HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(isHovering ? Color.accentColor : Color.secondary)
+    private var field: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "magnifyingglass")
+                .font(Typeface.figtree(size: 17, weight: 500))
+                .foregroundStyle(isHovering || !text.isEmpty ? Color.accentColor : Color.secondary)
 
-                Text("Search or enter address")
-                    .font(.system(size: 17))
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 8)
-
-                Text("⌘L")
-                    .font(.system(size: 12, weight: .medium).monospaced())
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color.primary.opacity(0.08))
-                    }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 15)
-            .frame(width: barWidth)
-            // A capsule rather than a rounded rectangle, so the ends stay true
-            // semicircles at whatever height the type sets. The tint warms on
-            // hover instead of a plate fading in behind it: glass is the
-            // surface, so the surface itself should respond.
-            .glassEffect(
-                .regular
-                    .tint(isHovering ? Color.accentColor.opacity(0.10) : nil)
-                    .interactive(),
-                in: Capsule()
+            SurfTextField(
+                text: $text,
+                placeholder: "Search or enter address",
+                font: .systemFont(ofSize: 19, weight: .regular),
+                onSubmit: submit,
+                onMove: { direction in
+                    guard completions.isShowing else { return }
+                    completions.moveHighlight(by: direction)
+                },
+                onCancel: { completions.dismiss() }
             )
-            .contentShape(Capsule())
+            .frame(height: 26)
+            .onChange(of: text) { _, value in
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                    completions.update(for: value, isFocused: true)
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .shadow(color: .black.opacity(isHovering ? 0.20 : 0.12), radius: isHovering ? 22 : 14, y: 6)
-        .scaleEffect(isHovering ? 1.012 : 1)
+        // Wider than the palette's inset, and for a reason the shape dictates:
+        // the board is only at full height across its middle, so text starting
+        // where a capsule's would start would sit against the taper.
+        .padding(.horizontal, 46)
+        .padding(.vertical, 17)
+        .frame(width: barWidth)
+        .glassEffect(
+            .regular
+                .tint(text.isEmpty ? (isHovering ? Color.accentColor.opacity(0.08) : nil)
+                                   : Color.accentColor.opacity(0.10))
+                .interactive(),
+            in: SurfboardShape()
+        )
+        .background { SurfboardShape().fill(.thickMaterial) }
+        .overlay {
+            // The stringer, and the one place the shape is stated outright:
+            // a line down the middle reads as a board rather than as a field
+            // whose corners went wrong. Short of the tips, where the outline
+            // has closed in on it.
+            Capsule()
+                .fill(.white.opacity(0.22))
+                .frame(width: barWidth * 0.66, height: 1.5)
+                .allowsHitTesting(false)
+        }
+        .overlay {
+            SurfboardShape()
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.white.opacity(0.38), .white.opacity(0.06)],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
+                .allowsHitTesting(false)
+        }
+        .contentShape(SurfboardShape())
+        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: text.isEmpty)
+        .shadow(color: .black.opacity(isHovering ? 0.20 : 0.14), radius: isHovering ? 24 : 16, y: 8)
+        .scaleEffect(isHovering ? 1.008 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovering)
         .onHover { isHovering = $0 }
-        .help("Search or enter address (⌘L)")
+    }
+
+    private func submit() {
+        if let entry = completions.highlightedEntry {
+            navigate(to: entry)
+            return
+        }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        session.submitFromPalette(text, creatingTab: false)
+        completions.dismiss()
+        text = ""
+    }
+
+    private func navigate(to entry: HistoryEntry) {
+        session.submitFromPalette(entry.url, creatingTab: false)
+        completions.dismiss()
+        text = ""
     }
 }
