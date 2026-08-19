@@ -16,6 +16,16 @@ struct EmptyTabView: View {
     @State private var completions = SuggestionController()
     @State private var isHovering = false
 
+    /// The session's address-focus token, but only advanced while this tab is
+    /// the focused one.
+    ///
+    /// Two home tabs can be on screen at once now, and the field focuses on any
+    /// *change* to the token it's given — so handing both panes the session's
+    /// token directly made one ⌘L put the caret in both, with the loser of the
+    /// race keeping it. Latching here means an unfocused pane sees a value that
+    /// never moves, and focus changes alone don't count as a request either.
+    @State private var focusToken = 0
+
     /// The palette's width, still — the two are different presentations of one
     /// control, and a different measure would say otherwise.
     private let barWidth: CGFloat = 620
@@ -113,7 +123,7 @@ struct EmptyTabView: View {
                 // The board sets its own surface, so the ink is chosen against
                 // that rather than against the window's appearance.
                 textColor: NSColor(red: 0.06, green: 0.15, blue: 0.24, alpha: 1),
-                focusToken: session.focusAddressToken,
+                focusToken: focusToken,
                 onSubmit: submit,
                 onMove: { direction in
                     guard completions.isShowing else { return }
@@ -126,6 +136,10 @@ struct EmptyTabView: View {
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
                     completions.update(for: value, isFocused: true)
                 }
+            }
+            .onChange(of: session.focusAddressToken) { _, new in
+                guard tab.id == session.selectedTabID else { return }
+                focusToken = new
             }
         }
         // Asymmetric, because the shape is. The tail end is blunt and needs

@@ -33,6 +33,31 @@ final class BrowserSession {
     /// hibernation, and whatever is playing audio.
     var allTabs: [Tab] { islands.flatMap(\.tabs) }
 
+    /// The two tabs on screen side by side, or nil when one page fills the
+    /// window.
+    ///
+    /// Ordered by *position*, not by focus, and that separation is the whole
+    /// design. Focus is still `selectedTabID` — so all the chrome that follows
+    /// the selected tab keeps working untouched — but clicking the right-hand
+    /// page must not make it jump to the left. Storing the sides here and the
+    /// focus there is what lets focus move without anything sliding around.
+    ///
+    /// Invariant, upheld by `setSplit`: when this is non-nil both tabs are live
+    /// and in the current island, they are distinct, and `selectedTabID` is one
+    /// of them.
+    private(set) var split: SplitPanes?
+
+    /// Which tabs are showing right now — one, or two when split.
+    var visibleTabIDs: Set<Tab.ID> {
+        guard let split else { return [selectedTabID] }
+        return [split.leading, split.trailing]
+    }
+
+    func isVisible(_ tab: Tab) -> Bool { visibleTabIDs.contains(tab.id) }
+
+    /// The live tab for an id, in the island on screen.
+    func tab(_ id: Tab.ID) -> Tab? { currentIsland.tabs.first { $0.id == id } }
+
     /// Deep enough to cover a run of accidental closes, shallow enough that it
     /// isn't quietly accumulating everywhere you've been.
     ///
@@ -251,7 +276,16 @@ final class BrowserSession {
         // island: switching away is not the only way to leave one — quitting
         // is too, and the remembered tab is what the next launch opens.
         currentIsland.rememberedSelection = tab.id
-        if outgoing !== tab { outgoing.didResignVisible() }
+
+        // Selecting a tab that isn't part of the split ends it: the new page
+        // fills the window, and a pair that outlived the selection would leave
+        // a pane on screen belonging to neither.
+        if let split, !split.contains(tab.id) { setSplit(nil) }
+
+        // Losing focus is not the same as leaving the screen. The other pane of
+        // a split is still right there, and telling it otherwise stops its
+        // restyling and starts its hibernation clock while it's still visible.
+        if outgoing !== tab, !isVisible(outgoing) { outgoing.didResignVisible() }
         tab.didBecomeVisible()
         reclaimIdleTabs()
     }
@@ -284,7 +318,7 @@ final class BrowserSession {
                 // remembered selection is exactly the kind of tab worth
                 // reclaiming — nobody has looked at it since they switched
                 // away, which is the whole memory case for islands.
-                isProtected: tab.id == selectedTabID
+                isProtected: visibleTabIDs.contains(tab.id)
                     || tab.media?.isPlaying == true
                     || PopOutController.shared.isPoppedOut(tab)
                     || DevToolsController.shared.isOpen(for: tab)
@@ -545,6 +579,22 @@ final class BrowserSession {
         // Before teardown, or the panel would be left showing a dead page.
         DevToolsController.shared.close(for: tab)
 
+        // Closing half a split doesn't shrink the split, it ends it: the other
+        // page goes back to filling the window. Done up front, while the tab is
+        // still live, so `setSplit` can hand visibility to the survivor before
+        // anything is torn down.
+        if let split, split.contains(tab.id) {
+            let survivor = split.collapsing(after: tab.id)
+            setSplit(nil)
+            // Closing the unfocused half leaves focus where it was; closing the
+            // focused half moves it to the survivor rather than letting the
+            // usual next-tab rule pick a third page nobody asked for.
+            if tab.id == selectedTabID, let survivor,
+               let next = island.tabs.first(where: { $0.id == survivor }) {
+                adoptSelection(next)
+            }
+        }
+
         rememberClosedTab(tab, in: island)
 
         // Explicit teardown, not just dropping the reference: a web view with
@@ -604,6 +654,173 @@ final class BrowserSession {
         scheduleSave()
     }
 
+    // MARK: - Split
+
+    /// Shows `tab` beside the current page, on the given side.
+    ///
+    /// Focus follows the drop: you just put this tab there, so the address bar,
+    /// find bar and title should be about it rather than about the page it
+    /// landed next to.
+    func openSplit(with tab: Tab, on side: SplitPanes.Side) {
+        // Same island only. The pair is drawn from the list the sidebar is
+        // showing, and a pane holding a tab from another island would be a page
+        // on screen with no row anywhere to close it from — plus two cookie
+        // jars side by side with nothing saying which is which.
+        guard currentIsland.contains(tab) else { return }
+
+        let other = split.map { $0.tab(on: side == .leading ? .trailing : .leading) }
+            ?? selectedTabID
+        guard tab.id != other else { return }
+
+        let panes = side == .leading
+            ? SplitPanes(leading: tab.id, trailing: other)
+            : SplitPanes(leading: other, trailing: tab.id)
+        guard let panes else { return }
+
+        setSplit(panes)
+        setSelection(to: tab.id)
+    }
+
+    /// Splits with the tab after the current one — the keyboard route to a
+    /// split, for when dragging isn't to hand.
+    func splitWithNextTab() {
+        guard !isSplit, tabs.count > 1,
+              let current = tabs.firstIndex(where: { $0.id == selectedTabID }),
+              let next = TabSelection.cycled(from: current, by: 1, count: tabs.count)
+        else { return }
+        openSplit(with: tabs[next], on: .trailing)
+    }
+
+    /// Ends the split, keeping whichever pane had focus.
+    func closeSplit() {
+        guard split != nil else { return }
+        setSplit(nil)
+        scheduleSave()
+    }
+
+    /// Ends the split, keeping the pane that *didn't* have focus — how you
+    /// close the half you're looking at.
+    func closeFocusedPane() {
+        guard let split, let survivor = split.collapsing(after: selectedTabID) else { return }
+        setSplit(nil)
+        setSelection(to: survivor)
+        scheduleSave()
+    }
+
+    func swapSplitSides() {
+        guard let split else { return }
+        setSplit(split.swapped())
+        scheduleSave()
+    }
+
+    var isSplit: Bool { split != nil }
+
+    /// The one writer of `split`, so the "both panes visible" bookkeeping can't
+    /// be forgotten at a call site.
+    ///
+    /// A tab in a pane is on screen even when it isn't the focused one, and
+    /// `didBecomeVisible`/`didResignVisible` is how a tab learns that — it
+    /// drives restyling, colour sampling, and its hibernation clock. Getting it
+    /// wrong doesn't merely look untidy: a pane that was never told it became
+    /// visible sits there with a stale last-viewed time and is eventually put
+    /// to sleep while the user is looking straight at it.
+    private func setSplit(_ new: SplitPanes?) {
+        let before = visibleTabIDs
+        split = new
+        let after = visibleTabIDs
+
+        // The sidebar draws the pair as one grouped row, so the two have to
+        // actually *be* a pair in the list. Left where they were, the group is a
+        // drawing that disagrees with the list it comes from: reorder anything
+        // between them and it appears to teleport, and there is no coherent
+        // answer to where the group should land when it's dragged. Pulling the
+        // trailing tab up to its partner is also what makes swapping the panes
+        // swap the halves in the list.
+        if let new,
+           let order = TabOrder.placing(
+               new.trailing,
+               immediatelyAfter: new.leading,
+               in: currentIsland.tabs.map(\.id)
+           ) {
+            currentIsland.reorder(to: order)
+        }
+
+        for id in before.subtracting(after) {
+            allTabs.first { $0.id == id }?.didResignVisible()
+        }
+        for id in after.subtracting(before) {
+            allTabs.first { $0.id == id }?.didBecomeVisible()
+        }
+    }
+
+    // MARK: - Reordering
+
+    /// Moves the dragged tab into the slot the target row currently occupies.
+    ///
+    /// Both ends are looked up by identity at call time, because during a live
+    /// drag this fires once per row crossed and the indices from the previous
+    /// call are already stale.
+    ///
+    /// Deliberately *doesn't* save. A drag down a long list calls this once per
+    /// row crossed, and each save snapshots every tab in every island — work
+    /// thrown away by the next crossing a moment later. `commitTabReorder`
+    /// pays it once, when the drag is over.
+    @discardableResult
+    func moveTab(_ movedID: Tab.ID, before targetID: Tab.ID) -> Bool {
+        let island = currentIsland
+        guard let from = island.tabs.firstIndex(where: { $0.id == movedID }),
+              let to = island.tabs.firstIndex(where: { $0.id == targetID }),
+              from != to
+        else { return false }
+        island.move(fromIndex: from, toIndex: to)
+        return true
+    }
+
+    /// Dropping past the last row files the tab at the end of the list.
+    @discardableResult
+    func moveTabToEnd(_ movedID: Tab.ID) -> Bool {
+        let island = currentIsland
+        guard let from = island.tabs.firstIndex(where: { $0.id == movedID }),
+              from != island.tabs.count - 1
+        else { return false }
+        island.move(fromIndex: from, toIndex: island.tabs.count - 1)
+        return true
+    }
+
+    /// Moves both halves of the split together, keeping their order.
+    ///
+    /// The pair is one row in the sidebar, so it has to be one thing to drag as
+    /// well — otherwise the only way to reposition a split in the list is to
+    /// break it, move the tabs, and build it again.
+    @discardableResult
+    func moveSplitPair(before targetID: Tab.ID) -> Bool {
+        guard let split else { return false }
+        guard let order = TabOrder.moving(
+            [split.leading, split.trailing],
+            before: targetID,
+            in: currentIsland.tabs.map(\.id)
+        ) else { return false }
+        currentIsland.reorder(to: order)
+        return true
+    }
+
+    @discardableResult
+    func moveSplitPairToEnd() -> Bool {
+        guard let split else { return false }
+        guard let order = TabOrder.movingToEnd(
+            [split.leading, split.trailing],
+            in: currentIsland.tabs.map(\.id)
+        ) else { return false }
+        currentIsland.reorder(to: order)
+        return true
+    }
+
+    /// Persists an order arrived at by dragging. Called once the drag ends —
+    /// including when it's cancelled, since the rows have already moved.
+    func commitTabReorder() {
+        scheduleSave()
+    }
+
     // MARK: - Selection
 
     func select(_ tab: Tab) {
@@ -636,7 +853,15 @@ final class BrowserSession {
 
         // Leaving a tab mid-video pops it out so it stays watchable. Measured
         // before the selection changes, while the web view is still laid out.
-        if shouldAutoPopOut(outgoing) {
+        //
+        // "Leaving" has to mean leaving the *screen*, not losing focus, and the
+        // two came apart when panes arrived. Moving focus between the halves of
+        // a split keeps both pages up, so the outgoing one isn't going
+        // anywhere; selecting a third tab collapses the split, so it is.
+        let outgoingStaysVisible = split.map {
+            $0.contains(outgoing.id) && $0.contains(id)
+        } ?? false
+        if !outgoingStaysVisible, shouldAutoPopOut(outgoing) {
             PopOutController.shared.popOut(outgoing)
         }
 

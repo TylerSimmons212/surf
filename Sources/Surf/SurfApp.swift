@@ -99,6 +99,23 @@ struct SurfApp: App {
 
             Divider()
 
+            // The split is made by dragging a tab onto the page, which is
+            // discoverable but unguessable — so the menu is where it says it
+            // exists, and where you find out how to undo it.
+            Button("Split With Next Tab") { session.splitWithNextTab() }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(session.tabs.count < 2 || session.isSplit)
+
+            Button("Close Split") { session.closeSplit() }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(!session.isSplit)
+
+            Button("Swap Split Sides") { session.swapSplitSides() }
+                .keyboardShortcut("d", modifiers: [.command, .option])
+                .disabled(!session.isSplit)
+
+            Divider()
+
             Button("Open Location…") { session.requestAddressFocus() }
                 .keyboardShortcut("l", modifiers: .command)
 

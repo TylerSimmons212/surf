@@ -1,6 +1,7 @@
 import AppKit
 import SurfCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The vertical tab list plus the navigation controls.
 ///
@@ -27,6 +28,10 @@ struct Sidebar: View {
     let lightsRevealed: Bool
     /// Lets the sidebar's own transient UI keep it on screen.
     let hold: SidebarHold
+    /// The in-flight tab drag, owned by the window: a drag that starts on a row
+    /// can end on the page, so the drop zones over the content area have to be
+    /// watching the same object the rows write to.
+    let dragContext: TabDragContext
 
     @State private var isHoveringNewTab = false
 
@@ -80,19 +85,113 @@ struct Sidebar: View {
     private var tabList: some View {
         ScrollView {
             LazyVStack(spacing: 4) {
-                ForEach(session.tabs) { tab in
-                    TabRow(
-                        tab: tab,
-                        isSelected: tab.id == session.selectedTabID,
-                        onSelect: { session.select(tab) },
-                        onClose: { session.close(tab) }
-                    )
+                ForEach(entries) { entry in
+                    switch entry {
+                    case .single(let tab):
+                        row(for: tab)
+                    case .pair(let anchor, let leading, let trailing):
+                        SplitPairRow(
+                            session: session,
+                            dragContext: dragContext,
+                            leading: leading,
+                            trailing: trailing
+                        )
+                        // The pair is one row as far as the list is concerned,
+                        // so a tab dropped on it lands where the group sits
+                        // rather than between its halves.
+                        .onDrop(of: [.text], delegate: TabReorderDropDelegate(
+                            targetID: anchor,
+                            drag: dragContext,
+                            session: session
+                        ))
+                    }
                 }
                 newTabButton
+                    // Dropping below the last row — on the New Tab button —
+                    // files the tab at the end rather than dead-ending the drag.
+                    .onDrop(of: [.text], delegate: TabReorderDropDelegate(
+                        targetID: nil,
+                        drag: dragContext,
+                        session: session
+                    ))
             }
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
+            .animation(.snappy(duration: 0.26, extraBounce: 0), value: session.split)
         }
+    }
+
+    /// The list as rows: tabs on their own, plus the split pair drawn as a
+    /// single side-by-side row.
+    ///
+    /// The pair takes the slot of whichever of its tabs comes first, so pairing
+    /// never makes the group jump to somewhere else in the list.
+    ///
+    /// While one of the two is being dragged they come apart and show as
+    /// ordinary rows. Pulling a tab out of the group is how a split is ended,
+    /// and that only reads as pulling it out if the group actually opens as you
+    /// pull — held together, the dragged row would have nowhere to move to and
+    /// the drag would look broken.
+    private var entries: [SidebarEntry] {
+        let tabs = session.tabs
+        let isPullingApart = !dragContext.isDraggingPair
+            && dragContext.settledDragID.map { id in
+                session.split?.contains(id) == true
+            } ?? false
+
+        guard !isPullingApart,
+              let split = session.split,
+              let leading = tabs.first(where: { $0.id == split.leading }),
+              let trailing = tabs.first(where: { $0.id == split.trailing })
+        else { return tabs.map(SidebarEntry.single) }
+
+        var entries: [SidebarEntry] = []
+        var placed = false
+        for tab in tabs {
+            guard split.contains(tab.id) else {
+                entries.append(.single(tab))
+                continue
+            }
+            guard !placed else { continue }
+            placed = true
+            entries.append(.pair(anchor: tab.id, leading: leading, trailing: trailing))
+        }
+        return entries
+    }
+
+    private func row(for tab: Tab) -> some View {
+        let isDragged = dragContext.draggedID == tab.id
+
+        return TabRow(
+            tab: tab,
+            isSelected: tab.id == session.selectedTabID,
+            onSelect: { session.select(tab) },
+            onClose: { session.close(tab) }
+        )
+        // While a tab rides the cursor as the drag preview, its row becomes an
+        // empty slot: same footprint, no content — the tab appears once, and
+        // the slot is where it lands. `opacity`, not `hidden`, so the slot
+        // keeps taking drops.
+        .opacity(isDragged ? 0 : 1)
+        .background {
+            if isDragged {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
+        }
+        // Rounds the floating snapshot to match the row it left.
+        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .onDrag {
+            dragContext.begin(tab.id) { session.commitTabReorder() }
+        }
+        // The reorder happens in `dropEntered`, not on release — the slot
+        // slides through the list as the drag crosses rows, so the drop is
+        // letting go of an order already shown.
+        .onDrop(of: [.text], delegate: TabReorderDropDelegate(
+            targetID: tab.id,
+            drag: dragContext,
+            session: session
+        ))
     }
 
     private var newTabButton: some View {
@@ -124,6 +223,483 @@ struct Sidebar: View {
         .animation(.spring(response: 0.32, dampingFraction: 0.65), value: isHoveringNewTab)
         .onHover { isHoveringNewTab = $0 }
         .help("New Tab (⌘T)")
+    }
+}
+
+// MARK: - Split pair
+
+/// One line of the tab list.
+private enum SidebarEntry: Identifiable {
+    case single(Tab)
+    /// The two tabs on screen together, drawn as one row. `anchor` is the tab
+    /// whose slot the group occupies — the earlier of the two in the list.
+    case pair(anchor: Tab.ID, leading: Tab, trailing: Tab)
+
+    var id: Tab.ID {
+        switch self {
+        case .single(let tab): tab.id
+        case .pair(let anchor, _, _): anchor
+        }
+    }
+}
+
+/// The split pair as one row: both tabs side by side, in the same order as the
+/// panes they stand for.
+///
+/// Grouping them is what makes a split legible from the list. Left as two
+/// ordinary rows, a split showed up as one highlighted row and one that looked
+/// like any other — nothing said the two pages were on screen together, and
+/// nothing said which was on which side. Here the row is a small picture of the
+/// window.
+private struct SplitPairRow: View {
+    let session: BrowserSession
+    let dragContext: TabDragContext
+    let leading: Tab
+    let trailing: Tab
+
+    @State private var isHoveringSeam = false
+    @State private var isHoveringGrip = false
+
+    private var isCarried: Bool { dragContext.draggedID == leading.id && dragContext.isDraggingPair }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            grip
+            half(leading)
+            seam
+            half(trailing)
+        }
+        .padding(3)
+        .background {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.accentColor.opacity(0.10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.28), lineWidth: 1)
+                }
+        }
+        // Carried as one thing, so it empties as one thing — the same slot the
+        // single rows leave behind.
+        .opacity(isCarried ? 0 : 1)
+        .background {
+            if isCarried {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.primary.opacity(0.06))
+            }
+        }
+    }
+
+    /// The handle for the group as a whole.
+    ///
+    /// Without it the pair could only be taken apart, never moved: every other
+    /// drag on this row is a drag of one half, and one half leaving is what ends
+    /// the split. Repositioning a split in the list would have meant breaking
+    /// it, moving two tabs, and building it again.
+    ///
+    /// A spine rather than a button-sized control — it reads as the thing that
+    /// binds the two rows together, which is exactly what you take hold of to
+    /// move both.
+    private var grip: some View {
+        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+            .fill(Color.accentColor.opacity(isHoveringGrip ? 0.9 : 0.45))
+            .frame(width: 3)
+            .frame(maxHeight: .infinity)
+            .padding(.vertical, 5)
+            .frame(width: 11)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHoveringGrip = hovering
+                // Balanced by the `else`, and by `onDisappear` for the case the
+                // row is rebuilt from under the pointer — an unmatched push
+                // leaves the whole app wearing an open hand.
+                if hovering { NSCursor.openHand.push() } else { NSCursor.pop() }
+            }
+            .onDisappear {
+                if isHoveringGrip {
+                    isHoveringGrip = false
+                    NSCursor.pop()
+                }
+            }
+            .animation(.easeOut(duration: 0.14), value: isHoveringGrip)
+            .onDrag {
+                dragContext.beginPair(leading.id) { session.commitTabReorder() }
+            } preview: {
+                dragPreview
+            }
+            .help("Drag to move both tabs")
+    }
+
+    /// What rides the cursor during a pair drag.
+    ///
+    /// Spelled out rather than letting the drag take a snapshot of the grip: the
+    /// preview defaults to the view the gesture is attached to, and a 3pt spine
+    /// floating across the screen says nothing about what is being moved.
+    private var dragPreview: some View {
+        HStack(spacing: 7) {
+            StatusIcon(tab: leading)
+            Text(leading.displayTitle)
+                .lineLimit(1)
+            Image(systemName: "rectangle.split.2x1")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            StatusIcon(tab: trailing)
+            Text(trailing.displayTitle)
+                .lineLimit(1)
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(width: Sidebar.width - 16)
+        .background {
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(Color.accentColor.opacity(0.16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 1)
+                }
+        }
+    }
+
+    private func half(_ tab: Tab) -> some View {
+        CompactTabRow(
+            tab: tab,
+            isSelected: tab.id == session.selectedTabID,
+            isDragged: dragContext.draggedID == tab.id,
+            onSelect: { session.select(tab) },
+            onClose: { session.close(tab) }
+        )
+        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onDrag {
+            dragContext.begin(tab.id) { session.commitTabReorder() }
+        }
+        .onDrop(of: [.text], delegate: PaneSlotDropDelegate(
+            targetID: tab.id,
+            drag: dragContext,
+            session: session
+        ))
+    }
+
+    /// The seam between the halves, which is also the way out: it stands for
+    /// the divider in the window, so clicking it to close the split is the same
+    /// gesture as pulling the two pages apart.
+    private var seam: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.26, extraBounce: 0)) {
+                session.closeSplit()
+            }
+        } label: {
+            ZStack {
+                Capsule()
+                    .fill(Color.primary.opacity(isHoveringSeam ? 0.22 : 0.10))
+                    .frame(width: 2)
+                if isHoveringSeam {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 7, weight: .black))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 14, height: 14)
+                        .background { Circle().fill(.regularMaterial) }
+                        .transition(.opacity.combined(with: .scale(scale: 0.6)))
+                }
+            }
+            .frame(width: 15)
+            .frame(maxHeight: .infinity)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHoveringSeam = $0 }
+        .animation(.easeOut(duration: 0.14), value: isHoveringSeam)
+        .help("Close Split (\u{2318}\u{21E7}D)")
+    }
+}
+
+/// Half of a split pair.
+///
+/// The copy-link button the full row carries is dropped rather than shrunk: at
+/// half width there is barely room for a title, and two controls over it would
+/// leave the name showing three characters.
+private struct CompactTabRow: View {
+    let tab: Tab
+    let isSelected: Bool
+    let isDragged: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 7) {
+            StatusIcon(tab: tab)
+
+            Text(tab.displayTitle)
+                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .opacity(tab.isAwaitingRestore ? 0.55 : 1)
+
+            Spacer(minLength: 0)
+        }
+        .mask { titleFade }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .overlay(alignment: .trailing) { closeButton }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(isSelected ? 0.16 : (isHovered ? 0.07 : 0)))
+                .animation(.easeOut(duration: 0.16), value: isHovered)
+                .animation(.easeOut(duration: 0.2), value: isSelected)
+        }
+        // Same empty-slot treatment as a full row, so pulling a pane out of the
+        // group looks like the one gesture it is.
+        .opacity(isDragged ? 0 : 1)
+        .onHover { isHovered = $0 }
+        .help(tab.displayTitle)
+    }
+
+    private var closeButton: some View {
+        IconButton(
+            systemName: "xmark",
+            size: 9,
+            weight: .bold,
+            width: 18,
+            height: 18,
+            cornerRadius: 5,
+            help: "Close Tab (\u{2318}W)"
+        ) {
+            onClose()
+        }
+        .opacity(isHovered ? 1 : 0)
+        .scaleEffect(isHovered ? 1 : 0.7, anchor: .trailing)
+        .allowsHitTesting(isHovered)
+        .animation(.spring(response: 0.26, dampingFraction: 0.7), value: isHovered)
+    }
+
+    private var titleFade: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: isHovered ? 12 : 0)
+            Color.clear
+                .frame(width: isHovered ? 18 : 0)
+        }
+        .animation(.easeOut(duration: 0.2), value: isHovered)
+    }
+}
+
+/// Drops onto one half of the pair, where the half stands for the pane.
+///
+/// Two meanings, both the obvious reading of the gesture: the other half means
+/// swap the sides, and any other tab means put that page in this pane.
+private struct PaneSlotDropDelegate: DropDelegate {
+    let targetID: Tab.ID
+    let drag: TabDragContext
+    let session: BrowserSession
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let dragged = drag.draggedID
+        defer { drag.end() }
+
+        guard let dragged, dragged != targetID, !drag.isDraggingPair,
+              let split = session.split,
+              let side = split.side(of: targetID)
+        else { return false }
+
+        withAnimation(.snappy(duration: 0.26, extraBounce: 0)) {
+            if split.contains(dragged) {
+                session.swapSplitSides()
+            } else if let tab = session.tabs.first(where: { $0.id == dragged }) {
+                session.openSplit(with: tab, on: side)
+            }
+        }
+        return true
+    }
+}
+
+// MARK: - Reordering
+
+/// Tracks the in-flight reorder drag.
+///
+/// An `@Observable` object rather than plain sidebar `@State`, because ending
+/// a drag is not something SwiftUI always reports: a drop outside every target
+/// — on the page, on another app, or an Esc cancel — ends the session with no
+/// `performDrop`. With the dragged row hidden behind an empty slot, missing
+/// that end would leave an invisible tab in the list. The item provider is the
+/// one object whose lifetime exactly matches the drag session, so a sentinel
+/// rides on it and clears this state from its deinit however the drag ends.
+@MainActor
+@Observable
+final class TabDragContext {
+    private(set) var draggedID: Tab.ID?
+
+    /// The same tab, but published a turn later.
+    ///
+    /// The sidebar takes the split pair apart while one of its halves is being
+    /// dragged — which removes the very row the drag started from. Doing that
+    /// from inside the `onDrag` closure, before it has even returned its item
+    /// provider, tears the gesture's own view out from under it and the drag
+    /// never starts: the pointer moves, nothing follows it, and letting go does
+    /// nothing. Anything that *restructures the list* keys off this instead, so
+    /// the drag session is underway before its source row can be rebuilt.
+    ///
+    /// Anything that only restyles a row in place — the empty slot — can and
+    /// should use `draggedID`, which lands immediately.
+    private(set) var settledDragID: Tab.ID?
+
+    /// Whether this drag has actually relocated the tab yet.
+    ///
+    /// The obvious test for "was it dropped somewhere else" — comparing the
+    /// drop target against the dragged tab — is wrong, and silently so. Rows
+    /// reorder live, so by the time the pointer is released the slot underneath
+    /// it *is* the dragged tab's own: the comparison says "dropped on itself"
+    /// for every successful drag in the list. What the split needs to know is
+    /// whether the tab moved at all, which only the reorder itself can say.
+    @ObservationIgnored private(set) var didMove = false
+
+    func noteMoved() { didMove = true }
+
+    /// Whether the split pair is being dragged as one, rather than a single tab.
+    ///
+    /// `draggedID` still names the leading half, so the empty slot and the
+    /// reorder both have something to key off — but everything that asks "which
+    /// tab is being moved" has to know the answer is "both of them".
+    @ObservationIgnored private(set) var isDraggingPair = false
+
+    /// Whether a tab is currently being carried.
+    var isDragging: Bool { draggedID != nil }
+
+    /// Whether a *single* tab is being carried. The split drop zones over the
+    /// page only mean anything for one: dropping a pair on the page would be
+    /// asking to split a tab against its own partner.
+    var isDraggingLoneTab: Bool { isDragging && !isDraggingPair }
+
+    /// Stamps each drag so a stale sentinel — drag N's provider released after
+    /// drag N+1 already began — can't clear the wrong session.
+    private var generation = 0
+
+    /// Run once the drag is over, however it ended. Reordering happens live as
+    /// the drag crosses rows, so by this point the model has already changed
+    /// and needs persisting — a cancelled drag included, since "cancelled"
+    /// only means the pointer let go somewhere unhelpful, not that the rows
+    /// went back.
+    @ObservationIgnored private var onEnd: (@MainActor () -> Void)?
+
+    /// Starts a drag of the whole split pair. `leadingID` stands in for it.
+    func beginPair(_ leadingID: Tab.ID, onEnd: @escaping @MainActor () -> Void) -> NSItemProvider {
+        let provider = begin(leadingID, onEnd: onEnd)
+        isDraggingPair = true
+        return provider
+    }
+
+    func begin(_ id: Tab.ID, onEnd: @escaping @MainActor () -> Void) -> NSItemProvider {
+        draggedID = id
+        didMove = false
+        isDraggingPair = false
+        self.onEnd = onEnd
+        generation += 1
+        let gen = generation
+        let provider = SentinelItemProvider(object: id.uuidString as NSString)
+        provider.onDeinit = { [weak self] in
+            // Deinit happens on whatever thread lets go last.
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == gen else { return }
+                self.finish()
+            }
+        }
+        // Deliberately after this closure returns. See `settledDragID`.
+        Task { @MainActor [weak self] in
+            guard let self, self.generation == gen else { return }
+            self.settledDragID = id
+        }
+        return provider
+    }
+
+    /// Ends the drag now, rather than waiting for the provider to be released.
+    /// A completed drop knows it's over; the sentinel is only there for the
+    /// endings SwiftUI doesn't report.
+    func end() {
+        generation += 1
+        finish()
+    }
+
+    private func finish() {
+        guard draggedID != nil || onEnd != nil else { return }
+        draggedID = nil
+        settledDragID = nil
+        isDraggingPair = false
+        let onEnd = self.onEnd
+        self.onEnd = nil
+        onEnd?()
+    }
+}
+
+/// An item provider that reports its own release — the only reliable signal
+/// that a drag session is over, completed or cancelled.
+private final class SentinelItemProvider: NSItemProvider {
+    var onDeinit: (@Sendable () -> Void)?
+    deinit { onDeinit?() }
+}
+
+/// Reorders tabs live as a drag crosses their rows.
+///
+/// One delegate per row (`targetID` set) plus one on the New Tab button
+/// (`targetID` nil, meaning "the end of the list"). The moved tab is tracked in
+/// `TabDragContext` rather than decoded from the item provider, because
+/// `dropEntered` is synchronous and provider loading is not.
+private struct TabReorderDropDelegate: DropDelegate {
+    /// The tab whose slot the dragged tab should take — nil for "the end".
+    let targetID: Tab.ID?
+    let drag: TabDragContext
+    let session: BrowserSession
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID = drag.draggedID, draggedID != targetID else { return }
+        // Short and bounceless on purpose. Dragging briskly down a long list
+        // fires this once per row crossed, and a springy curve leaves each
+        // crossing still settling as the next arrives — the overlap is what
+        // read as lag. This lands before the next row is reached.
+        withAnimation(.snappy(duration: 0.18, extraBounce: 0)) {
+            let moved: Bool
+            if drag.isDraggingPair {
+                moved = targetID.map { session.moveSplitPair(before: $0) }
+                    ?? session.moveSplitPairToEnd()
+            } else {
+                moved = targetID.map { session.moveTab(draggedID, before: $0) }
+                    ?? session.moveTabToEnd(draggedID)
+            }
+            if moved { drag.noteMoved() }
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        // Move, not copy — no green plus badge on the cursor.
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        let dragged = drag.draggedID
+        defer { drag.end() }
+
+        // Dragging a tab out of the pair is the way out of a split that doesn't
+        // need the menu: the group in the list *is* the split, so pulling a row
+        // out of it takes that page off the screen.
+        //
+        // A drag that ends where it started hasn't pulled anything out — that's
+        // picking a tab up and changing your mind, and it leaves the pair
+        // alone. The focused pane is the one kept, so ending the split this way
+        // never also changes which page you were reading.
+        if let dragged, drag.didMove, !drag.isDraggingPair,
+           session.split?.contains(dragged) == true {
+            withAnimation(.snappy(duration: 0.26, extraBounce: 0)) {
+                session.closeSplit()
+            }
+        }
+        return true
     }
 }
 

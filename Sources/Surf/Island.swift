@@ -110,6 +110,31 @@ final class Island: Identifiable {
         tabs = replacement
     }
 
+    /// Rearranges the existing tabs into `ids`.
+    ///
+    /// Applied only when `ids` is a permutation of what's here — the orders come
+    /// from `TabOrder`, which works on ids alone and can't know that a tab was
+    /// closed while a drag was in flight. Rebuilding from a stale list would
+    /// drop the tabs missing from it, so a mismatch leaves the list untouched
+    /// instead.
+    func reorder(to ids: [UUID]) {
+        var remaining = Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0) })
+        let reordered = ids.compactMap { remaining.removeValue(forKey: $0) }
+        guard reordered.count == tabs.count else { return }
+        tabs = reordered
+    }
+
+    /// Reorders one tab within the island. Identity is untouched — selection
+    /// follows `Tab.ID`, so moving a tab never changes which one is selected.
+    func move(fromIndex: Int, toIndex: Int) {
+        guard tabs.indices.contains(fromIndex),
+              tabs.indices.contains(toIndex),
+              fromIndex != toIndex
+        else { return }
+        let tab = tabs.remove(at: fromIndex)
+        tabs.insert(tab, at: toIndex)
+    }
+
     func index(of tab: Tab) -> Int? {
         tabs.firstIndex { $0.id == tab.id }
     }

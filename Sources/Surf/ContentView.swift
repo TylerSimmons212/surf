@@ -23,6 +23,10 @@ struct ContentView: View {
     @State private var isFindBarOpen = false
     @State private var findBarFocusToken = 0
     @State private var tabKeyMonitor: Any?
+    /// The in-flight tab drag. Owned here rather than in the sidebar because a
+    /// drag that starts on a row can end on the page: both the rows and the
+    /// split drop zones have to be looking at the same one.
+    @State private var dragContext = TabDragContext()
 
     /// The pointer report, with the sidebar's hold folded in.
     ///
@@ -180,19 +184,19 @@ struct ContentView: View {
             isPinned: $isPinned,
             isFloating: isFloating,
             lightsRevealed: areLightsRevealed,
-            hold: sidebarHold
+            hold: sidebarHold,
+            dragContext: dragContext
         )
     }
 
     /// The window is nothing but the page now — no toolbar above it.
     private var tabContent: some View {
-        TabContent(
-            tab: session.selectedTab,
+        SplitContent(
             session: session,
+            drag: dragContext,
             // The floating panel plus its leading inset — the exact strip of
             // page the chrome is sitting on top of.
-            chromeInset: (!isPinned && isSidebarRevealed) ? Sidebar.width + 8 : 0,
-            onOpenAddressBar: { session.requestAddressFocus() }
+            chromeInset: (!isPinned && isSidebarRevealed) ? Sidebar.width + 8 : 0
         )
         // Deliberately *no* `.id(tab.id)` here. Tying identity to the tab is
         // the obvious way to make a switch mount the right page, and it made
@@ -331,11 +335,218 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Split
+
+/// The page area: one tab filling it, or two side by side.
+///
+/// Its own view so that the split state — read on every drag frame by the drop
+/// zones — doesn't make the whole window chrome an observer of it.
+private struct SplitContent: View {
+    let session: BrowserSession
+    let drag: TabDragContext
+    let chromeInset: CGFloat
+
+    var body: some View {
+        ZStack {
+            if let split = session.split,
+               let leading = session.tab(split.leading),
+               let trailing = session.tab(split.trailing) {
+                HStack(spacing: 0) {
+                    pane(leading, side: .leading)
+                    Divider()
+                    pane(trailing, side: .trailing)
+                }
+            } else {
+                pane(session.selectedTab, side: nil)
+            }
+
+            // Only while a tab is actually being carried. A permanent overlay
+            // would be a second view sitting on the page for the sake of
+            // something that happens for two seconds at a time — and, being
+            // above it, would have to be reasoned about on every click.
+            if drag.isDraggingLoneTab {
+                SplitDropZones(session: session, drag: drag)
+                    .transition(.opacity)
+                    .zIndex(5)
+            }
+        }
+        .animation(.snappy(duration: 0.28, extraBounce: 0), value: session.split)
+        .animation(.easeOut(duration: 0.15), value: drag.isDraggingLoneTab)
+    }
+
+    /// One half — or the whole window when `side` is nil.
+    private func pane(_ tab: Tab, side: SplitPanes.Side?) -> some View {
+        let isFocused = tab.id == session.selectedTabID
+
+        return TabContent(
+            tab: tab,
+            session: session,
+            // Only the leading pane sits under the floating sidebar.
+            chromeInset: side == .trailing ? 0 : chromeInset,
+            // The page stands down for the length of a drag so the zones above
+            // it can receive the drop — but only while there are zones to
+            // receive it. Dragging the pair as a unit has no meaning over the
+            // page, so the page keeps working.
+            isInert: drag.isDraggingLoneTab,
+            onOpenAddressBar: { session.requestAddressFocus() }
+        )
+        .overlay {
+            // Which half the typing goes to has to be visible, or the address
+            // bar and ⌘F act on a page the user isn't looking at. Drawn as an
+            // inset hairline rather than a border on the pane, so it doesn't
+            // take a pixel away from the page.
+            if side != nil {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(
+                        Color.accentColor.opacity(isFocused ? 0.55 : 0),
+                        lineWidth: 2
+                    )
+                    .padding(1)
+                    .allowsHitTesting(false)
+                    .animation(.easeOut(duration: 0.18), value: isFocused)
+            }
+        }
+        // Clicking the unfocused half focuses it. A plain tap gesture would
+        // swallow the click the page should have had, so this reads the press
+        // without consuming it.
+        .modifier(FocusPaneOnClick(enabled: side != nil && !isFocused) {
+            session.select(tab)
+        })
+    }
+}
+
+/// Makes an unfocused pane focusable by clicking anywhere in it.
+///
+/// `simultaneousGesture` rather than `onTapGesture`: the click that moves focus
+/// should also do whatever it was aimed at on the page — following a link in
+/// the other pane is one action to the user, not "focus, then click again".
+private struct FocusPaneOnClick: ViewModifier {
+    let enabled: Bool
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.simultaneousGesture(
+                DragGesture(minimumDistance: 0).onEnded { _ in action() }
+            )
+        } else {
+            content
+        }
+    }
+}
+
+/// The two halves of the page area, live only while a tab is being dragged.
+///
+/// Splitting on drop is the only gesture here, so the zones exist only during
+/// a drag and the page is inert underneath them for exactly that long.
+private struct SplitDropZones: View {
+    let session: BrowserSession
+    let drag: TabDragContext
+
+    @State private var hovered: SplitPanes.Side?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            zone(.leading)
+            zone(.trailing)
+        }
+    }
+
+    private func zone(_ side: SplitPanes.Side) -> some View {
+        let isHovered = hovered == side
+        let isNoop = !canDrop(on: side)
+
+        return ZStack {
+            Color.clear
+            if isHovered, !isNoop {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.16))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 2)
+                    }
+                    .overlay { label(side) }
+                    .padding(8)
+                    .transition(.opacity)
+            }
+        }
+        .contentShape(Rectangle())
+        .onDrop(of: [.text], delegate: SplitDropDelegate(
+            side: side,
+            session: session,
+            drag: drag,
+            hovered: $hovered
+        ))
+        .animation(.easeOut(duration: 0.14), value: isHovered)
+    }
+
+    private func label(_ side: SplitPanes.Side) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: side == .leading
+                ? "rectangle.lefthalf.inset.filled"
+                : "rectangle.righthalf.inset.filled")
+                .font(.system(size: 26, weight: .light))
+            Text(session.isSplit ? "Replace This Pane" : "Split Here")
+                .font(.callout.weight(.medium))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background {
+            Capsule().fill(Color.black.opacity(0.45))
+        }
+    }
+
+    /// Whether dropping here would change anything — dropping a tab onto the
+    /// half already showing it is a no-op, and the zone shouldn't light up
+    /// promising otherwise.
+    private func canDrop(on side: SplitPanes.Side) -> Bool {
+        guard let dragged = drag.draggedID else { return false }
+        if let split = session.split { return split.tab(on: side) != dragged }
+        // Not split yet: the dragged tab would land beside the current page,
+        // and it can't be the current page.
+        return dragged != session.selectedTabID
+    }
+}
+
+private struct SplitDropDelegate: DropDelegate {
+    let side: SplitPanes.Side
+    let session: BrowserSession
+    let drag: TabDragContext
+    @Binding var hovered: SplitPanes.Side?
+
+    func dropEntered(info: DropInfo) { hovered = side }
+
+    func dropExited(info: DropInfo) {
+        if hovered == side { hovered = nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer {
+            hovered = nil
+            drag.end()
+        }
+        guard let id = drag.draggedID,
+              let tab = session.tabs.first(where: { $0.id == id })
+        else { return false }
+        withAnimation(.snappy(duration: 0.3, extraBounce: 0)) {
+            session.openSplit(with: tab, on: side)
+        }
+        return true
+    }
+}
+
 /// One tab's content: the home search screen, or the bare page.
 private struct TabContent: View {
     let tab: Tab
     let session: BrowserSession
     let chromeInset: CGFloat
+    /// Stands the page down while a tab is being dragged over it.
+    var isInert: Bool = false
     let onOpenAddressBar: () -> Void
 
     var body: some View {
@@ -355,7 +566,11 @@ private struct TabContent: View {
                         // can only be in one hierarchy at a time.
                         PoppedOutPlaceholder(tab: tab)
                     } else {
-                        WebView(webView: tab.webView, chromeInset: chromeInset)
+                        WebView(
+                            webView: tab.webView,
+                            chromeInset: chromeInset,
+                            isInert: isInert
+                        )
                     }
                     if let error = tab.lastError {
                         ErrorOverlay(message: error) { tab.reload() }
