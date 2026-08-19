@@ -51,7 +51,7 @@ struct URLPalette: View {
             // The glyph says where this is going to land, since the page behind
             // the palette is the *current* tab either way.
             Image(systemName: createsTab ? "plus.magnifyingglass" : "magnifyingglass")
-                .font(.system(size: 16, weight: .medium))
+                .font(Typeface.figtree(size: 16, weight: 500))
                 .foregroundStyle(createsTab ? Color.accentColor : Color.secondary)
 
             SurfTextField(

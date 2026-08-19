@@ -18,7 +18,7 @@ struct EmptyTabView: View {
     var body: some View {
         VStack(spacing: 22) {
             Text("Surf")
-                .font(.system(size: 40, weight: .semibold, design: .rounded))
+                .font(Typeface.outfit(size: 40))
                 .foregroundStyle(.primary.opacity(0.5))
 
             searchBar
