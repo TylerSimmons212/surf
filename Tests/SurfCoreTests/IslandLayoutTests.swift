@@ -145,13 +145,23 @@ struct IslandLayoutTests {
         #expect(IslandLayout.indexAfterDeleting(islandAt: 0, count: 1) == nil)
     }
 
-    @Test("A new island's default name skips names already in use")
+    @Test("A new island is named after somewhere, and skips names in use")
     func defaultNameSkips() {
-        #expect(IslandLayout.defaultName(existing: ["Home"]) == "Island 2")
-        #expect(IslandLayout.defaultName(existing: ["Home", "Island 2"]) == "Island 3")
-        // The collision isn't at the end: two existing islands would suggest
-        // "Island 3", which is taken.
-        #expect(IslandLayout.defaultName(existing: ["Home", "Island 3"]) == "Island 4")
+        #expect(IslandLayout.defaultName(existing: ["Home"]) == "Driftwood")
+        #expect(IslandLayout.defaultName(existing: ["Home", "Driftwood"]) == "Sandbar")
+        // Renaming one back into the pool frees it again, rather than the list
+        // marching on regardless of what is actually taken.
+        #expect(IslandLayout.defaultName(existing: ["Home", "Sandbar"]) == "Driftwood")
+    }
+
+    /// Past the end of the coastline it has to keep working rather than start
+    /// handing out a name someone already has.
+    @Test("Running out of places falls back to counting, still without collisions")
+    func defaultNameExhausted() {
+        let all = ["Home"] + IslandLayout.placeNames
+        #expect(IslandLayout.defaultName(existing: all) == "Island \(all.count + 1)")
+        let awkward = all + ["Island \(all.count + 1)"]
+        #expect(IslandLayout.defaultName(existing: awkward) == "Island \(awkward.count + 1)")
     }
 
     // MARK: - Orphans

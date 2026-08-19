@@ -319,6 +319,26 @@ final class BrowserSession {
     /// anchored to something that disappears goes with it.
     var islandBeingEdited: Island?
 
+    /// Whether that editor opened as part of creating the island, rather than
+    /// revisiting one. Cancelling means different things in the two cases.
+    private(set) var islandEditorIsForNewIsland = false
+
+    /// Opens the editor for an island.
+    func beginEditing(_ island: Island, isNew: Bool = false) {
+        islandEditorIsForNewIsland = isNew
+        islandBeingEdited = island
+    }
+
+    /// Makes an island, shows it, and opens its editor — the whole of what
+    /// "New Island" means, in one place rather than at each call site.
+    @discardableResult
+    func createIslandAndEdit() -> Island {
+        let island = createIsland()
+        select(island: island)
+        beginEditing(island, isNew: true)
+        return island
+    }
+
     /// The island a tab belongs to.
     ///
     /// A search rather than a back-pointer on `Tab`: islands hold few enough

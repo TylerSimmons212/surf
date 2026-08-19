@@ -19,7 +19,7 @@ struct IslandStrip: View {
                     island: island,
                     isCurrent: island.id == session.currentIsland.id,
                     onSelect: { session.select(island: island) },
-                    onEdit: { session.islandBeingEdited = island },
+                    onEdit: { session.beginEditing(island) },
                     onDelete: island.isHome ? nil : { session.requestDeleteIsland(island) }
                 )
             }
@@ -32,13 +32,9 @@ struct IslandStrip: View {
                 width: 24,
                 height: 24,
                 cornerRadius: 7,
-                help: "New Island"
+                help: "Chart a new island"
             ) {
-                let island = session.createIsland()
-                session.select(island: island)
-                // Straight into the editor: the moment you make an island is
-                // the moment you know what it's for.
-                session.islandBeingEdited = island
+                session.createIslandAndEdit()
             }
         }
         .padding(.horizontal, 10)

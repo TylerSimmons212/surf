@@ -23,8 +23,13 @@ struct IslandEditorSheet: View {
     @State private var name: String = ""
     @State private var symbolText: String = ""
     @State private var tint: Color = .blue
-    /// What it all was on arrival, so Revert has something to go back to.
-    @State private var original: (name: String, symbol: String, tint: IslandTint)?
+    /// Whether this sheet opened as part of *making* the island, which decides
+    /// what cancelling means: undoing an edit, or undoing the island.
+    @State private var isNew = false
+    /// Whether the sheet was finished rather than abandoned. Escape dismisses a
+    /// sheet without running any button's action, so "was this cancelled?" can
+    /// only be answered by what *didn't* happen.
+    @State private var committed = false
 
     @FocusState private var focus: Field?
     private enum Field { case name, symbol }
@@ -35,7 +40,7 @@ struct IslandEditorSheet: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 labelled("Name") {
-                    TextField("Island name", text: $name)
+                    TextField("Name this island", text: $name)
                         .textFieldStyle(.plain)
                         .font(.system(size: 14))
                         .focused($focus, equals: .name)
@@ -43,12 +48,12 @@ struct IslandEditorSheet: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 9)
                         .glassEffect(.regular, in: .rect(cornerRadius: 10))
-                        .onChange(of: name) { _, new in session.rename(island, to: new) }
+
                 }
 
-                labelled("Icon") { symbolPicker }
+                labelled("Flag") { symbolPicker }
 
-                labelled("Theme") { tintPicker }
+                labelled("Water") { tintPicker }
             }
 
             footer
@@ -56,9 +61,15 @@ struct IslandEditorSheet: View {
         .padding(24)
         .frame(width: 380)
         .onAppear(perform: load)
-        // The colour panel is a shared, app-wide window. Leaving it up after
-        // the sheet closes strands a picker wired to nothing.
-        .onDisappear { NSColorPanel.shared.close() }
+        .onDisappear {
+            // The colour panel is a shared, app-wide window. Leaving it up
+            // after the sheet closes strands a picker wired to nothing.
+            NSColorPanel.shared.close()
+            // Backing out of a new island takes the island with it. Hung off
+            // the sheet going away rather than off Cancel, because Escape and
+            // clicking outside never reach the button.
+            if isNew, !committed { session.deleteIsland(island) }
+        }
     }
 
     // MARK: - Pieces
@@ -70,12 +81,15 @@ struct IslandEditorSheet: View {
             Text(symbolText.isEmpty ? IslandSymbols.fallback : symbolText)
                 .font(.system(size: 22))
             VStack(alignment: .leading, spacing: 1) {
-                Text(name.isEmpty ? "Untitled Island" : name)
+                Text(name.isEmpty ? "Uncharted" : name)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(tint)
-                Text(island.isHome ? "Your original browsing data" : "Separate logins and cookies")
+                Text(island.isHome
+                     ? "Your home break — everything you were already signed in to"
+                     : "Its own shore. Nothing washes over from the others.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
         }
@@ -110,10 +124,9 @@ struct IslandEditorSheet: View {
                         // viewer — is reduced to a single emoji. The viewer
                         // appends rather than replaces, so without this the
                         // field accumulates.
-                        guard let symbol = IslandSymbols.firstSymbol(in: new) else { return }
-                        if symbol != new { symbolText = symbol }
-                        island.symbol = symbol
-                        session.scheduleSave()
+                        guard let symbol = IslandSymbols.firstSymbol(in: new), symbol != new
+                        else { return }
+                        symbolText = symbol
                     }
 
                 Button("Emoji & Symbols…") {
@@ -152,10 +165,6 @@ struct IslandEditorSheet: View {
             // The system colour panel: wheel, sliders, palettes, eyedropper.
             ColorPicker("Island colour", selection: $tint, supportsOpacity: false)
                 .labelsHidden()
-                .onChange(of: tint) { _, new in
-                    island.tint = IslandTint(new)
-                    session.scheduleSave()
-                }
 
             Divider().frame(height: 18)
 
@@ -186,31 +195,60 @@ struct IslandEditorSheet: View {
     }
 
     private var footer: some View {
-        HStack {
-            if island.isHome {
-                // The one island whose isolation isn't real, said plainly
-                // rather than left to be discovered.
-                Label("Uses your original cookies", systemImage: "info.circle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            } else if island.isDegraded {
-                Label("Storage unavailable — this island forgets you on quit",
-                      systemImage: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
+        VStack(alignment: .leading, spacing: 14) {
+            explainer
+
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+
+                // Cancel rather than Revert, and it does both jobs: edits here
+                // apply as you make them, so backing out has to put the island
+                // back as well as close the sheet. Escape reaches it.
+                Button("Cancel", action: cancel)
+                    .keyboardShortcut(.cancelAction)
+                    .controlSize(.large)
+
+                Button("Done", action: close)
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+            }
+        }
+    }
+
+    /// What an island actually is, in the app's own voice.
+    ///
+    /// The last line is not decoration. Keychain passwords and passkeys live
+    /// with macOS rather than with us, so they genuinely are shared across
+    /// islands — and someone who assumed otherwise would find out by being
+    /// recognised on a site they expected to be a stranger on. Better said
+    /// here, quietly, than discovered.
+    private var explainer: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if island.isDegraded {
+                Label(
+                    "This island's storage went missing, so it'll forget you when Surf quits.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+            } else if island.isHome {
+                Text("Your first island, and the one your old cookies washed up on. "
+                     + "Everything you were signed in to before islands existed is still here.")
+            } else {
+                Text("Sign in to the same site on two islands and it'll swear you're "
+                     + "two different people. Logins, cookies and site data never drift "
+                     + "between them.")
             }
 
-            Spacer(minLength: 12)
-
-            Button("Revert", action: revert)
-                .controlSize(.large)
-                .disabled(!hasChanges)
-
-            Button("Done", action: close)
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.glassProminent)
-                .controlSize(.large)
+            Text("Passwords and passkeys in your keychain are the exception — "
+                 + "those belong to macOS, and every island can reach them.")
+                .foregroundStyle(.tertiary)
         }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 2)
     }
 
     private func labelled(
@@ -226,37 +264,35 @@ struct IslandEditorSheet: View {
 
     // MARK: - State
 
-    private var hasChanges: Bool {
-        guard let original else { return false }
-        return original.name != name
-            || original.symbol != symbolText
-            || original.tint != IslandTint(tint)
-    }
-
     private func load() {
         name = island.name
         symbolText = island.symbol
         tint = island.tint.color
-        original = (island.name, island.symbol, island.tint)
+        isNew = session.islandEditorIsForNewIsland
         focus = .name
     }
 
-    private func revert() {
-        guard let original else { return }
-        name = original.name
-        symbolText = original.symbol
-        tint = original.tint.color
-        island.name = original.name
-        island.symbol = original.symbol
-        island.tint = original.tint
-        session.scheduleSave()
-    }
+    /// Cancelling an edit changes nothing, because nothing was changed yet —
+    /// which is the entire reason the fields aren't wired straight to the
+    /// island. Reverting after the fact was the obvious design and it does not
+    /// survive contact with SwiftUI: Escape dismisses a sheet *itself*, so the
+    /// Cancel button's action never runs, and hanging the undo off `onDisappear`
+    /// instead didn't fire either. Not writing until Done has no such seam.
+    ///
+    /// Cancelling a *new* island undoes the island too — see `onDisappear`. It
+    /// was created before the sheet opened so it could be previewed and
+    /// switched to, and leaving a half-named one behind is not what Cancel
+    /// says.
+    private func cancel() { dismiss() }
 
     private func close() {
+        committed = true
+        // Everything lands here, at once, or not at all.
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         // An island with no name is a chip you can't tell from the next one.
-        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            session.rename(island, to: original?.name ?? "Island")
-        }
+        if !trimmed.isEmpty { island.name = trimmed }
+        island.symbol = IslandSymbols.firstSymbol(in: symbolText) ?? island.symbol
+        island.tint = IslandTint(tint)
         session.saveNow()
         dismiss()
     }
@@ -282,7 +318,13 @@ private struct IslandEditorPresenter: ViewModifier {
                 set: { session.islandBeingEdited = $0 }
             )
         ) { island in
+            // Identified by the island, so opening the editor for a second one
+            // builds a fresh view rather than reusing the first one's `@State`.
+            // Without this, making a new island showed the previously edited
+            // island's name and flag in the fields — and Done would then have
+            // written them onto the new island.
             IslandEditorSheet(session: session, island: island)
+                .id(island.id)
         }
     }
 }

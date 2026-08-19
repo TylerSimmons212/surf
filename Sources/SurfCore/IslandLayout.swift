@@ -84,12 +84,24 @@ public enum IslandLayout {
         TabSelection.indexAfterClosing(closedIndex: deletedIndex, originalCount: count)
     }
 
+    /// Places on a coastline, walked in order, skipping any already taken.
+    ///
+    /// "Island 2" is a correct name and a joyless one. These cost nothing, and
+    /// a browser whose whole idea is islands may as well have somewhere to put
+    /// you rather than a number.
+    static let placeNames = [
+        "Driftwood", "Sandbar", "Coral Cove", "Low Tide", "Reef Break",
+        "Palm Grove", "Tide Pool", "Lagoon", "Shell Bay", "Salt Flat",
+        "High Water", "Long Shore",
+    ]
+
     /// A name for a new island that isn't already taken.
     public static func defaultName(existing: [String]) -> String {
         let taken = Set(existing)
+        if let free = placeNames.first(where: { !taken.contains($0) }) { return free }
+        // Past the end of the coastline, fall back to counting. Bounded by
+        // construction: at most one name per existing island can collide.
         var number = existing.count + 1
-        // Bounded by construction: at most one name per existing island can
-        // collide, so this can't run away.
         while taken.contains("Island \(number)") { number += 1 }
         return "Island \(number)"
     }
