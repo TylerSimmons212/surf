@@ -102,6 +102,14 @@ for ENTRY in \
     fi
 done
 
+# Surf's two faces. `ATSApplicationFontsPath` is what registers them at launch —
+# no CTFontManager call anywhere — which also means they exist only in a built
+# app: `swift run` gets the system font and a wordmark that looks a size off.
+mkdir -p "$APP/Contents/Resources/Fonts"
+cp "$ROOT"/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
+# The licence travels with the fonts; OFL requires it be distributed alongside.
+cp "$ROOT"/Resources/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
+
 # The app icon is an Icon Composer document. actool compiles it into the
 # Assets.car that macOS 26 reads for the layered icon, plus an .icns for
 # anything still asking the old question.
@@ -137,6 +145,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key><string>0.1</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
+    <key>ATSApplicationFontsPath</key><string>Fonts</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
 </dict>

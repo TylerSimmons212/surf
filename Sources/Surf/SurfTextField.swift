@@ -20,6 +20,14 @@ struct SurfTextField: NSViewRepresentable {
     /// Selects the existing text on appear, so typing replaces the URL you're
     /// standing on — the same as every other address bar.
     var selectsAllOnFocus = true
+    /// Bumped to bring focus back to a field that is already on screen.
+    ///
+    /// The field takes focus when it gains a window, which covers the first
+    /// appearance and nothing after it. ⌘L on a screen whose field never went
+    /// away needs to say so somehow, and a token is the version of that which
+    /// survives a re-render — a Bool would have to be set and unset, and the
+    /// unset is a second render that can arrive first.
+    var focusToken: Int = 0
 
     var onSubmit: () -> Void = {}
     /// -1 for up, +1 for down: the suggestion list's keyboard.
@@ -49,6 +57,16 @@ struct SurfTextField: NSViewRepresentable {
 
     func updateNSView(_ field: NSTextField, context: Context) {
         context.coordinator.parent = self
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            // After the current update: making a view first responder from
+            // inside SwiftUI's own render is how you get the caret in the right
+            // place and the selection in the wrong one.
+            DispatchQueue.main.async {
+                field.window?.makeFirstResponder(field)
+                if selectsAllOnFocus { field.currentEditor()?.selectAll(nil) }
+            }
+        }
         // Only when it actually differs: assigning during editing would move
         // the caret to the end on every keystroke.
         if field.stringValue != text {
@@ -73,6 +91,7 @@ struct SurfTextField: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: SurfTextField
+        var lastFocusToken = 0
 
         init(_ parent: SurfTextField) { self.parent = parent }
 

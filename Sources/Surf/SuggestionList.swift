@@ -31,7 +31,7 @@ struct SuggestionList: View {
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(entry.title.isEmpty ? entry.displayURL : entry.title)
-                    .font(.system(size: 12))
+                    .font(Typeface.figtree(size: 12))
                     .lineLimit(1)
                 Text(entry.displayURL)
                     .font(.system(size: 10))

@@ -31,6 +31,14 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        settingsForm
+            // Set on the environment rather than per row: `Form` supplies its
+            // own text styles, and this replaces the face while leaving every
+            // size and weight it chose intact.
+            .environment(\.font, Typeface.figtree(size: 13))
+    }
+
+    private var settingsForm: some View {
         Form {
             Section {
                 Picker("Appearance", selection: $appearanceMode) {

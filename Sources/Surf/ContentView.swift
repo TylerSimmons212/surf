@@ -152,6 +152,12 @@ struct ContentView: View {
         }
         .onChange(of: session.focusAddressToken) { _, _ in
             paletteCreatesTab = session.addressFocusCreatesTab
+            // Home has the real field on the page, and it is watching this same
+            // token — so asking for the address bar there means focusing it,
+            // not floating a second one over the top. Everywhere else the
+            // palette is the only way to type over a page without displacing
+            // it, which is the whole reason it floats.
+            guard session.selectedTab.mode != .home else { return }
             openAddressBar()
         }
         .onAppear(perform: introduceTrafficLights)
@@ -331,7 +337,7 @@ private struct TabContent: View {
         Group {
             switch tab.mode {
             case .home:
-                EmptyTabView(onOpenAddressBar: onOpenAddressBar)
+                EmptyTabView(session: session, tab: tab)
             case .browsing:
                 ZStack {
                     if PopOutController.shared.isPoppedOut(tab) {
