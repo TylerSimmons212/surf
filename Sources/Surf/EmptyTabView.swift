@@ -22,20 +22,29 @@ struct EmptyTabView: View {
 
     var body: some View {
         ZStack {
-            // Backmost, and big enough that the window crops it rather than
-            // containing it — a mark the screen is a window onto, not a label
-            // sitting on one. Stroked, so the water reads through it.
-            GlyphOutline(text: "SURF", family: "Outfit", weight: 500, tracking: 6)
-                .stroke(
-                    LinearGradient(
-                        colors: [.primary.opacity(0.30), .primary.opacity(0.08)],
-                        startPoint: .top, endPoint: .bottom
-                    ),
-                    style: StrokeStyle(lineWidth: 3, lineJoin: .round)
-                )
-                .padding(.horizontal, 40)
-                .padding(.bottom, 60)
-                .allowsHitTesting(false)
+            // Backmost, and an outline face rather than a stroked one. Stroking
+            // Outfit works until the line is heavy enough to see from across the
+            // room, and then the R and the F run into each other — the outline
+            // is drawn around each letter independently and nothing stops two
+            // of them meeting. Bungee Outline is drawn as an outline, so the
+            // counters and the spacing already account for it.
+            GeometryReader { geo in
+                let mark = GlyphOutline(text: "SURF", family: "Bungee Outline", tracking: 2)
+                let width = geo.size.width - 60
+                let height = width / max(mark.aspect(), 0.001)
+                mark
+                    .fill(.primary.opacity(0.16))
+                    .frame(width: width, height: height)
+                    // Sunk to the waterline: the last fifth of the letters goes
+                    // under, where the water is densest and hides it. Left to
+                    // centre itself the word sat far lower, and the whole
+                    // bottom half of it showed through the water as a ghost.
+                    .position(
+                        x: geo.size.width / 2,
+                        y: geo.size.height * waterline + geo.size.height * 0.06 - height / 2
+                    )
+            }
+            .allowsHitTesting(false)
 
             // Over the mark, so the water washes across its bottom half.
             WaterBackground(surface: waterline)
@@ -68,12 +77,15 @@ struct EmptyTabView: View {
         HStack(spacing: 14) {
             Image(systemName: "magnifyingglass")
                 .font(Typeface.figtree(size: 17, weight: 500))
-                .foregroundStyle(isHovering || !text.isEmpty ? Color.accentColor : Color.secondary)
+                .foregroundStyle(Color(red: 0.10, green: 0.22, blue: 0.34).opacity(0.55))
 
             SurfTextField(
                 text: $text,
                 placeholder: "Search or enter address",
                 font: .systemFont(ofSize: 19, weight: .regular),
+                // The board sets its own surface, so the ink is chosen against
+                // that rather than against the window's appearance.
+                textColor: NSColor(red: 0.06, green: 0.15, blue: 0.24, alpha: 1),
                 focusToken: session.focusAddressToken,
                 onSubmit: submit,
                 onMove: { direction in
@@ -97,21 +109,26 @@ struct EmptyTabView: View {
         .padding(.trailing, 100)
         .padding(.vertical, 17)
         .frame(width: barWidth)
-        .glassEffect(
-            .regular
-                .tint(text.isEmpty ? (isHovering ? Color.accentColor.opacity(0.08) : nil)
-                                   : Color.accentColor.opacity(0.10))
-                .interactive(),
-            in: SurfboardShape()
-        )
-        .background { SurfboardShape().fill(.thickMaterial) }
+        // A real board, not a pane of glass: white, opaque, catching a little
+        // more light along the top than the bottom. Glass let the water read
+        // straight through it, which put the thing meant to be riding the wave
+        // somewhere behind it.
+        .background {
+            SurfboardShape()
+                .fill(
+                    LinearGradient(
+                        colors: [Color(white: 0.99), Color(white: 0.90)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+        }
         .overlay(alignment: .trailing) {
             // The stringer, kept to the nose run. Full length is what a board
             // actually has and it drew a line straight through the placeholder;
             // typed text can reach x=520 of 620, so this starts at 536 and
             // there is nothing for it to cross.
             Capsule()
-                .fill(.white.opacity(0.22))
+                .fill(Color(red: 0.10, green: 0.22, blue: 0.34).opacity(0.18))
                 .frame(width: 48, height: 1.5)
                 .padding(.trailing, 36)
                 .allowsHitTesting(false)
@@ -120,7 +137,7 @@ struct EmptyTabView: View {
             SurfboardShape()
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.38), .white.opacity(0.06)],
+                        colors: [.white, Color(red: 0.55, green: 0.68, blue: 0.78)],
                         startPoint: .top, endPoint: .bottom
                     ),
                     lineWidth: 1
@@ -129,7 +146,8 @@ struct EmptyTabView: View {
         }
         .contentShape(SurfboardShape())
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: text.isEmpty)
-        .shadow(color: .black.opacity(isHovering ? 0.20 : 0.14), radius: isHovering ? 24 : 16, y: 8)
+        .shadow(color: Color(red: 0.02, green: 0.10, blue: 0.20)
+            .opacity(isHovering ? 0.42 : 0.32), radius: isHovering ? 26 : 18, y: 10)
         .scaleEffect(isHovering ? 1.008 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovering)
         .onHover { isHovering = $0 }

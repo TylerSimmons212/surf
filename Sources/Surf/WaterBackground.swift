@@ -64,8 +64,8 @@ struct WaterBackground: View {
                         // transparent.
                         Gradient(stops: [
                             .init(color: tint.opacity(0), location: 0),
-                            .init(color: tint.opacity(0.26), location: 0.30),
-                            .init(color: .clear, location: 1),
+                            .init(color: tint.opacity(0.16), location: 0.10),
+                            .init(color: .clear, location: 0.45),
                         ]),
                         startPoint: CGPoint(x: 0, y: bodyTop),
                         endPoint: CGPoint(x: 0, y: size.height)

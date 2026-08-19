@@ -18,16 +18,32 @@ struct GlyphOutline: Shape {
     var weight: CGFloat = 500
     var tracking: CGFloat = 0
 
+    /// Width over height of the ink itself.
+    ///
+    /// A caller that wants the word somewhere specific — half in the water,
+    /// say — needs to know how tall it will end up once it has been fitted to a
+    /// width, and only the outlines know that.
+    func aspect() -> CGFloat {
+        let probe = path(in: CGRect(x: 0, y: 0, width: 10_000, height: 10_000)).boundingRect
+        return probe.height > 0 ? probe.width / probe.height : 1
+    }
+
     func path(in rect: CGRect) -> Path {
         guard !text.isEmpty, rect.width > 0, rect.height > 0 else { return Path() }
 
         // Any size will do — the outlines are scaled to the rect afterwards, so
         // this one only has to be large enough that rounding in the font's grid
         // doesn't show once it's blown up.
-        let base = NSFont(descriptor: NSFontDescriptor(fontAttributes: [
+        // The variation is asked for, not required: Bungee Outline is a single
+        // static weight, and a descriptor naming an axis it hasn't got is not
+        // something to fail over.
+        let varied = NSFontDescriptor(fontAttributes: [
             .family: family,
             NSFontDescriptor.AttributeName(kCTFontVariationAttribute as String): [0x77676874: weight],
-        ]), size: 256) ?? .systemFont(ofSize: 256)
+        ])
+        let base = NSFont(descriptor: varied, size: 256)
+            ?? NSFont(descriptor: NSFontDescriptor(fontAttributes: [.family: family]), size: 256)
+            ?? .systemFont(ofSize: 256)
 
         let attributed = NSAttributedString(string: text, attributes: [
             .font: base, .kern: tracking * 256 / 100,
