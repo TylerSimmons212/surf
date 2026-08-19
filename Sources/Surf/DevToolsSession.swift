@@ -42,6 +42,26 @@ final class DevToolsSession: Identifiable {
             case .console: "terminal"
             }
         }
+
+        /// The panes, grouped by the kind of question each one answers: what
+        /// the document *is*, what it is *doing right now*, and what a run of
+        /// it *produced*.
+        ///
+        /// The grouping is the reason the rail beats the segmented control it
+        /// replaced. Seven equal segments assert seven peers, and these are
+        /// not peers — Elements and Styles are one workspace you keep both
+        /// halves of, Network and Console are live streams you leave running,
+        /// and the last three are reports you go and pull. Three things to
+        /// hold rather than seven, and room for an eighth pane without every
+        /// existing one getting narrower.
+        ///
+        /// Separate from `allCases`, which stays in declaration order because
+        /// `SURF_DEVTOOLS` parses a raw value and tests index it.
+        static let groups: [[Pane]] = [
+            [.elements, .styles],
+            [.network, .console],
+            [.performance, .tags, .storage],
+        ]
     }
 
     enum Status: Equatable {

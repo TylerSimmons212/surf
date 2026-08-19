@@ -44,6 +44,18 @@ enum DevToolsTheme {
     // MARK: - Surfaces
 
     static let corner: CGFloat = 6
+
+    /// The pane switcher's column: wide enough for a glyph with a comfortable
+    /// target around it, narrow enough to read as chrome rather than sidebar.
+    static let railWidth: CGFloat = unit * 11          // 44
+    static let railItemWidth: CGFloat = unit * 8       // 32
+    static let railItemHeight: CGFloat = unit * 7      // 28
+    static let railCorner: CGFloat = 7
+
+    /// A chosen thing — the rail's current pane, an engaged filter chip.
+    /// Every pane had picked this same value independently; it lives here now
+    /// so a future change to how selection reads is one edit.
+    static let selectedFill = Color.accentColor.opacity(0.18)
     /// Hover feedback, and the resting fill of a control.
     static let hoverFill = Color.primary.opacity(0.06)
     static let inputFill = Color.primary.opacity(0.05)

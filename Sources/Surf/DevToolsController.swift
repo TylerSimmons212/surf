@@ -85,7 +85,7 @@ final class DevToolsController: NSObject, NSWindowDelegate {
 
         panels[tab.id] = panel
         inspectedTabIDs.insert(tab.id)
-        trackTitle(of: tab, in: panel)
+        trackChrome(of: tab, session: session, in: panel)
         installHighlight(for: tab, session: session)
 
         session.start()
@@ -232,25 +232,48 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         highlight.show(box)
     }
 
-    // MARK: - Title tracking
+    // MARK: - Title bar
 
-    /// Keeps the panel's title honest as the page navigates.
+    /// Keeps the title bar honest as the page navigates and the agent connects.
+    ///
+    /// The title bar is where the panel's ambient state lives, which is a
+    /// change from the footer that used to hold it. A footer spends a
+    /// permanent 26pt strip restating something that never changes once the
+    /// agent has attached — whereas a subtitle is chrome the window already
+    /// draws, costs no content height, and stays legible when the panel is
+    /// behind something else.
     ///
     /// `withObservationTracking` fires once per change, so it re-arms itself.
     /// The re-read is deferred a tick because the callback runs *before* the
-    /// new value is stored — reading immediately would just see the old title
+    /// new value is stored — reading immediately would just see the old value
     /// and register for a change that had already happened.
-    private func trackTitle(of tab: Tab, in panel: NSPanel) {
+    private func trackChrome(of tab: Tab, session: DevToolsSession, in panel: NSPanel) {
         withObservationTracking {
             panel.title = "Developer Tools — \(tab.displayTitle)"
-        } onChange: { [weak self, weak tab, weak panel] in
+            panel.subtitle = Self.subtitle(for: session)
+        } onChange: { [weak self, weak tab, weak session, weak panel] in
             Task { @MainActor in
-                guard let self, let tab, let panel,
+                guard let self, let tab, let session, let panel,
                       self.panels[tab.id] === panel
                 else { return }
-                self.trackTitle(of: tab, in: panel)
+                self.trackChrome(of: tab, session: session, in: panel)
             }
         }
+    }
+
+    /// The host and the connection state, in the order you'd ask for them.
+    ///
+    /// No status dot out here: a subtitle is text, and the three states read
+    /// unambiguously as words. The dot in the old footer was decorating a
+    /// string that already said what it meant.
+    private static func subtitle(for session: DevToolsSession) -> String {
+        let state = switch session.status {
+        case .connecting: "Connecting…"
+        case .connected(let nodeCount): "\(nodeCount.formatted()) elements"
+        case .unavailable(let reason): reason
+        }
+        let host = session.siteDomain
+        return host.isEmpty ? state : "\(host) · \(state)"
     }
 
     // MARK: - NSWindowDelegate
