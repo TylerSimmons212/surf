@@ -21,22 +21,27 @@ struct EmptyTabView: View {
     private let barWidth: CGFloat = 620
 
     var body: some View {
-        VStack(spacing: 30) {
-            // Large, because this is the one place the name is the subject
-            // rather than a label — and because Outfit's low x-height only
-            // pays off at a size where the lowercase has room to breathe.
-            // Caps, and tracked out. Outfit's caps are nearly circular, so at
-            // this size they close up on each other at the default fit — the
-            // letterspacing is what makes it read as a mark rather than as a
-            // word someone shouted.
-            Text("SURF")
-                .font(Typeface.outfit(size: 72))
-                .tracking(14)
-                // The tracking is trailing space too, so the word sits left of
-                // centre by half of it without this.
-                .padding(.leading, 14)
-                .foregroundStyle(.primary.opacity(0.45))
+        ZStack {
+            // Backmost, and big enough that the window crops it rather than
+            // containing it — a mark the screen is a window onto, not a label
+            // sitting on one. Stroked, so the water reads through it.
+            GlyphOutline(text: "SURF", family: "Outfit", weight: 500, tracking: 6)
+                .stroke(
+                    LinearGradient(
+                        colors: [.primary.opacity(0.30), .primary.opacity(0.08)],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    style: StrokeStyle(lineWidth: 3, lineJoin: .round)
+                )
+                .padding(.horizontal, 40)
+                .padding(.bottom, 60)
+                .allowsHitTesting(false)
 
+            // Over the mark, so the water washes across its bottom half.
+            WaterBackground(surface: waterline)
+                .ignoresSafeArea()
+
+            // On the water, at its own surface.
             VStack(spacing: 8) {
                 field
                 if completions.isShowing {
@@ -48,9 +53,16 @@ struct EmptyTabView: View {
                     .frame(width: barWidth)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+
+    /// Where the surface sits. The board is centred, so this is where the two
+    /// meet — a fraction rather than a point, because the window resizes and a
+    /// board floating above its own waterline is the one thing that would give
+    /// the whole idea away.
+    private let waterline = 0.5
 
     private var field: some View {
         HStack(spacing: 14) {
