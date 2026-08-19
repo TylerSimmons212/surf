@@ -72,8 +72,9 @@ struct TagsPane: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(finding.title)
                             .font(DevToolsTheme.chrome.weight(.medium))
+                        // A diagnosis, in the tool's own words.
                         Text(finding.detail)
-                            .font(DevToolsTheme.caption)
+                            .font(DevToolsTheme.prose)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -271,7 +272,7 @@ private struct DetectedRow: View {
                 // Installed and silent is usually a tag that threw, which looks
                 // identical to working from the outside.
                 Text("no events")
-                    .font(.system(size: 9))
+                    .font(DevToolsTheme.badge)
                     .foregroundStyle(.orange)
             } else {
                 Text("\(tag.eventCount)")
@@ -384,7 +385,7 @@ private struct ProfileRow: View {
                     }
                 }
                 Text(profile.note)
-                    .font(.system(size: 9))
+                    .font(DevToolsTheme.caption)
                     .foregroundStyle(.tertiary)
             }
 
