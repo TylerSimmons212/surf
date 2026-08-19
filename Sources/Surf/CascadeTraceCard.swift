@@ -121,7 +121,7 @@ private struct TraceRow: View {
 
             if entry.isImportant {
                 Text("!important")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(DevToolsTheme.badge)
                     .foregroundStyle(StylesStyle.important)
             }
 
@@ -141,16 +141,20 @@ private struct TraceRow: View {
         HStack(spacing: 4) {
             if let inherited = entry.inheritedLabel {
                 Label(inherited, systemImage: "arrow.down.to.line")
-                    .font(.system(size: 9))
+                    .font(DevToolsTheme.caption)
                     .foregroundStyle(.tertiary)
             }
             if let layer = entry.layer {
                 Label(layer, systemImage: "square.3.layers.3d")
-                    .font(.system(size: 9))
+                    .font(DevToolsTheme.caption)
                     .foregroundStyle(StylesStyle.layer)
             }
+            // The card's whole reason for existing, and it was the smallest
+            // text on it. "Lost on specificity" and "lost on order" are
+            // different problems with different fixes; that sentence is the
+            // answer, so it is set as one.
             Text(entry.outcome.explanation)
-                .font(.system(size: 10))
+                .font(DevToolsTheme.prose)
                 .foregroundStyle(isWinner ? Color.accentColor : Color.secondary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)

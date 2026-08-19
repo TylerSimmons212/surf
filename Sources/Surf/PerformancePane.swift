@@ -238,14 +238,18 @@ private struct MetricCard: View {
                 .lineLimit(1)
 
             if let note = metric.source.note {
+                // Where the number came from — the pane's central claim, and
+                // the thing that makes a computed CLS honest rather than a
+                // borrowed authority. It was 9pt tertiary: the faintest,
+                // smallest text on a card whose headline number is 19pt.
                 Text(note)
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
+                    .font(DevToolsTheme.prose)
+                    .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
             } else if !metric.detail.isEmpty {
                 Text(metric.detail)
-                    .font(.system(size: 9))
+                    .font(DevToolsTheme.caption)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
