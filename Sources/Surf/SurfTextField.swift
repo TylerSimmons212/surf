@@ -17,6 +17,10 @@ struct SurfTextField: NSViewRepresentable {
     @Binding var text: String
     var placeholder: String
     var font: NSFont
+    /// The ink. A default of `.labelColor` follows the system appearance, which
+    /// is right everywhere except on a surface that has picked its own — a
+    /// white board in dark mode would otherwise draw white on white.
+    var textColor: NSColor = .labelColor
     /// Selects the existing text on appear, so typing replaces the URL you're
     /// standing on — the same as every other address bar.
     var selectsAllOnFocus = true
@@ -45,7 +49,7 @@ struct SurfTextField: NSViewRepresentable {
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = font
-        field.textColor = .labelColor
+        field.textColor = textColor
         field.lineBreakMode = .byTruncatingTail
         field.cell?.usesSingleLineMode = true
         field.cell?.wraps = false
@@ -75,17 +79,24 @@ struct SurfTextField: NSViewRepresentable {
         if field.font != font {
             field.font = font
         }
-        field.placeholderAttributedString = Self.placeholderString(placeholder, font: font)
+        field.textColor = textColor
+        field.placeholderAttributedString =
+            Self.placeholderString(placeholder, font: font, color: textColor)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     /// Dimmer and lighter than the typed text: the hint is a label, not content.
-    private static func placeholderString(_ text: String, font: NSFont) -> NSAttributedString {
+    private static func placeholderString(
+        _ text: String, font: NSFont, color: NSColor = .labelColor
+    ) -> NSAttributedString {
         let lighter = NSFont.systemFont(ofSize: font.pointSize, weight: .regular)
+        // Derived from the ink rather than `.placeholderTextColor`, which is
+        // tied to the system appearance and would be invisible on a surface
+        // that isn't.
         return NSAttributedString(
             string: text,
-            attributes: [.font: lighter, .foregroundColor: NSColor.placeholderTextColor]
+            attributes: [.font: lighter, .foregroundColor: color.withAlphaComponent(0.45)]
         )
     }
 

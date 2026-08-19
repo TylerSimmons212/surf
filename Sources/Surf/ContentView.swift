@@ -343,6 +343,11 @@ private struct TabContent: View {
             switch tab.mode {
             case .home:
                 EmptyTabView(session: session, tab: tab)
+                    // Above the page during the crossfade, so the reveal is the
+                    // sea thinning over the loaded page rather than the page
+                    // popping in beside it.
+                    .zIndex(1)
+                    .transition(.opacity)
             case .browsing:
                 ZStack {
                     if PopOutController.shared.isPoppedOut(tab) {
@@ -358,6 +363,10 @@ private struct TabContent: View {
                 }
             }
         }
+        // What makes the dive's reveal a crossfade: the mode flip swaps the
+        // views, and this is the timing both sides swap under. Slow enough to
+        // read as the sea thinning, quick enough not to feel like a curtain.
+        .animation(.easeInOut(duration: 0.6), value: tab.mode)
         // A restored tab loads the first time it's actually shown, not at launch.
         //
         // Keyed on the tab rather than on appearance: this view is no longer

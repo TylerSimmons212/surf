@@ -21,25 +21,20 @@ struct EmptyTabView: View {
     private let barWidth: CGFloat = 620
 
     var body: some View {
-        VStack(spacing: 30) {
-            // Large, because this is the one place the name is the subject
-            // rather than a label — and because Outfit's low x-height only
-            // pays off at a size where the lowercase has room to breathe.
-            // Caps, and tracked out. Outfit's caps are nearly circular, so at
-            // this size they close up on each other at the default fit — the
-            // letterspacing is what makes it read as a mark rather than as a
-            // word someone shouted.
-            Text("SURF")
-                .font(Typeface.outfit(size: 72))
-                .tracking(14)
-                // The tracking is trailing space too, so the word sits left of
-                // centre by half of it without this.
-                .padding(.leading, 14)
-                .foregroundStyle(.primary.opacity(0.45))
+        ZStack {
+            // Over the mark, so the water washes across its bottom half.
+            // The mark lives inside the water's canvas, not behind it: the
+            // layers are translucent, so anything merely behind them ghosts
+            // through. The water erases the mark with its own wave shapes
+            // instead, and the letters' bottom edge becomes the crest line.
+            WaterBackground(surface: waterline, diveStartedAt: tab.diveStartedAt,
+                            mark: Self.markPath)
+                .ignoresSafeArea()
 
+            // On the water, at its own surface.
             VStack(spacing: 8) {
                 field
-                if completions.isShowing {
+                if completions.isShowing && !tab.isDiving {
                     SuggestionList(
                         suggestions: completions.suggestions,
                         highlighted: completions.highlighted,
@@ -48,20 +43,76 @@ struct EmptyTabView: View {
                     .frame(width: barWidth)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            // The board goes under as the water comes up — slipping below the
+            // rising surface rather than blinking out, which is the one wrong
+            // note a disappearing control could hit here.
+            .offset(y: tab.isDiving ? 130 : 0)
+            .opacity(tab.isDiving ? 0 : 1)
+            .animation(.easeIn(duration: 0.55), value: tab.isDiving)
+            .allowsHitTesting(!tab.isDiving)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The reveal. Time answers for the rise; the tab answers for the page.
+        // Both have to be true: fading out while the water is still climbing
+        // would show the page through a half-risen sea.
+        .task(id: tab.isDiving) {
+            guard tab.isDiving else { return }
+            let minimumRise: TimeInterval = 1.9
+            while !Task.isCancelled && tab.isDiving {
+                if let start = tab.diveStartedAt,
+                   Date().timeIntervalSince(start) >= minimumRise,
+                   !tab.isLoading {
+                    tab.completeDive()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+    }
+
+    /// Where the surface sits. The board is centred, so this is where the two
+    /// meet — a fraction rather than a point, because the window resizes and a
+    /// board floating above its own waterline is the one thing that would give
+    /// the whole idea away.
+    private let waterline = 0.5
+
+    /// The mark, placed for a given window size — cached, because the water
+    /// asks thirty times a second and the outlines only change when the window
+    /// does. An outline face rather than a stroked one: stroking Outfit works
+    /// until the line is heavy enough to see across a room, and then the R and
+    /// the F run into each other. Sunk so its last fifth starts below the
+    /// waterline, where the waves now decide what shows.
+    private static let mark = GlyphOutline(text: "SURF", family: "Bungee Outline", tracking: 2)
+    private static let markAspect = mark.aspect()
+    private static var markCache: (size: CGSize, path: Path)?
+
+    private static func markPath(for size: CGSize) -> Path {
+        if let cached = markCache, cached.size == size { return cached.path }
+        let width = size.width - 60
+        let height = width / max(markAspect, 0.001)
+        let centerY = size.height * 0.5 + size.height * 0.06 - height / 2
+        let path = mark.path(in: CGRect(
+            x: (size.width - width) / 2, y: centerY - height / 2,
+            width: width, height: height
+        ))
+        markCache = (size, path)
+        return path
     }
 
     private var field: some View {
         HStack(spacing: 14) {
             Image(systemName: "magnifyingglass")
                 .font(Typeface.figtree(size: 17, weight: 500))
-                .foregroundStyle(isHovering || !text.isEmpty ? Color.accentColor : Color.secondary)
+                .foregroundStyle(Color(red: 0.10, green: 0.22, blue: 0.34).opacity(0.55))
 
             SurfTextField(
                 text: $text,
                 placeholder: "Search or enter address",
                 font: .systemFont(ofSize: 19, weight: .regular),
+                // The board sets its own surface, so the ink is chosen against
+                // that rather than against the window's appearance.
+                textColor: NSColor(red: 0.06, green: 0.15, blue: 0.24, alpha: 1),
                 focusToken: session.focusAddressToken,
                 onSubmit: submit,
                 onMove: { direction in
@@ -85,21 +136,26 @@ struct EmptyTabView: View {
         .padding(.trailing, 100)
         .padding(.vertical, 17)
         .frame(width: barWidth)
-        .glassEffect(
-            .regular
-                .tint(text.isEmpty ? (isHovering ? Color.accentColor.opacity(0.08) : nil)
-                                   : Color.accentColor.opacity(0.10))
-                .interactive(),
-            in: SurfboardShape()
-        )
-        .background { SurfboardShape().fill(.thickMaterial) }
+        // A real board, not a pane of glass: white, opaque, catching a little
+        // more light along the top than the bottom. Glass let the water read
+        // straight through it, which put the thing meant to be riding the wave
+        // somewhere behind it.
+        .background {
+            SurfboardShape()
+                .fill(
+                    LinearGradient(
+                        colors: [Color(white: 0.99), Color(white: 0.90)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+        }
         .overlay(alignment: .trailing) {
             // The stringer, kept to the nose run. Full length is what a board
             // actually has and it drew a line straight through the placeholder;
             // typed text can reach x=520 of 620, so this starts at 536 and
             // there is nothing for it to cross.
             Capsule()
-                .fill(.white.opacity(0.22))
+                .fill(Color(red: 0.10, green: 0.22, blue: 0.34).opacity(0.18))
                 .frame(width: 48, height: 1.5)
                 .padding(.trailing, 36)
                 .allowsHitTesting(false)
@@ -108,7 +164,7 @@ struct EmptyTabView: View {
             SurfboardShape()
                 .strokeBorder(
                     LinearGradient(
-                        colors: [.white.opacity(0.38), .white.opacity(0.06)],
+                        colors: [.white, Color(red: 0.55, green: 0.68, blue: 0.78)],
                         startPoint: .top, endPoint: .bottom
                     ),
                     lineWidth: 1
@@ -117,7 +173,8 @@ struct EmptyTabView: View {
         }
         .contentShape(SurfboardShape())
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: text.isEmpty)
-        .shadow(color: .black.opacity(isHovering ? 0.20 : 0.14), radius: isHovering ? 24 : 16, y: 8)
+        .shadow(color: Color(red: 0.02, green: 0.10, blue: 0.20)
+            .opacity(isHovering ? 0.42 : 0.32), radius: isHovering ? 26 : 18, y: 10)
         .scaleEffect(isHovering ? 1.008 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovering)
         .onHover { isHovering = $0 }
