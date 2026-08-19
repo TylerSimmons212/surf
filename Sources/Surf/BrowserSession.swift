@@ -111,6 +111,11 @@ final class BrowserSession {
         // starting tab is told it's on screen by hand.
         selected.didBecomeVisible()
 
+        // Deletions a previous run couldn't finish, retried now — before any
+        // island has built a web view, which is the one moment nothing is
+        // holding a store.
+        Task { @MainActor in await IslandStores.shared.collectTombstones() }
+
         startReclaimTimer()
 
         // Quitting doesn't give the debounced save time to fire, so flush.
@@ -306,8 +311,6 @@ final class BrowserSession {
         }
     }
 
-    // MARK: - Lifecycle
-
     /// The island a tab belongs to.
     ///
     /// A search rather than a back-pointer on `Tab`: islands hold few enough
@@ -316,6 +319,170 @@ final class BrowserSession {
     func island(holding tab: Tab) -> Island? {
         islands.first { $0.contains(tab) }
     }
+
+    // MARK: - Islands
+
+    /// A new island, with its own cookie jar.
+    ///
+    /// The identifier is minted here and never reused: a store is the island's
+    /// identity as far as WebKit is concerned, and handing a new island an old
+    /// one would hand it someone else's logins.
+    @discardableResult
+    func createIsland(
+        name: String? = nil,
+        symbol: String = IslandSymbols.fallback,
+        tint: IslandTint? = nil
+    ) -> Island {
+        let island = Island(
+            id: UUID(),
+            name: name ?? IslandLayout.defaultName(existing: islands.map(\.name)),
+            symbol: symbol,
+            tint: tint ?? IslandTint.next(after: islands.map(\.tint)),
+            dataStoreID: UUID()
+        )
+        islands.append(island)
+        scheduleSave()
+        return island
+    }
+
+    /// Brings an island on screen.
+    ///
+    /// The one place the never-empty rule is paid for: a background island may
+    /// hold nothing, so arriving at one has to give it a tab before the
+    /// selection is adopted — otherwise `selectedTab` would have to be optional
+    /// and every view would grow a nil branch to serve a case that lasts
+    /// microseconds.
+    func select(island: Island) {
+        guard island !== currentIsland, islands.contains(where: { $0 === island }) else { return }
+
+        // Same courtesy as switching tabs: don't take a video off screen
+        // without leaving it somewhere watchable.
+        if shouldAutoPopOut(selectedTab) {
+            PopOutController.shared.popOut(selectedTab)
+        }
+        currentIsland.rememberedSelection = selectedTabID
+        currentIsland = island
+
+        let target: Tab
+        if let remembered = island.tabs.first(where: { $0.id == island.rememberedSelection }) {
+            target = remembered
+        } else if let first = island.tabs.first {
+            target = first
+        } else {
+            let fresh = island.makeTab()
+            fresh.session = self
+            island.append(fresh)
+            target = fresh
+        }
+
+        // Arriving at a tab that's floating in its own window folds it back in,
+        // exactly as selecting it from the list would.
+        if PopOutController.shared.isPoppedOut(target) {
+            PopOutController.shared.restore()
+        }
+
+        adoptSelection(target)
+        scheduleSave()
+    }
+
+    func selectIsland(atOneBasedIndex index: Int) {
+        guard let target = TabSelection.index(forOneBased: index, count: islands.count) else {
+            return
+        }
+        select(island: islands[target])
+    }
+
+    func cycleIsland(by offset: Int) {
+        guard let current = islands.firstIndex(where: { $0 === currentIsland }),
+              let next = TabSelection.cycled(from: current, by: offset, count: islands.count)
+        else { return }
+        select(island: islands[next])
+    }
+
+    func rename(_ island: Island, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        island.name = trimmed
+        scheduleSave()
+    }
+
+    /// Asks first, because this cannot be undone.
+    ///
+    /// A confirmation on a destructive menu item is ordinary caution; here it
+    /// is also load-bearing. SwiftUI rebuilds this menu whenever the island
+    /// list changes, and a click arriving during that rebuild can be dispatched
+    /// to a neighbouring item — observed, not theorised, while testing this
+    /// very menu. Every other item in it is harmless to trigger by accident.
+    /// This one throws away every login in an island.
+    func requestDeleteIsland(_ island: Island) {
+        guard !island.isHome, islands.count > 1 else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "Delete “\(island.name)”?"
+        alert.informativeText = """
+            Its tabs will close, and every cookie, login and site setting that \
+            belongs to this island will be erased. This cannot be undone.
+            """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Island and Its Data")
+        alert.addButton(withTitle: "Cancel")
+        // So Return cancels and the destructive button has to be aimed at.
+        alert.buttons.last?.keyEquivalent = "\r"
+        alert.buttons.first?.keyEquivalent = ""
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        deleteIsland(island)
+    }
+
+    /// Deletes an island and everything it knows about you.
+    ///
+    /// The order is the whole method. Each step exists because the one before
+    /// it can fail:
+    ///
+    /// 1. The home island stays. Its store is WebKit's default one, which isn't
+    ///    ours to delete, and it holds every cookie from before islands existed.
+    /// 2. Switch away first, so the "current island is never empty" invariant
+    ///    is never briefly false while tabs are being torn down under it.
+    /// 3. Tear down every tab before touching the store — `remove(forIdentifier:)`
+    ///    fails while anything still references it, and a live web view is a
+    ///    reference even when its tab is asleep.
+    /// 4. Persist *before* removing data. A crash after removal but before the
+    ///    save leaves an island pointing at a store that's gone, which is worse
+    ///    than a store no island claims: the second is collectable, the first
+    ///    just fails to load forever.
+    func deleteIsland(_ island: Island) {
+        guard !island.isHome, islands.count > 1 else { return }
+        guard let index = islands.firstIndex(where: { $0 === island }) else { return }
+
+        if island === currentIsland {
+            let fallback = IslandLayout.indexAfterDeleting(
+                islandAt: index, count: islands.count
+            ) ?? 0
+            let destination = islands[fallback == index ? max(0, index - 1) : fallback]
+            select(island: destination)
+        }
+
+        for tab in island.tabs {
+            if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+            DevToolsController.shared.close(for: tab)
+            tab.teardown()
+        }
+        island.replaceTabs(with: [])
+        island.recentlyClosed.removeAll()
+        islands.remove(at: index)
+        saveNow()
+
+        guard let storeID = island.dataStoreID else { return }
+        Task { @MainActor in
+            // Tombstoned first, then retried with a backoff. Tearing down the
+            // tabs above is asynchronous, so WebKit is usually still holding
+            // the store when we first ask — and if it holds on past the retries
+            // the next launch finishes the job.
+            await IslandStores.shared.removeData(for: storeID)
+        }
+    }
+
+    // MARK: - Lifecycle
 
     @discardableResult
     func addTab(configuration: WKWebViewConfiguration? = nil, select: Bool = true) -> Tab {

@@ -164,6 +164,45 @@ struct SurfApp: App {
             }
         }
 
+        CommandMenu("Islands") {
+            Button("New Island") {
+                session.select(island: session.createIsland())
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+
+            Divider()
+
+            // ⌥⌘← / ⌥⌘→ rather than anything with ⌘⇧ brackets: those are tabs,
+            // and an island is a bigger move than a tab — the arrows read as
+            // travelling somewhere.
+            Button("Previous Island") { session.cycleIsland(by: -1) }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            Button("Next Island") { session.cycleIsland(by: 1) }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(session.islands.count < 2)
+
+            // Named for what it does. "Delete Island" reads like closing a
+            // window; this throws away every login inside it.
+            Button("Delete Island and Its Data", role: .destructive) {
+                session.requestDeleteIsland(session.currentIsland)
+            }
+            .disabled(session.currentIsland.isHome)
+
+            Divider()
+
+            // ⌥⌘1–⌥⌘9. ⌘1–⌘9 are spoken for by tabs, and ⌃1–⌃9 — the obvious
+            // second choice — never reach the app at all: macOS takes them for
+            // Mission Control's desktop switching, silently. So Option-Command
+            // is the island modifier throughout, arrows included.
+            ForEach(1...9, id: \.self) { index in
+                Button("Show Island \(index)") { session.selectIsland(atOneBasedIndex: index) }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(index)")),
+                        modifiers: [.command, .option]
+                    )
+            }
+        }
+
         CommandMenu("Develop") {
             Button(
                 DevToolsController.shared.isOpen(for: session.selectedTab)

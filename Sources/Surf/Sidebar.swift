@@ -66,6 +66,7 @@ struct Sidebar: View {
             SidebarNavigationBar(session: session, isPinned: $isPinned, hold: hold)
             tabList
             SidebarMediaSection(session: session)
+            IslandStrip(session: session, hold: hold)
         }
         .padding(.top, topInset)
         // Matched to the lights' own fade, so the room appears as they do

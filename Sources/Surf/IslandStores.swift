@@ -81,4 +81,91 @@ final class IslandStores {
         stores.removeValue(forKey: identifier)
         degraded.remove(identifier)
     }
+
+    /// Identifiers the user has deleted but WebKit hasn't let go of yet.
+    ///
+    /// `remove(forIdentifier:)` fails while *anything* still references the
+    /// store, and tearing down a tab is asynchronous — `releaseWebView` pauses
+    /// media, closes presentations and loads `about:blank` before the view goes
+    /// — so the first attempt after a delete routinely lands while the web
+    /// views are still dying. Measured, not assumed: deleting an island and
+    /// asking WebKit ten seconds later still listed the identifier.
+    ///
+    /// Hence a tombstone that outlives the process. The retry loop below
+    /// usually wins; when it doesn't, the next launch does, before anything has
+    /// had a chance to reference the store at all.
+    ///
+    /// Deliberately a list of *intended deletions* rather than a sweep of
+    /// unclaimed stores. A sweep needs a trustworthy island list, and there is
+    /// one case where we don't have one: with "reopen tabs on launch" off the
+    /// session file isn't even read, so every island would look unclaimed and a
+    /// sweep would erase all of them. A tombstone can only ever delete
+    /// something the user asked to delete.
+    private static let tombstoneKey = "islandStoresPendingDeletion"
+
+    private var tombstones: [UUID] {
+        get {
+            (UserDefaults.standard.array(forKey: Self.tombstoneKey) as? [String] ?? [])
+                .compactMap(UUID.init(uuidString:))
+        }
+        set {
+            UserDefaults.standard.set(
+                newValue.map(\.uuidString), forKey: Self.tombstoneKey
+            )
+        }
+    }
+
+    /// Erases an island's storage from disk, and keeps trying until it does.
+    func removeData(for identifier: UUID) async {
+        if !tombstones.contains(identifier) { tombstones.append(identifier) }
+        discard(identifier)
+
+        // Backing off rather than hammering: what we're waiting for is other
+        // references being released, which takes as long as it takes.
+        for delay in [0.0, 0.4, 1.0, 2.0, 4.0] {
+            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+            do {
+                try await WKWebsiteDataStore.remove(forIdentifier: identifier)
+                tombstones.removeAll { $0 == identifier }
+                return
+            } catch {
+                debugLog("island store removal deferred: \(error)")
+            }
+        }
+        debugLog("island store \(identifier) left tombstoned for next launch")
+    }
+
+    /// Finishes deletions a previous run couldn't.
+    ///
+    /// Called at launch, before any island has built a web view — which is
+    /// exactly why it succeeds where the live attempt failed: nothing is
+    /// holding the store yet.
+    func collectTombstones() async {
+        let pending = tombstones
+        guard !pending.isEmpty else { return }
+        let onDisk = Set(await Self.identifiersOnDisk())
+        var remaining: [UUID] = []
+        for identifier in pending {
+            // Already gone: the deletion did land, we just never got to record
+            // it before the process ended.
+            guard onDisk.contains(identifier) else { continue }
+            do {
+                try await WKWebsiteDataStore.remove(forIdentifier: identifier)
+            } catch {
+                debugLog("tombstoned store \(identifier) still refusing: \(error)")
+                remaining.append(identifier)
+            }
+        }
+        tombstones = remaining
+    }
+
+    /// Every identifier WebKit is holding storage for.
+    ///
+    /// Completion-handler only — there is no async spelling of this one, so the
+    /// bridge lives here rather than at each call site.
+    static func identifiersOnDisk() async -> [UUID] {
+        await withCheckedContinuation { continuation in
+            WKWebsiteDataStore.fetchAllDataStoreIdentifiers { continuation.resume(returning: $0) }
+        }
+    }
 }
