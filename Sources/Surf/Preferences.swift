@@ -84,20 +84,46 @@ extension BrowsingDataCategory {
 @MainActor
 enum BrowsingDataCleaner {
 
-    /// Erases the given categories for every site.
+    /// Erases the given categories for every site, in every island.
+    ///
+    /// Every island, emphatically. Clearing only the default store would leave
+    /// the promise in Settings true for the browsing you did in the island you
+    /// happened to be in and false for all the rest — and the user would have
+    /// no way to tell, because nothing in the UI distinguishes them.
+    ///
+    /// Concurrently, because this runs on the way out: `applicationShouldTerminate`
+    /// is holding the app open waiting for it, and six islands cleared one
+    /// after another is six round trips the user spends staring at a window
+    /// that won't close.
     static func clear(_ categories: Set<BrowsingDataCategory>) async {
         guard !categories.isEmpty else { return }
         let types = Set(categories.map(\.webKitDataType))
-        await WKWebsiteDataStore.default().removeData(
-            ofTypes: types,
-            modifiedSince: .distantPast
-        )
+        let stores = await IslandStores.shared.allStores()
+
+        // Started together, awaited afterwards. A task group would be the
+        // obvious spelling and doesn't compile here: the isolation checker
+        // can't reason about handing a main-actor store into a group.
+        let clears = stores.map { store in
+            Task { @MainActor in
+                await store.removeData(ofTypes: types, modifiedSince: .distantPast)
+            }
+        }
+        for clear in clears { await clear.value }
     }
 
-    /// How many sites currently have data stored. Used to show that the clear
-    /// actually did something.
+    /// How many sites currently have data stored, across every island. Used to
+    /// show that the clear actually did something.
+    ///
+    /// A sum rather than a distinct count: an origin with data in two islands
+    /// is two piles of data, and reporting it once would make clearing look
+    /// like it had done less than it did.
     static func storedSiteCount() async -> Int {
         let types = Set(BrowsingDataCategory.allCases.map(\.webKitDataType))
-        return await WKWebsiteDataStore.default().dataRecords(ofTypes: types).count
+        let stores = await IslandStores.shared.allStores()
+        var total = 0
+        for store in stores {
+            total += await store.dataRecords(ofTypes: types).count
+        }
+        return total
     }
 }

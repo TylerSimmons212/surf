@@ -256,6 +256,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         Task { @MainActor in
             let extraction = await MediaExtractor.shared.start(
                 pageURL: pageURL,
+                // `tab.dataStore`, never `tab.webView` — the second would build
+                // a web view just to read cookies, waking a sleeping tab.
+                cookies: (tab?.dataStore ?? IslandStores.shared.store(forIdentifier: nil))
+                    .httpCookieStore,
                 // Held strongly on purpose: the manager is a singleton and the
                 // item is in `items` until the user clears it, so there is no
                 // cycle to break and nothing to outlive.

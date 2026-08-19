@@ -579,6 +579,17 @@ final class BrowserSession {
     // MARK: - Selection
 
     func select(_ tab: Tab) {
+        // A tab can be reached from outside the island it lives in. The media
+        // player deliberately lists whatever is playing *anywhere* — switching
+        // islands is not a request to stop the music — so its rows are the one
+        // place you can click a tab the sidebar isn't showing. Without this,
+        // `setSelection` searched only the current island, found nothing, and
+        // returned: the row simply didn't respond, with no way to tell why.
+        guard let owner = island(holding: tab) else { return }
+        if owner !== currentIsland {
+            currentIsland.rememberedSelection = selectedTabID
+            currentIsland = owner
+        }
         setSelection(to: tab.id)
     }
 

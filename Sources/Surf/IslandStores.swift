@@ -159,6 +159,25 @@ final class IslandStores {
         tombstones = remaining
     }
 
+    /// Every store the user has data in, whether or not an island has opened
+    /// one this run.
+    ///
+    /// Enumerated from disk rather than from the session's islands, and that
+    /// distinction is the whole point: a background island you haven't visited
+    /// since launch has never built a web view, so its store was never
+    /// instantiated — and a "clear everything on quit" that only walked live
+    /// stores would quietly spare exactly the islands you use least.
+    ///
+    /// Instantiating a store in order to erase it is not wasteful here. It's
+    /// the only way to ask WebKit to remove data from one.
+    func allStores() async -> [WKWebsiteDataStore] {
+        var stores: [WKWebsiteDataStore] = [.default()]
+        for identifier in await Self.identifiersOnDisk() {
+            stores.append(store(forIdentifier: identifier))
+        }
+        return stores
+    }
+
     /// Every identifier WebKit is holding storage for.
     ///
     /// Completion-handler only — there is no async spelling of this one, so the

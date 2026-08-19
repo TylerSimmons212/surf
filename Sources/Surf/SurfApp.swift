@@ -191,9 +191,10 @@ struct SurfApp: App {
             Divider()
 
             // ⌥⌘1–⌥⌘9. ⌘1–⌘9 are spoken for by tabs, and ⌃1–⌃9 — the obvious
-            // second choice — never reach the app at all: macOS takes them for
-            // Mission Control's desktop switching, silently. So Option-Command
-            // is the island modifier throughout, arrows included.
+            // second choice — collide with Mission Control's desktop switching,
+            // which is on by default once you have more than one desktop and
+            // takes the key before any app sees it. So Option-Command is the
+            // island modifier throughout, arrows included.
             ForEach(1...9, id: \.self) { index in
                 Button("Show Island \(index)") { session.selectIsland(atOneBasedIndex: index) }
                     .keyboardShortcut(
@@ -265,7 +266,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !categories.isEmpty else { return .terminateNow }
 
         Task { @MainActor in
-            await BrowsingDataCleaner.clear(categories)
+            // Bounded, because the work now scales with the number of islands
+            // and every one of them is a round trip to WebKit. An app that
+            // won't quit is a worse failure than one that quits having cleared
+            // most of what it promised — and whatever is missed is cleared on
+            // the next launch's quit, since the setting is still on.
+            let clearing = Task { @MainActor in
+                await BrowsingDataCleaner.clear(categories)
+            }
+            let deadline = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(6))
+                clearing.cancel()
+            }
+            await clearing.value
+            deadline.cancel()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
