@@ -40,6 +40,16 @@ struct WaterBackground: View {
     /// The water's own colour at the surface, fading out below.
     var tint = Color(red: 0.44, green: 0.78, blue: 0.98)
 
+    /// Something drawn behind the water that the water should *hide*, not tint.
+    ///
+    /// The layers are translucent, so simply drawing behind them means showing
+    /// through them as a ghost. Instead the mark is drawn in this canvas and
+    /// then erased with the waves' own silhouettes at full opacity — the shapes
+    /// as cookie cutters rather than as paint. Whatever survives is above every
+    /// crest, and its bottom edge is the moving crest line itself.
+    var mark: ((CGSize) -> Path)?
+    var markShading: GraphicsContext.Shading = .color(.primary.opacity(0.16))
+
     var body: some View {
         // 30fps rather than the display's rate: this is a backdrop running
         // behind whatever the browser is actually doing.
@@ -47,6 +57,28 @@ struct WaterBackground: View {
             Canvas(rendersAsynchronously: true) { context, size in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let band = min(max(size.height * 0.17, 90), 155)
+
+                if let mark {
+                    context.drawLayer { layer in
+                        layer.fill(mark(size), with: markShading)
+                        // The same wave paths the water is about to draw, but
+                        // as erasers: destinationOut with opaque black removes
+                        // everything under them regardless of how transparent
+                        // the painted water is.
+                        layer.blendMode = .destinationOut
+                        for l in Self.layers {
+                            let progress = ((t - l.delay) / l.period)
+                                .truncatingRemainder(dividingBy: 1)
+                            let shift = Self.start + Self.travel
+                                * CGFloat(progress < 0 ? progress + 1 : progress)
+                            layer.fill(
+                                Self.wave(size: size, surface: surface, band: band,
+                                          depth: l.depth, shift: shift),
+                                with: .color(.black)
+                            )
+                        }
+                    }
+                }
 
                 // Body under the waves. Without it the layers fade out around
                 // two thirds down and the bottom of the window is just page

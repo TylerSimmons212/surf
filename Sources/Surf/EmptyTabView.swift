@@ -22,32 +22,12 @@ struct EmptyTabView: View {
 
     var body: some View {
         ZStack {
-            // Backmost, and an outline face rather than a stroked one. Stroking
-            // Outfit works until the line is heavy enough to see from across the
-            // room, and then the R and the F run into each other — the outline
-            // is drawn around each letter independently and nothing stops two
-            // of them meeting. Bungee Outline is drawn as an outline, so the
-            // counters and the spacing already account for it.
-            GeometryReader { geo in
-                let mark = GlyphOutline(text: "SURF", family: "Bungee Outline", tracking: 2)
-                let width = geo.size.width - 60
-                let height = width / max(mark.aspect(), 0.001)
-                mark
-                    .fill(.primary.opacity(0.16))
-                    .frame(width: width, height: height)
-                    // Sunk to the waterline: the last fifth of the letters goes
-                    // under, where the water is densest and hides it. Left to
-                    // centre itself the word sat far lower, and the whole
-                    // bottom half of it showed through the water as a ghost.
-                    .position(
-                        x: geo.size.width / 2,
-                        y: geo.size.height * waterline + geo.size.height * 0.06 - height / 2
-                    )
-            }
-            .allowsHitTesting(false)
-
             // Over the mark, so the water washes across its bottom half.
-            WaterBackground(surface: waterline)
+            // The mark lives inside the water's canvas, not behind it: the
+            // layers are translucent, so anything merely behind them ghosts
+            // through. The water erases the mark with its own wave shapes
+            // instead, and the letters' bottom edge becomes the crest line.
+            WaterBackground(surface: waterline, mark: Self.markPath)
                 .ignoresSafeArea()
 
             // On the water, at its own surface.
@@ -72,6 +52,29 @@ struct EmptyTabView: View {
     /// board floating above its own waterline is the one thing that would give
     /// the whole idea away.
     private let waterline = 0.5
+
+    /// The mark, placed for a given window size — cached, because the water
+    /// asks thirty times a second and the outlines only change when the window
+    /// does. An outline face rather than a stroked one: stroking Outfit works
+    /// until the line is heavy enough to see across a room, and then the R and
+    /// the F run into each other. Sunk so its last fifth starts below the
+    /// waterline, where the waves now decide what shows.
+    private static let mark = GlyphOutline(text: "SURF", family: "Bungee Outline", tracking: 2)
+    private static let markAspect = mark.aspect()
+    private static var markCache: (size: CGSize, path: Path)?
+
+    private static func markPath(for size: CGSize) -> Path {
+        if let cached = markCache, cached.size == size { return cached.path }
+        let width = size.width - 60
+        let height = width / max(markAspect, 0.001)
+        let centerY = size.height * 0.5 + size.height * 0.06 - height / 2
+        let path = mark.path(in: CGRect(
+            x: (size.width - width) / 2, y: centerY - height / 2,
+            width: width, height: height
+        ))
+        markCache = (size, path)
+        return path
+    }
 
     private var field: some View {
         HStack(spacing: 14) {
