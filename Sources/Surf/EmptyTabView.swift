@@ -43,10 +43,6 @@ struct EmptyTabView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onChange(of: session.focusAddressToken) { _, _ in
-            // ⌘L on home means this field, not a panel over it.
-            NSApp.keyWindow?.makeFirstResponder(nil)
-        }
     }
 
     private var field: some View {
@@ -59,6 +55,7 @@ struct EmptyTabView: View {
                 text: $text,
                 placeholder: "Search or enter address",
                 font: .systemFont(ofSize: 19, weight: .regular),
+                focusToken: session.focusAddressToken,
                 onSubmit: submit,
                 onMove: { direction in
                     guard completions.isShowing else { return }
