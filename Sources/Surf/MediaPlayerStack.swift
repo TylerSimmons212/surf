@@ -104,6 +104,17 @@ struct MediaRow: View {
 
     private var media: MediaState? { tab.media }
 
+    /// An embedded player reports the *embed's* hostname, or nothing at all —
+    /// 'hgcloud.to' rather than the site you're on — so a blank line falls back
+    /// to the page's own host, which is the thing that was actually opened.
+    private func subtitle(_ media: MediaState) -> String {
+        guard media.artist.isEmpty else { return media.artist }
+        if let address = tab.currentURL, let host = URL(string: address)?.host() {
+            return host
+        }
+        return tab.displayTitle
+    }
+
     /// Same corner as a tab row, so the player reads as part of the column
     /// rather than a panel underneath it.
     private var cardShape: RoundedRectangle {
@@ -120,7 +131,7 @@ struct MediaRow: View {
                         Text(media.title.isEmpty ? tab.displayTitle : media.title)
                             .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
                             .lineLimit(1)
-                        Text(media.artist)
+                        Text(subtitle(media))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -248,13 +259,22 @@ struct MediaRow: View {
         .help("\(stackedCount + 1) tabs playing — hover to show all")
     }
 
+    /// The tab's identity at rest, and the playing signal while it plays.
+    ///
+    /// The two trade places rather than sitting side by side: at 32 points
+    /// there is room for exactly one thing, and which one matters depends on
+    /// what you're looking for. Stopped, you're picking a row out of a stack
+    /// and the favicon is what tells them apart; playing, you already know
+    /// which row it is and want to see that it's actually running.
     private func artwork(_ media: MediaState) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(Color.primary.opacity(0.08))
                 .frame(width: 32, height: 32)
 
-            if let favicon = tab.favicon {
+            if media.isPlaying {
+                EqualizerBars(isAnimating: true)
+            } else if let favicon = tab.favicon {
                 Image(nsImage: favicon)
                     .resizable()
                     .interpolation(.high)
@@ -266,6 +286,7 @@ struct MediaRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .animation(.easeOut(duration: 0.2), value: media.isPlaying)
     }
 
     @ViewBuilder
@@ -359,14 +380,22 @@ struct MediaRow: View {
         }
     }
 
-    /// Only drawn for media with a known duration — live streams report zero,
-    /// and a bar stuck at 0% reads as broken.
+    /// How far through the media is, only for media with a known duration —
+    /// live streams report zero, and a bar stuck at 0% reads as broken.
+    ///
+    /// Deliberately *not* the accent colour. A saturated bar filling left to
+    /// right along the bottom of a card is the same shape the whole platform
+    /// uses for work in progress, and reading it as a stalled download is the
+    /// obvious mistake — it's the one everyone made. Neutral and thin, it reads
+    /// as a position along a track, which is what it is. The equalizer on the
+    /// artwork carries the "this is playing" signal instead, and carries it
+    /// better, because motion means running in a way that colour never did.
     @ViewBuilder
     private func progress(_ media: MediaState) -> some View {
         if media.duration > 0 {
             GeometryReader { geometry in
                 Rectangle()
-                    .fill(Color.accentColor.opacity(0.8))
+                    .fill(Color.primary.opacity(0.28))
                     .frame(width: geometry.size.width * media.progress)
                     .animation(.linear(duration: 0.9), value: media.progress)
             }
