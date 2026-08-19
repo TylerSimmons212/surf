@@ -194,27 +194,42 @@ struct WaterBackground: View {
         for i in 0..<46 {
             // The stream thickens as the water rises: each bubble has a turn.
             guard rnd(i, 7) < intensity else { continue }
-            let period = 2.1 + 2.9 * rnd(i, 3)
+
+            // Small bubbles are common, big ones rare — the power skews it —
+            // and the big ones rise faster, which is just what bubbles do.
+            let r = 2.6 + 7.5 * pow(rnd(i, 2), 1.8)
+            let period = (2.2 + 2.6 * rnd(i, 3)) / (0.75 + r / 12)
             let u = ((time / period) + rnd(i, 4)).truncatingRemainder(dividingBy: 1)
             let y = bottom - (bottom - top) * u
 
-            // Small bubbles are common, big ones rare — the power skews it.
-            let r = 2.4 + 7.5 * pow(rnd(i, 2), 1.7)
             let sway = (5 + 11 * rnd(i, 5))
                 * sin(time * (0.7 + 0.9 * rnd(i, 6)) + rnd(i, 4) * 6.28)
             let x = size.width * rnd(i, 1) + sway
 
-            // Born small and faint, gone just before the surface.
+            // Born small and faint, gone just before the surface — and no two
+            // at the same strength, because uniform is what reads as pasted-on.
             let fade = min(u / 0.10, min(1, (1 - u) / 0.08))
-            let alpha = fade * intensity
+            let a = fade * intensity * (0.55 + 0.45 * rnd(i, 8))
+
+            // No stroke and no glint dot: an outlined circle with a white
+            // highlight is the cartoon. What a distant bubble actually shows is
+            // a soft bright rim around a nearly-empty middle, which is a radial
+            // gradient and nothing else.
             let rect = CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)
-            context.fill(Path(ellipseIn: rect), with: .color(.white.opacity(0.15 * alpha)))
-            context.stroke(Path(ellipseIn: rect), with: .color(.white.opacity(0.50 * alpha)),
-                           lineWidth: 1.2)
-            // The highlight that says sphere rather than ring.
-            let hl = CGRect(x: x - r * 0.45, y: y - r * 0.55,
-                            width: r * 0.55, height: r * 0.55)
-            context.fill(Path(ellipseIn: hl), with: .color(.white.opacity(0.42 * alpha)))
+            context.fill(
+                Path(ellipseIn: rect),
+                with: .radialGradient(
+                    Gradient(stops: [
+                        .init(color: .white.opacity(0.03 * a), location: 0),
+                        .init(color: .white.opacity(0.10 * a), location: 0.55),
+                        .init(color: .white.opacity(0.46 * a), location: 0.82),
+                        .init(color: .white.opacity(0.18 * a), location: 0.94),
+                        .init(color: .clear, location: 1),
+                    ]),
+                    center: CGPoint(x: x, y: y),
+                    startRadius: 0, endRadius: r
+                )
+            )
         }
     }
 
