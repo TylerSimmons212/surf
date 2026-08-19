@@ -296,6 +296,27 @@ struct ContentView: View {
             tab.submit(target)
         }
         if let first = session.tabs.first { session.select(first) }
+        openDevToolsIfAsked()
+    }
+
+    /// Dev affordance: `SURF_DEVTOOLS=console` alongside `SURF_URL` opens the
+    /// panel on the first tab at launch, on the named pane. `1` means Console.
+    ///
+    /// The injected half of dev tools only exists while a panel is attached,
+    /// so without this there is no way to exercise it except by hand — and the
+    /// scripts it installs are the largest thing Surf puts into a page.
+    private func openDevToolsIfAsked() {
+        guard let want = ProcessInfo.processInfo.environment["SURF_DEVTOOLS"],
+              !want.isEmpty,
+              let tab = session.tabs.first
+        else { return }
+        let pane = DevToolsSession.Pane(rawValue: want) ?? .console
+        Task { @MainActor in
+            // After the first document commits: attaching to `about:blank` and
+            // then navigating is a different path from attaching to a page.
+            try? await Task.sleep(for: .seconds(2))
+            DevToolsController.shared.open(tab, pane: pane)
+        }
     }
 }
 

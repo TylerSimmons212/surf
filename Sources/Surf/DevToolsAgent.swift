@@ -25,19 +25,19 @@ enum DevToolsAgent {
     /// One-way, agent → Surf.
     static let eventHandlerName = "surfDevToolsEvents"
 
-    /// What `callAsyncJavaScript` runs for every command. `method` and `params`
-    /// arrive as call arguments, never interpolated into the source — page
-    /// content must never be able to become script.
-    static let dispatchScript = """
-    if (!globalThis.__surfAgent) { return null; }
-    return globalThis.__surfAgent.dispatch(method, params);
-    """
+    static let globalName = "__surfAgent"
 
-    static let script = """
+    static var dispatchScript: String { PageRuntime.dispatchSource(global: globalName) }
+
+    static var script: String { """
+    \(PageRuntime.source(global: globalName, eventHandler: eventHandlerName))
     (function () {
-      if (globalThis.__surfAgent) { return; }
-
-      const HANDLER = '\(eventHandlerName)';
+      const runtime = globalThis['\(globalName)'];
+      // Guarded on the domain, not on the runtime: the runtime is shared and
+      // already installed above, so re-entering would attach a second set of
+      // observers to the same document.
+      if (!runtime || runtime.state.inspectorInstalled) { return; }
+      runtime.state.inspectorInstalled = true;
       // Text longer than this is truncated for the tree; the node itself still
       // holds the whole thing.
       const MAX_TEXT = 400;
@@ -45,7 +45,7 @@ enum DevToolsAgent {
 
       const post = (payload) => {
         try {
-          window.webkit.messageHandlers[HANDLER].postMessage(payload);
+          runtime.post(payload);
         } catch (e) {
           // The handler is removed on detach while this document stays alive.
         }
@@ -1130,395 +1130,378 @@ enum DevToolsAgent {
 
       // ---- Commands -------------------------------------------------------
 
-      const agent = {
-        // Replies are JSON strings rather than object graphs. Letting WebKit
-        // build a deep NSDictionary across the process boundary is markedly
-        // slower than handing over one string and decoding it on our side.
-        dispatch(method, params) {
-          try {
-            switch (method) {
-              case 'Runtime.ping':
-                return JSON.stringify({
-                  ok: true,
-                  url: location.href,
-                  title: document.title,
-                  nodeCount: document.getElementsByTagName('*').length
-                });
+      runtime.define('Runtime.ping', (params) => {
+        return ({
+          ok: true,
+          url: location.href,
+          title: document.title,
+          nodeCount: document.getElementsByTagName('*').length
+        });
+      });
 
-              case 'DOM.getDocument': {
-                const root = document.documentElement;
-                if (!root) { return JSON.stringify({ error: 'no document' }); }
-                startObserving();
-                // One level only. Two sounds harmless and isn't: the second
-                // level of a real page is <body>'s children, so a document
-                // with four thousand elements serialised all four thousand
-                // into the very first payload. <html> and its two children is
-                // all the first screen needs; everything below is fetched when
-                // it is actually opened.
-                return JSON.stringify({ root: serialize(root, 1) });
-              }
+      runtime.define('DOM.getDocument', (params) => {
+        const root = document.documentElement;
+        if (!root) { return ({ error: 'no document' }); }
+        startObserving();
+        // One level only. Two sounds harmless and isn't: the second
+        // level of a real page is <body>'s children, so a document
+        // with four thousand elements serialised all four thousand
+        // into the very first payload. <html> and its two children is
+        // all the first screen needs; everything below is fetched when
+        // it is actually opened.
+        return ({ root: serialize(root, 1) });
+      });
 
-              case 'DOM.requestChildNodes': {
-                const node = nodeFor(params && params.nodeId);
-                if (!node) { return JSON.stringify({ children: [] }); }
-                return JSON.stringify({
-                  children: childrenOf(node).map(function (child) { return serialize(child, 0); })
-                });
-              }
+      runtime.define('DOM.requestChildNodes', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node) { return ({ children: [] }); }
+        return ({
+          children: childrenOf(node).map(function (child) { return serialize(child, 0); })
+        });
+      });
 
-              case 'DOM.watch': {
-                watched = (params && params.nodeId) !== undefined ? params.nodeId : -1;
-                lastBoxKey = '';
-                reportWatchedBox();
-                return JSON.stringify({ ok: true });
-              }
+      runtime.define('DOM.watch', (params) => {
+        watched = (params && params.nodeId) !== undefined ? params.nodeId : -1;
+        lastBoxKey = '';
+        reportWatchedBox();
+        return ({ ok: true });
+      });
 
-              case 'DOM.pathToNode': {
-                // Where a node lives, root first, excluding the node itself.
-                //
-                // Picking hands back an id minted on the spot for whatever was
-                // under the pointer, and the panel has very likely never
-                // fetched that subtree — so it cannot work out the ancestry on
-                // its own. Only the page knows.
-                const target = nodeFor(params && params.nodeId);
-                if (!target) { return JSON.stringify({ path: [] }); }
-                const path = [];
-                let cursor = target.parentNode || (target.getRootNode && target.getRootNode().host);
-                let depth = 0;
-                while (cursor && depth < 500) {
-                  if (cursor.nodeType === 9) { break; }
-                  path.push(idFor(cursor));
-                  cursor = cursor.parentNode
-                    || (cursor.getRootNode && cursor.getRootNode() !== cursor
-                        ? cursor.getRootNode().host
-                        : null);
-                  depth++;
-                }
-                path.reverse();
-                return JSON.stringify({ path: path });
-              }
+      runtime.define('DOM.pathToNode', (params) => {
+        // Where a node lives, root first, excluding the node itself.
+        //
+        // Picking hands back an id minted on the spot for whatever was
+        // under the pointer, and the panel has very likely never
+        // fetched that subtree — so it cannot work out the ancestry on
+        // its own. Only the page knows.
+        const target = nodeFor(params && params.nodeId);
+        if (!target) { return ({ path: [] }); }
+        const path = [];
+        let cursor = target.parentNode || (target.getRootNode && target.getRootNode().host);
+        let depth = 0;
+        while (cursor && depth < 500) {
+          if (cursor.nodeType === 9) { break; }
+          path.push(idFor(cursor));
+          cursor = cursor.parentNode
+            || (cursor.getRootNode && cursor.getRootNode() !== cursor
+                ? cursor.getRootNode().host
+                : null);
+          depth++;
+        }
+        path.reverse();
+        return ({ path: path });
+      });
 
-              case 'DOM.getBoxModel': {
-                const node = nodeFor(params && params.nodeId);
-                return JSON.stringify({ box: boxModel(node) });
-              }
+      runtime.define('DOM.getBoxModel', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        return ({ box: boxModel(node) });
+      });
 
-              case 'DOM.scrollIntoView': {
-                const node = nodeFor(params && params.nodeId);
-                if (node && node.scrollIntoView) {
-                  node.scrollIntoView({ block: 'center', inline: 'nearest' });
-                }
-                return JSON.stringify({ ok: true });
-              }
+      runtime.define('DOM.scrollIntoView', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (node && node.scrollIntoView) {
+          node.scrollIntoView({ block: 'center', inline: 'nearest' });
+        }
+        return ({ ok: true });
+      });
 
-              case 'DOM.ack': {
-                lastAck = Math.max(lastAck, (params && params.sequence) || 0);
-                return JSON.stringify({ ok: true });
-              }
+      runtime.define('DOM.ack', (params) => {
+        lastAck = Math.max(lastAck, (params && params.sequence) || 0);
+        return ({ ok: true });
+      });
 
-              case 'CSS.getMatchedStyles': {
-                const node = nodeFor(params && params.nodeId);
-                return JSON.stringify(matchedStyles(node));
-              }
+      runtime.define('CSS.getMatchedStyles', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        return (matchedStyles(node));
+      });
 
-              case 'CSS.findRules': {
-                // Finds rules by what they *are*, with no element involved.
-                //
-                // Replay can't go through matched styles: a reload clears the
-                // selection, and the edits have to come back whether or not
-                // anyone happens to have an element open.
-                const wanted = (params && params.rules) || [];
-                const matches = [];
+      runtime.define('CSS.findRules', (params) => {
+        // Finds rules by what they *are*, with no element involved.
+        //
+        // Replay can't go through matched styles: a reload clears the
+        // selection, and the edits have to come back whether or not
+        // anyone happens to have an element open.
+        const wanted = (params && params.rules) || [];
+        const matches = [];
 
-                function descriptorOf(rule, context) {
-                  return {
-                    selector: rule.selectorText || '',
-                    label: context.label,
-                    conditions: context.conditions,
-                    layer: context.layer || ''
-                  };
-                }
+        function descriptorOf(rule, context) {
+          return {
+            selector: rule.selectorText || '',
+            label: context.label,
+            conditions: context.conditions,
+            layer: context.layer || ''
+          };
+        }
 
-                function sameDescriptor(a, b) {
-                  if (a.selector !== b.selector) { return false; }
-                  if (a.label !== b.label) { return false; }
-                  if ((a.layer || '') !== (b.layer || '')) { return false; }
-                  const one = a.conditions || [];
-                  const two = b.conditions || [];
-                  if (one.length !== two.length) { return false; }
-                  for (let i = 0; i < one.length; i++) {
-                    if (one[i] !== two[i]) { return false; }
-                  }
-                  return true;
-                }
+        function sameDescriptor(a, b) {
+          if (a.selector !== b.selector) { return false; }
+          if (a.label !== b.label) { return false; }
+          if ((a.layer || '') !== (b.layer || '')) { return false; }
+          const one = a.conditions || [];
+          const two = b.conditions || [];
+          if (one.length !== two.length) { return false; }
+          for (let i = 0; i < one.length; i++) {
+            if (one[i] !== two[i]) { return false; }
+          }
+          return true;
+        }
 
-                function scan(list, context) {
-                  for (let i = 0; i < list.length; i++) {
-                    const rule = list[i];
-                    const name = (rule.constructor && rule.constructor.name) || '';
+        function scan(list, context) {
+          for (let i = 0; i < list.length; i++) {
+            const rule = list[i];
+            const name = (rule.constructor && rule.constructor.name) || '';
 
-                    if (rule.selectorText !== undefined && rule.style) {
-                      const descriptor = descriptorOf(rule, context);
-                      for (let w = 0; w < wanted.length; w++) {
-                        if (!sameDescriptor(descriptor, wanted[w])) { continue; }
-                        if (matches.some(function (m) { return m.index === w; })) { continue; }
-                        matches.push({
-                          index: w, id: idForRule(rule),
-                          declarations: readDeclarations(rule.style, null)
-                        });
-                      }
-                      if (rule.cssRules && rule.cssRules.length) {
-                        const nested = Object.assign({}, context);
-                        nested.parent = resolveNested(rule.selectorText, context.parent);
-                        scan(rule.cssRules, nested);
-                      }
-                      continue;
-                    }
-                    if (!rule.cssRules) { continue; }
-
-                    const next = Object.assign({}, context);
-                    next.conditions = context.conditions.slice();
-                    if (name === 'CSSLayerBlockRule') {
-                      const layerName = rule.name || '';
-                      next.layer = context.layer && layerName
-                        ? context.layer + '.' + layerName : (layerName || context.layer);
-                    } else if (rule.media && rule.media.mediaText) {
-                      next.conditions.push('@media ' + rule.media.mediaText);
-                    } else if (name === 'CSSContainerRule') {
-                      next.conditions.push('@container ' + (rule.containerQuery || rule.conditionText || ''));
-                    } else if (rule.conditionText !== undefined) {
-                      next.conditions.push('@supports ' + rule.conditionText);
-                    } else if (name === 'CSSScopeRule') {
-                      next.conditions.push('@scope');
-                    }
-                    scan(rule.cssRules, next);
-                  }
-                }
-
-                const sheets = document.styleSheets || [];
-                for (let s = 0; s < sheets.length; s++) {
-                  const sheet = sheets[s];
-                  if (sheet.disabled) { continue; }
-                  let list = null;
-                  try { list = sheet.cssRules; } catch (e) { continue; }
-                  if (!list) { continue; }
-                  scan(list, {
-                    conditions: [], layer: '', label: sheetLabel(sheet), parent: null
-                  });
-                }
-                return JSON.stringify({ matches: matches });
-              }
-
-              case 'CSS.addRecoveredSheet': {
-                const href = params && params.href;
-                const text = (params && params.text) || '';
-                if (!href) { return JSON.stringify({ error: 'no href' }); }
-                if (typeof CSSStyleSheet !== 'function') {
-                  return JSON.stringify({ error: 'constructable stylesheets unavailable' });
-                }
-                const sheet = new CSSStyleSheet();
-                // Synchronous, and deliberately never adopted: this parses the
-                // text so its rules can be read, and must not restyle the page.
-                sheet.replaceSync(text);
-                recoveredSheets.set(href, sheet);
-                return JSON.stringify({ ok: true, rules: sheet.cssRules.length });
-              }
-
-              case 'CSS.getComputedStyleForNode': {
-                const node = nodeFor(params && params.nodeId);
-                if (!node || node.nodeType !== 1) { return JSON.stringify({ computed: {} }); }
-                const style = getComputedStyle(node);
-                const out = {};
-                const colors = {};
-                for (let i = 0; i < style.length; i++) {
-                  const name = style.item(i);
-                  const value = style.getPropertyValue(name);
-                  out[name] = value;
-                  // Computed colours always come back as rgb()/rgba(), so this
-                  // prefilter costs nothing and skips the other three hundred.
-                  if (value.indexOf('rgb') === 0 || value.indexOf('#') === 0
-                      || value.indexOf('color(') === 0) {
-                    const rgba = resolveColor(value, node);
-                    if (rgba) { colors[name] = rgba; }
-                  }
-                }
-                return JSON.stringify({ computed: out, colors: colors });
-              }
-
-              case 'CSS.setRuleText': {
-                const text = (params && params.text) || '';
-                if (params && params.nodeId !== undefined) {
-                  const node = nodeFor(params.nodeId);
-                  if (!node || !node.style) { return JSON.stringify({ error: 'no element' }); }
-                  const key = 'node:' + params.nodeId;
-                  if (!ruleOriginals.has(key)) {
-                    ruleOriginals.set(key, node.style.cssText || '');
-                  }
-                  selfStyleEdits.add(node);
-                  return JSON.stringify(applyStyleText(node.style, text, key));
-                }
-                const rule = ruleFor(params && params.ruleId);
-                if (!rule || !rule.style) { return JSON.stringify({ error: 'no rule' }); }
-                const key = 'rule:' + params.ruleId;
-                if (!ruleOriginals.has(key)) {
-                  ruleOriginals.set(key, rule.style.cssText || '');
-                }
-                return JSON.stringify(applyStyleText(rule.style, text, key));
-              }
-
-              case 'CSS.revert': {
-                const key = (params && params.nodeId !== undefined)
-                  ? 'node:' + params.nodeId
-                  : 'rule:' + (params && params.ruleId);
-                if (!ruleOriginals.has(key)) { return JSON.stringify({ ok: true }); }
-                const original = ruleOriginals.get(key);
-                ruleOriginals.delete(key);
-                if (params && params.nodeId !== undefined) {
-                  const node = nodeFor(params.nodeId);
-                  if (!node || !node.style) { return JSON.stringify({ error: 'no element' }); }
-                  selfStyleEdits.add(node);
-                  return JSON.stringify(applyStyleText(node.style, original, key));
-                }
-                const rule = ruleFor(params.ruleId);
-                if (!rule || !rule.style) { return JSON.stringify({ error: 'no rule' }); }
-                return JSON.stringify(applyStyleText(rule.style, original, key));
-              }
-
-              case 'Storage.read': {
-                // Reachable from the isolated world: web storage is scoped to
-                // the origin, which this world shares, rather than to the
-                // page's globals, which it doesn't. So no always-on script is
-                // needed for any of this — it is read when someone looks.
-                const which = params && params.area;
-                const store = which === 'session' ? sessionStorage : localStorage;
-                const items = [];
-                try {
-                  for (let i = 0; i < store.length; i++) {
-                    const key = store.key(i);
-                    items.push({ key: key, value: store.getItem(key) || '' });
-                  }
-                } catch (e) {
-                  // A sandboxed or opaque-origin document denies access
-                  // outright, which is a fact worth reporting rather than an
-                  // empty list that reads as "nothing stored".
-                  return JSON.stringify({ error: String((e && e.message) || e) });
-                }
-                return JSON.stringify({ items: items });
-              }
-
-              case 'Storage.write': {
-                const which = params && params.area;
-                const store = which === 'session' ? sessionStorage : localStorage;
-                store.setItem(params.key, params.value);
-                return JSON.stringify({ ok: true });
-              }
-
-              case 'Storage.remove': {
-                const which = params && params.area;
-                const store = which === 'session' ? sessionStorage : localStorage;
-                if (params && params.key !== undefined) { store.removeItem(params.key); }
-                else { store.clear(); }
-                return JSON.stringify({ ok: true });
-              }
-
-              case 'Storage.listCaches': {
-                if (typeof caches === 'undefined') { return JSON.stringify({ items: [] }); }
-                return caches.keys().then(function (names) {
-                  return Promise.all(names.map(function (name) {
-                    return caches.open(name).then(function (cache) {
-                      return cache.keys().then(function (entries) {
-                        return { key: name, detail: entries.length + ' entries' };
-                      });
-                    });
-                  }));
-                }).then(function (items) {
-                  return JSON.stringify({ items: items });
+            if (rule.selectorText !== undefined && rule.style) {
+              const descriptor = descriptorOf(rule, context);
+              for (let w = 0; w < wanted.length; w++) {
+                if (!sameDescriptor(descriptor, wanted[w])) { continue; }
+                if (matches.some(function (m) { return m.index === w; })) { continue; }
+                matches.push({
+                  index: w, id: idForRule(rule),
+                  declarations: readDeclarations(rule.style, null)
                 });
               }
-
-              case 'Storage.listDatabases': {
-                if (typeof indexedDB === 'undefined' || !indexedDB.databases) {
-                  return JSON.stringify({ items: [] });
-                }
-                return indexedDB.databases().then(function (databases) {
-                  return JSON.stringify({
-                    items: databases.map(function (database) {
-                      return {
-                        key: database.name || '(unnamed)',
-                        detail: 'version ' + (database.version || 1)
-                      };
-                    })
-                  });
-                });
+              if (rule.cssRules && rule.cssRules.length) {
+                const nested = Object.assign({}, context);
+                nested.parent = resolveNested(rule.selectorText, context.parent);
+                scan(rule.cssRules, nested);
               }
-
-              case 'Storage.estimate': {
-                if (!navigator.storage || !navigator.storage.estimate) {
-                  return JSON.stringify({});
-                }
-                return navigator.storage.estimate().then(function (estimate) {
-                  return JSON.stringify({
-                    usage: estimate.usage || 0, quota: estimate.quota || 0
-                  });
-                });
-              }
-
-              case 'Performance.read': {
-                const nav = performance.getEntriesByType('navigation')[0];
-                const paints = performance.getEntriesByType('paint');
-                const fcp = paints.filter(function (p) {
-                  return p.name === 'first-contentful-paint';
-                })[0];
-
-                return JSON.stringify({
-                  support: perfSupport,
-                  navigation: nav ? {
-                    redirectStart: nav.redirectStart, redirectEnd: nav.redirectEnd,
-                    domainLookupStart: nav.domainLookupStart,
-                    domainLookupEnd: nav.domainLookupEnd,
-                    connectStart: nav.connectStart, connectEnd: nav.connectEnd,
-                    secureConnectionStart: nav.secureConnectionStart,
-                    requestStart: nav.requestStart, responseStart: nav.responseStart,
-                    responseEnd: nav.responseEnd, domInteractive: nav.domInteractive,
-                    domContentLoadedEventStart: nav.domContentLoadedEventStart,
-                    domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
-                    domComplete: nav.domComplete,
-                    loadEventEnd: nav.loadEventEnd,
-                    transferSize: nav.transferSize, type: nav.type
-                  } : null,
-                  fcp: fcp ? fcp.startTime : null,
-                  lcp: lcpEntry,
-                  interaction: slowestInteraction,
-                  blocking: blockingEvents,
-                  shifts: layoutShifts,
-                  watching: !!shiftWatch,
-                  now: performance.now()
-                });
-              }
-
-              case 'Performance.watchLayout': {
-                setShiftWatch(!!(params && params.enabled));
-                return JSON.stringify({ ok: true, watching: !!shiftWatch });
-              }
-
-              case 'Overlay.setInspectMode': {
-                setPicking(!!(params && params.enabled));
-                return JSON.stringify({ ok: true });
-              }
-
-              default:
-                return JSON.stringify({ error: 'unknown method: ' + method });
+              continue;
             }
-          } catch (e) {
-            // A throw here would surface as an opaque WebKit error with none of
-            // the page's own message, so carry it across as data.
-            return JSON.stringify({ error: String((e && e.message) || e) });
+            if (!rule.cssRules) { continue; }
+
+            const next = Object.assign({}, context);
+            next.conditions = context.conditions.slice();
+            if (name === 'CSSLayerBlockRule') {
+              const layerName = rule.name || '';
+              next.layer = context.layer && layerName
+                ? context.layer + '.' + layerName : (layerName || context.layer);
+            } else if (rule.media && rule.media.mediaText) {
+              next.conditions.push('@media ' + rule.media.mediaText);
+            } else if (name === 'CSSContainerRule') {
+              next.conditions.push('@container ' + (rule.containerQuery || rule.conditionText || ''));
+            } else if (rule.conditionText !== undefined) {
+              next.conditions.push('@supports ' + rule.conditionText);
+            } else if (name === 'CSSScopeRule') {
+              next.conditions.push('@scope');
+            }
+            scan(rule.cssRules, next);
           }
         }
-      };
 
-      globalThis.__surfAgent = agent;
+        const sheets = document.styleSheets || [];
+        for (let s = 0; s < sheets.length; s++) {
+          const sheet = sheets[s];
+          if (sheet.disabled) { continue; }
+          let list = null;
+          try { list = sheet.cssRules; } catch (e) { continue; }
+          if (!list) { continue; }
+          scan(list, {
+            conditions: [], layer: '', label: sheetLabel(sheet), parent: null
+          });
+        }
+        return ({ matches: matches });
+      });
+
+      runtime.define('CSS.addRecoveredSheet', (params) => {
+        const href = params && params.href;
+        const text = (params && params.text) || '';
+        if (!href) { return ({ error: 'no href' }); }
+        if (typeof CSSStyleSheet !== 'function') {
+          return ({ error: 'constructable stylesheets unavailable' });
+        }
+        const sheet = new CSSStyleSheet();
+        // Synchronous, and deliberately never adopted: this parses the
+        // text so its rules can be read, and must not restyle the page.
+        sheet.replaceSync(text);
+        recoveredSheets.set(href, sheet);
+        return ({ ok: true, rules: sheet.cssRules.length });
+      });
+
+      runtime.define('CSS.getComputedStyleForNode', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || node.nodeType !== 1) { return ({ computed: {} }); }
+        const style = getComputedStyle(node);
+        const out = {};
+        const colors = {};
+        for (let i = 0; i < style.length; i++) {
+          const name = style.item(i);
+          const value = style.getPropertyValue(name);
+          out[name] = value;
+          // Computed colours always come back as rgb()/rgba(), so this
+          // prefilter costs nothing and skips the other three hundred.
+          if (value.indexOf('rgb') === 0 || value.indexOf('#') === 0
+              || value.indexOf('color(') === 0) {
+            const rgba = resolveColor(value, node);
+            if (rgba) { colors[name] = rgba; }
+          }
+        }
+        return ({ computed: out, colors: colors });
+      });
+
+      runtime.define('CSS.setRuleText', (params) => {
+        const text = (params && params.text) || '';
+        if (params && params.nodeId !== undefined) {
+          const node = nodeFor(params.nodeId);
+          if (!node || !node.style) { return ({ error: 'no element' }); }
+          const key = 'node:' + params.nodeId;
+          if (!ruleOriginals.has(key)) {
+            ruleOriginals.set(key, node.style.cssText || '');
+          }
+          selfStyleEdits.add(node);
+          return (applyStyleText(node.style, text, key));
+        }
+        const rule = ruleFor(params && params.ruleId);
+        if (!rule || !rule.style) { return ({ error: 'no rule' }); }
+        const key = 'rule:' + params.ruleId;
+        if (!ruleOriginals.has(key)) {
+          ruleOriginals.set(key, rule.style.cssText || '');
+        }
+        return (applyStyleText(rule.style, text, key));
+      });
+
+      runtime.define('CSS.revert', (params) => {
+        const key = (params && params.nodeId !== undefined)
+          ? 'node:' + params.nodeId
+          : 'rule:' + (params && params.ruleId);
+        if (!ruleOriginals.has(key)) { return ({ ok: true }); }
+        const original = ruleOriginals.get(key);
+        ruleOriginals.delete(key);
+        if (params && params.nodeId !== undefined) {
+          const node = nodeFor(params.nodeId);
+          if (!node || !node.style) { return ({ error: 'no element' }); }
+          selfStyleEdits.add(node);
+          return (applyStyleText(node.style, original, key));
+        }
+        const rule = ruleFor(params.ruleId);
+        if (!rule || !rule.style) { return ({ error: 'no rule' }); }
+        return (applyStyleText(rule.style, original, key));
+      });
+
+      runtime.define('Storage.read', (params) => {
+        // Reachable from the isolated world: web storage is scoped to
+        // the origin, which this world shares, rather than to the
+        // page's globals, which it doesn't. So no always-on script is
+        // needed for any of this — it is read when someone looks.
+        const which = params && params.area;
+        const store = which === 'session' ? sessionStorage : localStorage;
+        const items = [];
+        try {
+          for (let i = 0; i < store.length; i++) {
+            const key = store.key(i);
+            items.push({ key: key, value: store.getItem(key) || '' });
+          }
+        } catch (e) {
+          // A sandboxed or opaque-origin document denies access
+          // outright, which is a fact worth reporting rather than an
+          // empty list that reads as "nothing stored".
+          return ({ error: String((e && e.message) || e) });
+        }
+        return ({ items: items });
+      });
+
+      runtime.define('Storage.write', (params) => {
+        const which = params && params.area;
+        const store = which === 'session' ? sessionStorage : localStorage;
+        store.setItem(params.key, params.value);
+        return ({ ok: true });
+      });
+
+      runtime.define('Storage.remove', (params) => {
+        const which = params && params.area;
+        const store = which === 'session' ? sessionStorage : localStorage;
+        if (params && params.key !== undefined) { store.removeItem(params.key); }
+        else { store.clear(); }
+        return ({ ok: true });
+      });
+
+      runtime.define('Storage.listCaches', (params) => {
+        if (typeof caches === 'undefined') { return ({ items: [] }); }
+        return caches.keys().then(function (names) {
+          return Promise.all(names.map(function (name) {
+            return caches.open(name).then(function (cache) {
+              return cache.keys().then(function (entries) {
+                return { key: name, detail: entries.length + ' entries' };
+              });
+            });
+          }));
+        }).then(function (items) {
+          return ({ items: items });
+        });
+      });
+
+      runtime.define('Storage.listDatabases', (params) => {
+        if (typeof indexedDB === 'undefined' || !indexedDB.databases) {
+          return ({ items: [] });
+        }
+        return indexedDB.databases().then(function (databases) {
+          return ({
+            items: databases.map(function (database) {
+              return {
+                key: database.name || '(unnamed)',
+                detail: 'version ' + (database.version || 1)
+              };
+            })
+          });
+        });
+      });
+
+      runtime.define('Storage.estimate', (params) => {
+        if (!navigator.storage || !navigator.storage.estimate) {
+          return ({});
+        }
+        return navigator.storage.estimate().then(function (estimate) {
+          return ({
+            usage: estimate.usage || 0, quota: estimate.quota || 0
+          });
+        });
+      });
+
+      runtime.define('Performance.read', (params) => {
+        const nav = performance.getEntriesByType('navigation')[0];
+        const paints = performance.getEntriesByType('paint');
+        const fcp = paints.filter(function (p) {
+          return p.name === 'first-contentful-paint';
+        })[0];
+
+        return ({
+          support: perfSupport,
+          navigation: nav ? {
+            redirectStart: nav.redirectStart, redirectEnd: nav.redirectEnd,
+            domainLookupStart: nav.domainLookupStart,
+            domainLookupEnd: nav.domainLookupEnd,
+            connectStart: nav.connectStart, connectEnd: nav.connectEnd,
+            secureConnectionStart: nav.secureConnectionStart,
+            requestStart: nav.requestStart, responseStart: nav.responseStart,
+            responseEnd: nav.responseEnd, domInteractive: nav.domInteractive,
+            domContentLoadedEventStart: nav.domContentLoadedEventStart,
+            domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
+            domComplete: nav.domComplete,
+            loadEventEnd: nav.loadEventEnd,
+            transferSize: nav.transferSize, type: nav.type
+          } : null,
+          fcp: fcp ? fcp.startTime : null,
+          lcp: lcpEntry,
+          interaction: slowestInteraction,
+          blocking: blockingEvents,
+          shifts: layoutShifts,
+          watching: !!shiftWatch,
+          now: performance.now()
+        });
+      });
+
+      runtime.define('Performance.watchLayout', (params) => {
+        setShiftWatch(!!(params && params.enabled));
+        return ({ ok: true, watching: !!shiftWatch });
+      });
+
+      runtime.define('Overlay.setInspectMode', (params) => {
+        setPicking(!!(params && params.enabled));
+        return ({ ok: true });
+      });
+
       post({ event: 'bootstrapped', url: location.href, generation: 0 });
     })();
     """
+    }
 }

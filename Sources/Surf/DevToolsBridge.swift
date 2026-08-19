@@ -105,7 +105,8 @@ final class DevToolsBridge {
         )
 
         // Proves the whole path end to end before the UI claims to be connected.
-        _ = try await call(.runtimePing)
+        let pong = try await call(.runtimePing)
+        debugLog("devtools: attached — \(pong["nodeCount"] ?? 0) nodes at \(pong["url"] ?? "")")
     }
 
     /// The exact inverse of `attach()`, and safe to call twice.
@@ -182,33 +183,43 @@ final class DevToolsBridge {
     ) async throws -> [String: Any] {
         guard isAttached, let tab else { throw BridgeError.notAttached }
 
-        // Three injected scripts, so three dispatchers. Console and network
-        // both live in the page's world but are separate objects with separate
-        // lifetimes, and routing a network command through the console's
-        // dispatcher fails as "unknown method" — which reads like a missing
-        // feature rather than a misroute.
-        let (dispatch, world): (String, WKContentWorld) = switch method.target {
-        case .agent: (DevToolsAgent.dispatchScript, DevToolsAgent.world)
-        case .page: (ConsoleAgent.dispatchScript, .page)
-        case .network: (NetworkAgent.dispatchScript, .page)
+        // Three injected scripts, so three runtime instances. Console and
+        // network both live in the page's world but are installed and drained
+        // separately, and routing a network command through the console's
+        // instance fails as "no such method" — which reads like a missing
+        // feature rather than a misroute. The dispatch *source* is one
+        // implementation now; only the global it addresses differs.
+        let (global, world): (String, WKContentWorld) = switch method.target {
+        case .agent: (DevToolsAgent.globalName, DevToolsAgent.world)
+        case .page: (ConsoleAgent.globalName, .page)
+        case .network: (NetworkAgent.globalName, .page)
         }
 
         let raw = try await tab.webView.callAsyncJavaScript(
-            dispatch,
+            PageRuntime.dispatchSource(global: global),
             arguments: ["method": method.rawValue, "params": params],
             in: nil,
             contentWorld: world
         )
 
-        // Null means the agent isn't present — an `about:blank`, a PDF view, or
-        // a page whose load raced the injection.
+        // Null means the runtime isn't present — an `about:blank`, a PDF view,
+        // or a page whose load raced the injection.
         guard let json = raw as? String else { throw BridgeError.noAgent }
         guard let object = try? JSONSerialization.jsonObject(with: Data(json.utf8)),
-              let dict = object as? [String: Any]
+              let envelope = object as? [String: Any]
         else { throw BridgeError.noAgent }
 
-        if let message = dict["error"] as? String { throw BridgeError.agent(message) }
-        return dict
+        // One envelope for every injected script, dev tools included. It used
+        // to be that dev tools replies were the payload itself with an
+        // optional `error` key, which meant a domain could never answer with a
+        // field called `error` and a failure was indistinguishable from a
+        // method that happened to mention one.
+        guard envelope["ok"] as? Bool == true else {
+            throw BridgeError.agent(envelope["error"] as? String ?? "unknown failure")
+        }
+        // A method whose answer is only that it worked reports `null`, which is
+        // an empty payload rather than a missing one.
+        return envelope["value"] as? [String: Any] ?? [:]
     }
 
     /// Fire and forget, for commands whose reply carries nothing — acks and
@@ -216,7 +227,16 @@ final class DevToolsBridge {
     /// never has to cross a task boundary at the call site.
     func send(_ method: DevToolsMethod, _ params: [String: any Sendable] = [:]) {
         Task { @MainActor in
-            _ = try? await call(method, params)
+            do {
+                _ = try await call(method, params)
+            } catch BridgeError.notAttached, BridgeError.noAgent {
+                // Ordinary: the panel closed, or the document went away
+                // underneath a command already in flight.
+            } catch {
+                // A script that reported a failure is a bug in the script, and
+                // dropping it on the floor is how it stays one.
+                debugLog("devtools: \(method.rawValue) failed — \(error)")
+            }
         }
     }
 

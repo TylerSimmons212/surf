@@ -206,14 +206,21 @@ extension PageScripts {
 
         // The method table itself, so the checker compares against the enum
         // rather than against a copy of it that can drift.
-        let methods = PageProtocol.Method.allCases.map {
-            ["name": $0.rawValue, "world": $0.world.rawValue]
-        }
+        let pageAgent: [String: Any] = [
+            // Dumped rather than left for the checker to grep out of the
+            // runtime source — it broke once when the constant was renamed,
+            // which is the checker coupling to an implementation detail it has
+            // no business knowing.
+            "handle": PageRuntime.handle,
+            "methods": PageProtocol.Method.allCases.map {
+                ["name": $0.rawValue, "world": $0.world.rawValue]
+            },
+        ]
 
         // Dev tools is the same contract at four times the size, and its
         // routing is the part that has already gone wrong: `DevToolsTarget`
         // carries a comment about evaluation being sent to the wrong world and
-        // failing as "unknown method", which reads like a missing feature
+        // failing as "no such method", which reads like a missing feature
         // rather than a misroute. So the dispatch sources go out too, and the
         // checker calls the real ones rather than a re-description of them.
         let devTools: [String: Any] = [
@@ -245,7 +252,7 @@ extension PageScripts {
                     to: url.appendingPathComponent(name), atomically: true, encoding: .utf8
                 )
             }
-            try JSONSerialization.data(withJSONObject: methods)
+            try JSONSerialization.data(withJSONObject: pageAgent)
                 .write(to: url.appendingPathComponent("methods.json"))
             try JSONSerialization.data(withJSONObject: devTools)
                 .write(to: url.appendingPathComponent("devtools.json"))

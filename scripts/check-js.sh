@@ -34,7 +34,8 @@ import vm from 'node:vm';
 
 const dir = process.argv[2];
 const read = (f) => readFileSync(`${dir}/${f}`, 'utf8');
-const handle = read('runtime-isolated.js').match(/const HANDLE = '([^']+)'/)[1];
+const pageAgent = JSON.parse(read('methods.json'));
+const handle = pageAgent.handle;
 
 // Enough of a document for the domains to install against. No method body
 // runs here — only the `define` calls that register them.
@@ -74,7 +75,7 @@ for (const [world, files] of Object.entries(worlds)) {
 let bad = 0;
 const fail = (message) => { console.error(`  ${message}`); bad++; };
 
-for (const { name, world } of JSON.parse(read('methods.json'))) {
+for (const { name, world } of pageAgent.methods) {
   const reply = JSON.parse(await agents[world].dispatch(name, {}));
   if (reply.ok === false && /no such method/.test(reply.error || '')) {
     fail(`${name} is declared in Swift but never registered in the ${world} world`);
@@ -200,7 +201,9 @@ const answers = async (target, name) => {
   if (raw === null) { return false; }
   let reply;
   try { reply = JSON.parse(raw); } catch { return true; }
-  return !(typeof reply?.error === 'string' && /unknown method/.test(reply.error));
+  // One runtime, so one spelling. Every injected script reports an
+  // unregistered name the same way now.
+  return !(typeof reply?.error === 'string' && /no such method/.test(reply.error));
 };
 
 for (const { name, target } of devTools.methods) {
@@ -217,10 +220,27 @@ for (const { name, target } of devTools.methods) {
   }
 }
 
+// The envelope itself, on the three cheapest read-only methods. Registration
+// says a name is known; this says a caller can actually read the answer —
+// which is the half that changed when dev tools stopped returning its payload
+// bare and started returning it under `ok`/`value`.
+for (const [target, method] of [
+  ['agent', 'Runtime.ping'], ['page', 'Console.drain'], ['network', 'Network.drain'],
+]) {
+  const raw = await dispatchers[target]?.(method, {});
+  let reply;
+  try { reply = JSON.parse(raw); } catch { reply = null; }
+  if (reply?.ok !== true) {
+    fail(`${method} did not answer with ok:true — got ${JSON.stringify(reply)}`);
+  } else if (reply.value === undefined) {
+    fail(`${method} answered ok but carried no value key`);
+  }
+}
+
 if (bad) { console.error(`check-js: ${bad} problem(s)`); process.exit(1); }
 console.log(
   `check-js: Swift and JavaScript agree — ` +
-  `${JSON.parse(read('methods.json')).length} page-agent methods, ` +
+  `${pageAgent.methods.length} page-agent methods, ` +
   `${devTools.methods.length} dev tools methods`
 );
 JS

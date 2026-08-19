@@ -69,9 +69,10 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
 /// split doesn't follow the domains: `Runtime.ping` is a liveness check on the
 /// inspection agent, while `Runtime.evaluate` has to run in the page's own
 /// globals — the same world that holds the objects it hands back. Guessing
-/// from a prefix put evaluation in the wrong world and it failed as an
-/// "unknown method", which reads like a missing feature rather than a
-/// misrouted call.
+/// from a prefix put evaluation in the wrong world and it failed as "no such
+/// method", which reads like a missing feature rather than a misrouted call.
+/// `scripts/check-js.sh` now asks every method of the two targets it does not
+/// belong to, so a repeat of that is a failed check rather than a bug report.
 public enum DevToolsTarget: String, Sendable, Equatable, CaseIterable {
     /// The isolated world: DOM, styles, overlay.
     case agent

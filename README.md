@@ -165,6 +165,17 @@ has to run outside it, where nothing it defines can collide with the site's
 scripts. `PageProtocol.Method` names every method once and says which world it
 belongs to, so a call site can't pick the wrong one.
 
+Dev tools uses the same runtime. It reaches a page through three more instances
+— its own isolated world for the DOM, and two in the page world for console
+capture and for network capture — because those have different lifetimes and
+different reasons to exist, not because they are a different kind of thing.
+Five instances of one implementation, then, rather than the four hand-written
+dispatchers this replaced. Each of those carried its own copy of the same
+`switch`, the same `try`, its own spelling of "unknown method", and — between
+the page agent and dev tools — two different ideas of what a reply even looks
+like. A domain now says `define('DOM.getDocument', …)` and returns a value; the
+runtime owns everything around it.
+
 Nothing is interpolated into JavaScript at a call site. `callAsyncJavaScript`
 binds arguments as real variables, so a method name and its parameters are
 values and can never become script.
@@ -176,9 +187,11 @@ report. Only the last is ordinary. Collapsing them — which is what a `try?`
 around a raw evaluation does — is how a page that had been failing to answer
 for months looked exactly like a page with nothing to say.
 
-The agent hangs off a property name chosen fresh each launch. In the isolated
-world that is invisible either way; in the page world a fixed name is a
-reliable way for a site to tell which browser it is being read in.
+The page agent hangs off a property name chosen fresh each launch. In the
+isolated world that is invisible either way; in the page world a fixed name is
+a reliable way for a site to tell which browser it is being read in. Dev tools'
+instances keep fixed names, which is only defensible because they exist solely
+while a panel is attached — a page being inspected is already being watched.
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content
@@ -519,6 +532,11 @@ results to stderr — handy for exercising navigation without clicking.
 Comma-separate to open several tabs: `SURF_URL=example.com,apple.com swift run`.
 
 State lives in `~/Library/Application Support/Surf/session.json`.
+
+`SURF_DEVTOOLS=elements` alongside `SURF_URL` opens the panel on that pane at
+launch. The injected half of dev tools exists only while a panel is attached,
+so without it there is no way to exercise the largest thing Surf puts into a
+page except by hand.
 
 Every web view is inspectable, so Safari's Develop menu opens a full Web
 Inspector on any tab. Safari ships with that menu hidden, so it costs nothing
