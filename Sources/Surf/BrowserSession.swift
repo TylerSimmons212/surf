@@ -10,22 +10,37 @@ import WebKit
 @MainActor
 final class BrowserSession {
 
-    /// Invariant: never empty, and `selectedTabID` always names a live tab.
-    /// Every view can therefore render a selected tab without a nil branch.
-    private(set) var tabs: [Tab] = []
+    /// Every island, in sidebar order. Never empty, and exactly one of them is
+    /// the home island — the one on WebKit's default store.
+    private(set) var islands: [Island]
+
+    /// The island being looked at. Its tabs are the ones the sidebar lists.
+    private(set) var currentIsland: Island
+
+    /// Invariant: the current island is never empty, and `selectedTabID`
+    /// always names a live tab **in it**. Every view can therefore render a
+    /// selected tab without a nil branch.
+    ///
+    /// Background islands are allowed to be empty, and that asymmetry is
+    /// deliberate: forcing every island to hold a tab means a phantom "New
+    /// Tab" row and a `Tab` object apiece for islands nobody has opened in a
+    /// month. The cost is one rule — switching to an empty island creates its
+    /// home tab first — and in exchange `selectedTab` stays non-optional.
+    var tabs: [Tab] { currentIsland.tabs }
     private(set) var selectedTabID: Tab.ID
 
-    /// Recently closed tabs, newest first, so ⌘⇧T can undo a misclick.
-    ///
-    /// Memory only, and never written to the session file: this is an undo
-    /// buffer for the current run, not a history. Quitting loses it, which is
-    /// the point.
-    @ObservationIgnored private var recentlyClosed: [PersistedTab] = []
+    /// Every tab in every island. For the things that genuinely span them:
+    /// hibernation, and whatever is playing audio.
+    var allTabs: [Tab] { islands.flatMap(\.tabs) }
+
     /// Deep enough to cover a run of accidental closes, shallow enough that it
     /// isn't quietly accumulating everywhere you've been.
-    private static let closedTabMemory = 12
+    ///
+    /// The buffer itself lives on the island, so ⌘⇧T can't reopen a work tab
+    /// into a personal island.
+    static let closedTabMemory = 12
 
-    var canReopenClosedTab: Bool { !recentlyClosed.isEmpty }
+    var canReopenClosedTab: Bool { !currentIsland.recentlyClosed.isEmpty }
 
     /// Incremented to ask the focused view to open the address bar (⌘L).
     /// A token rather than a Bool, so repeat presses each register.
@@ -49,30 +64,52 @@ final class BrowserSession {
     @ObservationIgnored private var isRestoring = false
 
     init(restoring restored: PersistedSession? = BrowserSession.restorableSession()) {
-        if let restored, !restored.tabs.isEmpty {
-            isRestoring = true
-            let tabs = restored.tabs.map { persisted -> Tab in
-                let tab = Tab(dataStore: Self.defaultStore)
-                tab.prepareRestore(from: persisted)
-                return tab
-            }
-            let selected = tabs[min(restored.selectedIndex, tabs.count - 1)]
-            self.tabs = tabs
-            self.selectedTab = selected
-            self.selectedTabID = selected.id
-            tabs.forEach { $0.session = self }
-            isRestoring = false
-            // The one selection that doesn't go through `adoptSelection`, so
-            // the starting tab is told it's on screen by hand.
-            selected.didBecomeVisible()
-        } else {
-            let first = Tab(dataStore: Self.defaultStore)
-            self.tabs = [first]
-            self.selectedTab = first
-            self.selectedTabID = first.id
-            first.session = self
-            first.didBecomeVisible()
+        isRestoring = true
+
+        // `resolvedIslands` migrates a pre-Islands file to a single home
+        // island carrying its tabs, so there is one shape to handle here.
+        let (persisted, selectedIndex) = (restored ?? PersistedSession(tabs: [], selectedIndex: 0))
+            .resolvedIslands
+
+        let built = persisted.map { stored -> Island in
+            let island = Island(stored)
+            island.replaceTabs(with: stored.tabs.map { tab in
+                let live = island.makeTab()
+                live.prepareRestore(from: tab)
+                return live
+            })
+            island.rememberedSelection = island.tabs.indices.contains(stored.selectedIndex)
+                ? island.tabs[stored.selectedIndex].id
+                : island.tabs.first?.id
+            return island
         }
+
+        self.islands = built
+        let current = built[min(selectedIndex, built.count - 1)]
+        self.currentIsland = current
+
+        // The current island is the one place the never-empty rule applies, so
+        // it's the one place a tab is conjured to satisfy it.
+        let selected: Tab
+        if let remembered = current.tabs.first(where: { $0.id == current.rememberedSelection }) {
+            selected = remembered
+        } else if let first = current.tabs.first {
+            selected = first
+        } else {
+            let fresh = current.makeTab()
+            current.append(fresh)
+            selected = fresh
+        }
+        self.selectedTab = selected
+        self.selectedTabID = selected.id
+
+        for island in built {
+            for tab in island.tabs { tab.session = self }
+        }
+        isRestoring = false
+        // The one selection that doesn't go through `adoptSelection`, so the
+        // starting tab is told it's on screen by hand.
+        selected.didBecomeVisible()
 
         startReclaimTimer()
 
@@ -132,9 +169,16 @@ final class BrowserSession {
             return
         }
 
+        // Every island, not just the one on screen: a background island's
+        // tabs are no less the user's for not being visible right now.
         let snapshot = PersistedSession(
-            tabs: tabs.map { $0.snapshot(refreshingState: blocking) },
-            selectedIndex: tabs.firstIndex { $0.id == selectedTabID } ?? 0
+            islands: islands.map { island in
+                island.snapshot(
+                    refreshingState: blocking,
+                    selected: island === currentIsland ? selectedTabID : nil
+                )
+            },
+            selectedIslandIndex: islands.firstIndex { $0 === currentIsland } ?? 0
         )
         // Strips each tab's back/forward blob when history is off.
         let redacted = PrivacyPolicy.redact(snapshot, for: settings)
@@ -158,14 +202,17 @@ final class BrowserSession {
 
     /// The tab to show in the media player: whatever is playing, else the most
     /// recent thing that was.
+    /// Across every island, deliberately. Switching islands is not a request
+    /// to stop the music, and a player that vanished when you did would be
+    /// worse than one showing a tab you can't see in the list.
     var nowPlayingTab: Tab? {
-        tabs.first { $0.media?.isPlaying == true } ?? tabs.first { $0.media != nil }
+        allTabs.first { $0.media?.isPlaying == true } ?? allTabs.first { $0.media != nil }
     }
 
     /// Every tab holding media, with the active one first — that's the row the
     /// stack shows when collapsed.
     var mediaTabs: [Tab] {
-        let holding = tabs.filter { $0.media != nil }
+        let holding = allTabs.filter { $0.media != nil }
         guard let primary = nowPlayingTab else { return holding }
         return [primary] + holding.filter { $0.id != primary.id }
     }
@@ -195,6 +242,10 @@ final class BrowserSession {
         let outgoing = selectedTab
         selectedTab = tab
         selectedTabID = tab.id
+        // Kept in step as we go rather than written on the way out of an
+        // island: switching away is not the only way to leave one — quitting
+        // is too, and the remembered tab is what the next launch opens.
+        currentIsland.rememberedSelection = tab.id
         if outgoing !== tab { outgoing.didResignVisible() }
         tab.didBecomeVisible()
         reclaimIdleTabs()
@@ -219,11 +270,15 @@ final class BrowserSession {
     /// nothing says why.
     private func reclaimIdleTabs() {
         let now = Date()
-        let candidates = tabs.map { tab in
+        let candidates = allTabs.map { tab in
             TabHibernation.Candidate(
                 id: tab.id,
                 lastViewedAt: tab.lastViewedAt,
                 isLive: tab.isLive,
+                // Only the tab actually on screen. A background island's
+                // remembered selection is exactly the kind of tab worth
+                // reclaiming — nobody has looked at it since they switched
+                // away, which is the whole memory case for islands.
                 isProtected: tab.id == selectedTabID
                     || tab.media?.isPlaying == true
                     || PopOutController.shared.isPoppedOut(tab)
@@ -233,7 +288,7 @@ final class BrowserSession {
 
         let doomed = Set(TabHibernation.tabsToSleep(among: candidates, now: now))
         guard !doomed.isEmpty else { return }
-        for tab in tabs where doomed.contains(tab.id) {
+        for tab in allTabs where doomed.contains(tab.id) {
             tab.sleep()
         }
     }
@@ -253,53 +308,38 @@ final class BrowserSession {
 
     // MARK: - Lifecycle
 
-    /// The storage every tab in this session gets.
+    /// The island a tab belongs to.
     ///
-    /// One island for now, and deliberately the *default* store: those are the
-    /// cookies the browser has been accumulating since before islands existed,
-    /// and there is no supported way to move them into an identified store. So
-    /// the first island is defined as the one that doesn't have an identifier,
-    /// and nobody gets signed out of anything.
-    ///
-    /// Static rather than a stored property because `init` builds tabs before
-    /// the session is far enough along to touch `self`.
-    private static var defaultStore: WKWebsiteDataStore {
-        IslandStores.shared.store(forIdentifier: nil)
-    }
-
-    /// The only place a `Tab` is constructed.
-    ///
-    /// A tab without a data store isn't a tab that browses badly, it's a tab
-    /// that browses as the wrong person — so the one thing worth guaranteeing
-    /// structurally is that there is no way to make one without saying whose
-    /// storage it uses.
-    private func makeTab(configuration: WKWebViewConfiguration? = nil) -> Tab {
-        Tab(dataStore: Self.defaultStore, configuration: configuration)
+    /// A search rather than a back-pointer on `Tab`: islands hold few enough
+    /// tabs that this is free, and a stale pointer here would file a tab under
+    /// the wrong cookie jar, which is the one error worth designing out.
+    func island(holding tab: Tab) -> Island? {
+        islands.first { $0.contains(tab) }
     }
 
     @discardableResult
     func addTab(configuration: WKWebViewConfiguration? = nil, select: Bool = true) -> Tab {
-        let tab = makeTab(configuration: configuration)
+        let island = currentIsland
+        let tab = island.makeTab(configuration: configuration)
         // WebKit's configuration for a popup carries the opener's store, which
-        // in a one-island browser must be the store we'd have handed it anyway.
-        // Worth saying out loud rather than assuming: if WebKit ever stops
-        // doing that, popups quietly browse as somebody else, and nothing else
-        // in the app would notice.
-        if let configuration, configuration.websiteDataStore !== Self.defaultStore {
+        // must be the store we'd have handed it anyway. Worth saying out loud
+        // rather than assuming: if WebKit ever stops doing that, popups quietly
+        // browse as somebody else, and nothing else in the app would notice.
+        if let configuration, configuration.websiteDataStore !== island.dataStore {
             debugLog("popup arrived with a data store that isn't its island's")
         }
         tab.session = self
         // Insert next to the current tab, like Safari, rather than at the end —
         // a tab opened from a link belongs beside its opener.
-        let insertAt = (tabs.firstIndex { $0.id == selectedTabID }).map { $0 + 1 } ?? tabs.count
-        tabs.insert(tab, at: insertAt)
+        let insertAt = (island.index(of: selectedTab)).map { $0 + 1 } ?? island.tabs.count
+        island.insert(tab, at: insertAt)
         if select { setSelection(to: tab.id) }
         scheduleSave()
         return tab
     }
 
     func close(_ tab: Tab) {
-        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        guard let island = island(holding: tab), let index = island.index(of: tab) else { return }
 
         // A popped-out tab still owns its panel; tearing it down first would
         // leave a floating window with a dead web view inside.
@@ -310,7 +350,7 @@ final class BrowserSession {
         // Before teardown, or the panel would be left showing a dead page.
         DevToolsController.shared.close(for: tab)
 
-        rememberClosedTab(tab)
+        rememberClosedTab(tab, in: island)
 
         // Explicit teardown, not just dropping the reference: a web view with
         // audio playing keeps its content process alive, so a closed tab would
@@ -318,24 +358,37 @@ final class BrowserSession {
         tab.teardown()
         let nextIndex = TabSelection.indexAfterClosing(
             closedIndex: index,
-            originalCount: tabs.count
+            originalCount: island.tabs.count
         )
-        tabs.remove(at: index)
+        island.remove(at: index)
 
         guard let nextIndex else {
+            // The island just emptied. Only the one on screen has to be
+            // refilled — a background island is allowed to sit empty, and
+            // conjuring a tab in it would spend a web content process on
+            // something nobody is looking at.
+            guard island === currentIsland else {
+                island.rememberedSelection = nil
+                scheduleSave()
+                return
+            }
             // Last tab closed: keep the window alive with a fresh home tab
             // rather than tearing the window down.
-            let fresh = makeTab()
+            let fresh = island.makeTab()
             fresh.session = self
-            tabs = [fresh]
+            island.replaceTabs(with: [fresh])
             adoptSelection(fresh)
             scheduleSave()
             return
         }
 
-        // Only move the selection if the closed tab was the selected one.
-        if tab.id == selectedTabID {
-            adoptSelection(tabs[nextIndex])
+        // Only move the selection if the closed tab was the selected one — and
+        // only when it was the *visible* one, since closing a background
+        // island's tab must not pull the window over to it.
+        if tab.id == selectedTabID, island === currentIsland {
+            adoptSelection(island.tabs[nextIndex])
+        } else if island.rememberedSelection == tab.id {
+            island.rememberedSelection = island.tabs[nextIndex].id
         }
         scheduleSave()
     }
@@ -344,13 +397,14 @@ final class BrowserSession {
 
     /// Puts back the most recently closed tab, with its history if it had any.
     func reopenClosedTab() {
-        guard !recentlyClosed.isEmpty else { return }
-        let persisted = recentlyClosed.removeFirst()
-        let tab = makeTab()
+        let island = currentIsland
+        guard !island.recentlyClosed.isEmpty else { return }
+        let persisted = island.recentlyClosed.removeFirst()
+        let tab = island.makeTab()
         tab.session = self
         tab.prepareRestore(from: persisted)
-        let insertAt = (tabs.firstIndex { $0.id == selectedTabID }).map { $0 + 1 } ?? tabs.count
-        tabs.insert(tab, at: insertAt)
+        let insertAt = (island.index(of: selectedTab)).map { $0 + 1 } ?? island.tabs.count
+        island.insert(tab, at: insertAt)
         setSelection(to: tab.id)
         scheduleSave()
     }
@@ -387,7 +441,7 @@ final class BrowserSession {
     /// Keeps enough to restore the tab, run through the same redaction the
     /// session file gets — with history off, the back/forward blob is stripped
     /// and reopening returns the page, not the trail that led to it.
-    private func rememberClosedTab(_ tab: Tab) {
+    private func rememberClosedTab(_ tab: Tab, in island: Island) {
         let snapshot = tab.snapshot()
         guard snapshot.isRestorable else { return }
         let redacted = PrivacyPolicy.redact(
@@ -395,9 +449,11 @@ final class BrowserSession {
             for: .current
         )
         guard let kept = redacted.tabs.first else { return }
-        recentlyClosed.insert(kept, at: 0)
-        if recentlyClosed.count > Self.closedTabMemory {
-            recentlyClosed.removeLast(recentlyClosed.count - Self.closedTabMemory)
+        island.recentlyClosed.insert(kept, at: 0)
+        if island.recentlyClosed.count > Self.closedTabMemory {
+            island.recentlyClosed.removeLast(
+                island.recentlyClosed.count - Self.closedTabMemory
+            )
         }
     }
 
