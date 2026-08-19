@@ -27,9 +27,13 @@ final class PageAgent: NSObject {
     private weak var webView: WKWebView?
 
     /// Called with each event the page pushes, already routed by header.
+    ///
     /// The `Data` is the whole envelope, so the receiver can decode the
-    /// payload into whatever type the header says it will be.
-    var onEvent: ((PageProtocol.EventHeader, Data) -> Void)?
+    /// payload into whatever type the header says it will be. The frame comes
+    /// with it because an event from a page world arrives from whichever frame
+    /// sent it, and a reply usually has to go back to that same one — an
+    /// embedded player's element does not exist in the main frame.
+    var onEvent: ((PageProtocol.EventHeader, Data, WKFrameInfo) -> Void)?
 
     /// One statement, never rebuilt. `handle`, `method` and `params` arrive as
     /// bound variables rather than as text spliced into the source.
@@ -52,32 +56,44 @@ final class PageAgent: NSObject {
     /// wasn't the promised shape, or there was legitimately nothing to report.
     /// The old call sites were uniformly `try?`, which made a broken script
     /// look exactly like a page with nothing to say.
+    /// - Parameter frame: which frame to run in, or nil for the main one.
+    ///   A page that hosts its player in an iframe has no media element in the
+    ///   main frame at all, so "the page" is the wrong unit for anything that
+    ///   addresses one.
     @discardableResult
     func call<Value: Decodable>(
         _ method: PageProtocol.Method,
         _ params: [String: Any] = [:],
-        as _: Value.Type
+        as _: Value.Type,
+        in frame: WKFrameInfo? = nil
     ) async throws -> Value {
         precondition(
             method.world == world,
             "\(method.rawValue) belongs to the \(method.world.rawValue) world, not \(world.rawValue)"
         )
-        guard let webView else { throw PageProtocol.Failure.noValue(method: method.rawValue) }
+        guard let webView else {
+            throw PageProtocol.Failure.unreachable(method: method.rawValue)
+        }
 
-        let reply = try? await webView.callAsyncJavaScript(
-            Self.dispatchSource,
-            arguments: [
-                "handle": PageRuntime.handle,
-                "method": method.rawValue,
-                "params": params,
-            ],
-            in: nil,
-            contentWorld: world.contentWorld
-        )
+        let reply: Any?
+        do {
+            reply = try await webView.callAsyncJavaScript(
+                Self.dispatchSource,
+                arguments: [
+                    "handle": PageRuntime.handle,
+                    "method": method.rawValue,
+                    "params": params,
+                ],
+                in: frame,
+                contentWorld: world.contentWorld
+            )
+        } catch {
+            // WebKit itself refused: the frame has navigated or been removed.
+            throw PageProtocol.Failure.unreachable(method: method.rawValue)
+        }
         guard let json = reply as? String else {
-            // No agent in this document at all — an error page, a PDF, a
-            // frame that never ran our script.
-            throw PageProtocol.Failure.noValue(method: method.rawValue)
+            // The dispatcher's own null — no runtime in this document at all.
+            throw PageProtocol.Failure.unreachable(method: method.rawValue)
         }
         return try PageProtocol.decode(json, as: Value.self, method: method.rawValue)
     }
@@ -87,11 +103,15 @@ final class PageAgent: NSObject {
     /// Failures are logged rather than thrown: these are all fire-and-forget
     /// side effects — pause the video, drop the selection — and there is no
     /// caller in a position to do anything about one.
-    func send(_ method: PageProtocol.Method, _ params: [String: Any] = [:]) {
+    func send(
+        _ method: PageProtocol.Method,
+        _ params: [String: Any] = [:],
+        in frame: WKFrameInfo? = nil
+    ) {
         Task { @MainActor in
             do {
-                try await call(method, params, as: PageProtocol.Empty.self)
-            } catch PageProtocol.Failure.noValue {
+                try await call(method, params, as: PageProtocol.Empty.self, in: frame)
+            } catch PageProtocol.Failure.noValue, PageProtocol.Failure.unreachable {
                 // Ordinary: nothing there to act on.
             } catch {
                 pageAgentLog("\(method.rawValue) failed — \(error)")
@@ -105,11 +125,12 @@ final class PageAgent: NSObject {
     func value<Value: Decodable>(
         _ method: PageProtocol.Method,
         _ params: [String: Any] = [:],
-        as type: Value.Type
+        as type: Value.Type,
+        in frame: WKFrameInfo? = nil
     ) async -> Value? {
         do {
-            return try await call(method, params, as: type)
-        } catch PageProtocol.Failure.noValue {
+            return try await call(method, params, as: type, in: frame)
+        } catch PageProtocol.Failure.noValue, PageProtocol.Failure.unreachable {
             return nil
         } catch {
             pageAgentLog("\(method.rawValue) failed — \(error)")
@@ -158,7 +179,7 @@ extension PageAgent: WKScriptMessageHandler {
             guard let header = try? JSONDecoder().decode(
                 PageProtocol.EventHeader.self, from: data
             ) else { return }
-            onEvent?(header, data)
+            onEvent?(header, data, message.frameInfo)
         }
     }
 }

@@ -36,6 +36,34 @@ final class Tab: NSObject, Identifiable {
     /// still shows in the player rather than vanishing mid-track.
     private(set) var media: MediaState?
 
+    /// The frame the chosen media element lives in.
+    ///
+    /// Everything the player does — play, pause, seek, and above all measuring
+    /// the video's rectangle for the pop-out lens — runs a script inside the
+    /// page, and the element it needs only exists in the frame that owns it. On
+    /// a page that hosts its player in an iframe, which is most pages that
+    /// embed video at all, the main frame has no such element: every one of
+    /// those scripts returned early, so Pop Out did nothing whatsoever and gave
+    /// no reason for it.
+    ///
+    /// Deliberately allowed to go stale: a frame that has since navigated makes
+    /// `callAsyncJavaScript` throw, which `runInMediaFrame` treats as a cue to
+    /// fall back to the main frame rather than as an error.
+    private var mediaFrame: WKFrameInfo?
+
+    /// Which element in that frame, so a command can't drift onto a different
+    /// one between the row being drawn and the button being pressed.
+    private var mediaElementID: String?
+
+    /// What every frame last told us it was holding.
+    ///
+    /// Keyed by the frame's own generated id rather than by `WKFrameInfo`,
+    /// which is neither stable nor hashable. `seenAt` is what lets a frame that
+    /// claimed to be playing and then vanished — an advert whose iframe was
+    /// torn out mid-play — stop counting; see `liveCandidates`.
+    private var mediaFrames:
+        [String: (items: [MediaState], frame: WKFrameInfo, seenAt: Date)] = [:]
+
     /// What this page was seen to request, and which of it was blocked. Emptied
     /// at every commit: the panel answers a question about the page on screen,
     /// and a running total across a session is a number nobody can act on.
@@ -300,37 +328,22 @@ final class Tab: NSObject, Identifiable {
     /// Claims both worlds' channels and injects the agent into every page.
     private func installAgents() {
         let controller = webView.configuration.userContentController
-        isolatedAgent.register(on: controller)
-        pageAgent.register(on: controller)
-
-        isolatedAgent.onEvent = { [weak self] header, _ in
-            guard header.domain == "theme", header.event == "mutated" else { return }
-            self?.pageDidMutate()
-        }
-        pageAgent.onEvent = { [weak self] header, data in
-            guard let self, header.domain == "media", header.event == "state" else { return }
-            guard let event = try? JSONDecoder().decode(
-                PageProtocol.Event<MediaState>.self, from: data
-            ) else { return }
-            // Media that never started isn't worth showing in the player.
-            if event.payload.isPlaying || media != nil { media = event.payload }
-        }
-
         // Both agent channels, and the events each world reports on its own.
         isolatedAgent.register(on: controller)
         pageAgent.register(on: controller)
 
-        isolatedAgent.onEvent = { [weak self] header, _ in
+        isolatedAgent.onEvent = { [weak self] header, _, _ in
             guard header.domain == "theme", header.event == "mutated" else { return }
             self?.pageDidMutate()
         }
-        pageAgent.onEvent = { [weak self] header, data in
-            guard let self, header.domain == "media", header.event == "state" else { return }
+        pageAgent.onEvent = { [weak self] header, data, frame in
+            guard let self, header.domain == "media", header.event == "report" else { return }
             guard let event = try? JSONDecoder().decode(
-                PageProtocol.Event<MediaState>.self, from: data
+                PageProtocol.Event<MediaReport>.self, from: data
             ) else { return }
-            // Media that never started isn't worth showing in the player.
-            if event.payload.isPlaying || media != nil { media = event.payload }
+            // A whole frame's worth, not one element: which of them the player
+            // should show is a judgement, and it belongs in `MediaRanking`.
+            receiveMedia(event.payload, from: frame)
         }
 
         controller.removeScriptMessageHandler(forName: BlockBridge.handlerName)
@@ -457,26 +470,177 @@ final class Tab: NSObject, Identifiable {
         isolatedAgent.send(.themeRevert)
     }
 
-    /// Prevents or restores page scrolling while the lens panel is showing.
-    func setPageScrollLocked(_ locked: Bool) {
-        pageAgent.send(locked ? .mediaLockScroll : .mediaUnlockScroll)
+    /// Runs one of the media methods against the frame that owns the element.
+    ///
+    /// Falls back to the main frame when there's no remembered frame, or when
+    /// the remembered one has gone away. `unreachable` is the whole reason the
+    /// agent tells that apart from `noValue`: a frame that has navigated
+    /// should stop being addressed, while an element that simply isn't there
+    /// any more is an answer, and retrying it in the main frame would only ask
+    /// the wrong document the same question.
+    private func runInMediaFrame<Value: Decodable>(
+        _ method: PageProtocol.Method,
+        _ params: [String: Any] = [:],
+        as type: Value.Type
+    ) async -> Value? {
+        guard let mediaElementID else { return nil }
+        var params = params
+        params["id"] = mediaElementID
+
+        if let mediaFrame {
+            do {
+                return try await pageAgent.call(method, params, as: type, in: mediaFrame)
+            } catch PageProtocol.Failure.unreachable {
+                // Don't keep addressing a frame that's no longer answering.
+                self.mediaFrame = nil
+            } catch {
+                return nil
+            }
+        }
+        return await pageAgent.value(method, params, as: type)
     }
 
-    /// The playing video's viewport rectangle, in CSS pixels (== points).
+    /// Takes one frame's report and works out what the player should show.
+    ///
+    /// The old rule was that the newest `play` event won. That is right until a
+    /// page has more than one video, and pages that run video run adverts: each
+    /// one fires `play` after the thing you actually opened the page for, so
+    /// the sidebar, the play button and Pop Out all ended up pointed at a
+    /// looping 300×250 advert with no way to get them back. `MediaRanking`
+    /// makes the choice on evidence instead; this only gathers it.
+    private func receiveMedia(_ report: MediaReport, from frame: WKFrameInfo) {
+        if report.items.isEmpty {
+            mediaFrames.removeValue(forKey: report.frameID)
+        } else {
+            mediaFrames[report.frameID] = (report.items, frame, Date())
+        }
+        selectPrimaryMedia()
+    }
+
+    /// Frames drop out of contention when they claim to be playing and then go
+    /// quiet.
+    ///
+    /// A playing frame reports once a second, so silence means it's gone —
+    /// navigated away, or an advert iframe removed from the document mid-play.
+    /// Without this it would hold the player for the life of the tab. A frame
+    /// that reported *stopped* media is not on a timer and is meant to stay:
+    /// pausing a video shouldn't make its row disappear.
+    private var liveCandidates: [(state: MediaState, frameID: String)] {
+        let cutoff = Date().addingTimeInterval(-4)
+        return mediaFrames.flatMap { frameID, entry -> [(MediaState, String)] in
+            let isStale = entry.seenAt < cutoff
+            return entry.items.compactMap { item in
+                if isStale, item.isPlaying { return nil }
+                return (item, frameID)
+            }
+        }
+    }
+
+    private func selectPrimaryMedia() {
+        let candidates = liveCandidates
+        guard let index = MediaRanking.primaryIndex(among: candidates.map(\.state.signals))
+        else {
+            media = nil
+            mediaFrame = nil
+            mediaElementID = nil
+            return
+        }
+        let winner = candidates[index]
+        media = winner.state
+        mediaElementID = winner.state.elementID
+        mediaFrame = mediaFrames[winner.frameID]?.frame
+        let s = winner.state.signals
+        debugLog(
+            "media: chose \(winner.state.elementID) of \(candidates.count) "
+            + "\(Int(s.width))x\(Int(s.height)), metadata=\(s.hasMetadata), "
+            + "muted=\(s.isMuted), loop=\(s.loops), frames=\(mediaFrames.count)"
+        )
+    }
+
+    private func clearMediaFrames() {
+        mediaFrames.removeAll()
+        mediaFrame = nil
+        mediaElementID = nil
+    }
+
+    /// Runs one of the media scripts against the frame that owns the chosen
+    /// element, addressing that element by id.
+    ///
+    /// Returns the script's result only when it's a string, which is all any
+    /// caller here wants — the commands are fire-and-forget and only the
+    /// measurement has an answer to give.
+    ///
+    /// Falls back to the main frame when the remembered one has gone away: a
+    /// frame that has navigated or been removed makes WebKit throw, and the
+    /// main frame is a harmless no-op when it doesn't hold the element either.
+    private func runInMediaFrame(
+        _ script: String, arguments: [String: Any] = [:]
+    ) async -> String? {
+        guard let mediaElementID else { return nil }
+        var arguments = arguments
+        arguments["id"] = mediaElementID
+        let view = webView
+
+        if let mediaFrame {
+            do {
+                return try await view.callAsyncJavaScript(
+                    script, arguments: arguments, in: mediaFrame, contentWorld: .page
+                ) as? String
+            } catch {
+                // Don't keep addressing a frame that's no longer answering.
+                self.mediaFrame = nil
+            }
+        }
+        return try? await view.callAsyncJavaScript(
+            script, arguments: arguments, in: nil, contentWorld: .page
+        ) as? String
+    }
+
+    /// Prevents or restores page scrolling while the lens panel is showing.
+    ///
+    /// Run in both frames when the media is embedded. The top document is what
+    /// scrolls the lens off target, so it needs the overflow lock; but the
+    /// element's own native controls live in the iframe, and switching those
+    /// off has to happen where the element is. Both halves are idempotent, so
+    /// the usual case of one frame simply runs the same thing twice.
+    func setPageScrollLocked(_ locked: Bool) {
+        let method: PageProtocol.Method = locked ? .mediaLockScroll : .mediaUnlockScroll
+        Task { @MainActor in
+            pageAgent.send(method, ["id": mediaElementID ?? ""])
+            if mediaFrame != nil {
+                _ = await runInMediaFrame(method, as: PageProtocol.Empty.self)
+            }
+        }
+    }
+
+    /// The playing video's rectangle in the *top* document's viewport, in CSS
+    /// pixels (== points) — which is the coordinate space the lens crops in.
+    ///
+    /// The script resolves its own frame offset before answering, so a video
+    /// inside an iframe reports where it sits on the page rather than where it
+    /// sits inside its embed. It returns nil rather than guessing when that
+    /// offset can't be established; a lens aimed at the wrong part of the page
+    /// is worse than a pop-out that declines.
     func measureVideoFrame() async -> CGRect? {
-        await pageAgent.value(.mediaFrame, as: MediaFrame.self)?.rect
+        await runInMediaFrame(.mediaFrame, as: MediaFrame.self)?.rect
     }
 
     func seekMedia(to seconds: Double) {
-        pageAgent.send(.mediaSeek, ["time": seconds])
+        Task { @MainActor in
+            _ = await runInMediaFrame(.mediaSeek, ["time": seconds], as: PageProtocol.Empty.self)
+        }
     }
 
     func skipMedia(by seconds: Double) {
-        pageAgent.send(.mediaSkip, ["delta": seconds])
+        Task { @MainActor in
+            _ = await runInMediaFrame(.mediaSkip, ["delta": seconds], as: PageProtocol.Empty.self)
+        }
     }
 
     func toggleMediaPlayback() {
-        pageAgent.send(.mediaToggle)
+        Task { @MainActor in
+            _ = await runInMediaFrame(.mediaToggle, as: PageProtocol.Empty.self)
+        }
     }
 
     /// Releases everything the tab is holding: media, loads, observers, and the
@@ -531,6 +695,7 @@ final class Tab: NSObject, Identifiable {
             .removeScriptMessageHandler(forName: BlockBridge.handlerName)
 
         media = nil
+        clearMediaFrames()
         blockLog = BlockLog()
 
         Task { @MainActor in
@@ -1055,6 +1220,7 @@ final class Tab: NSObject, Identifiable {
                     self.scheduleThemeSynthesisIfVisible()
                     // The old page's media is gone the moment we navigate.
                     self.media = nil
+                    self.clearMediaFrames()
                     // A popup tab starts in .home but is loaded by WebKit
                     // directly, so the mode has to follow the URL.
                     if self.mode == .home { self.mode = .browsing }

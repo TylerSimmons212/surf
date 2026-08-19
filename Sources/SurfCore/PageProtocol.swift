@@ -111,6 +111,14 @@ public enum PageProtocol {
         /// isn't there, a colour nothing has painted. Ordinary, not an error
         /// worth logging.
         case noValue(method: String)
+        /// There was nothing to run the method against: the frame has
+        /// navigated or been torn out, or the document never installed a
+        /// runtime — an error page, a PDF view, a load that raced injection.
+        ///
+        /// Distinct from `noValue` because the two call for opposite
+        /// responses. A frame that has gone should stop being addressed; a
+        /// method that answered with nothing should be asked again next time.
+        case unreachable(method: String)
     }
 
     /// Decodes one reply, turning both kinds of failure into the same thrown

@@ -48,14 +48,20 @@ function context() {
       querySelectorAll: () => [], createElement: () => el, documentElement: el,
       body: el, elementFromPoint: () => null, title: '',
     },
-    setInterval: noop, setTimeout: noop, navigator: {}, innerWidth: 1000,
-    location: { hostname: 'example.com' }, getSelection: () => null,
+    setInterval: noop, clearInterval: noop, setTimeout: noop, navigator: {},
+    innerWidth: 1000, location: { hostname: 'example.com' },
+    getSelection: () => null, addEventListener: noop, removeEventListener: noop,
+    postMessage: noop, performance: { now: () => 0 },
     getComputedStyle: () => ({ backgroundColor: 'rgba(0,0,0,0)' }),
     webkit: { messageHandlers: {} },
     Object, JSON, Array, Math, String, Number, isFinite,
     HTMLMediaElement: class {}, MutationObserver: class {},
   };
   window.window = window;
+  // The media domain asks whether it is the top frame, and answers frame
+  // offsets differently if it isn't. Stubbed as the top one.
+  window.top = window;
+  window.parent = window;
   return vm.createContext(window);
 }
 
