@@ -243,6 +243,26 @@ for (const [target, method] of [
   }
 }
 
+// Rule handles must be held strongly.
+//
+// A source check rather than a behavioural one, which is weaker than this
+// file's other tests and deliberate: reproducing it needs a live CSSOM, and
+// the bug it guards is worth catching cheaply. Rule ids were once held as
+// WeakRefs on the theory that the stylesheet keeps its wrappers alive. It
+// does not — the collector took every id minted while reading the Styles
+// pane, so editing anything you had just looked at failed with "no rule"
+// and the panel drew the edit as though it had landed.
+{
+  const source = Object.values(devTools.scripts).map(read).join('\n');
+  const handles = source.slice(
+    Math.max(0, source.indexOf('const ruleRefs')),
+    source.indexOf('function applyStyleText')
+  );
+  if (/WeakRef/.test(handles)) {
+    fail('rule handles are held weakly again — an id will not survive to be edited');
+  }
+}
+
 if (bad) { console.error(`check-js: ${bad} problem(s)`); process.exit(1); }
 console.log(
   `check-js: Swift and JavaScript agree — ` +

@@ -457,8 +457,19 @@ enum DevToolsAgent {
       // Rules are addressed by a minted id, never by their index in the sheet.
       // Inserting a rule shifts every index after it, so an index captured
       // during one read edits a *different* rule on the next one — which is a
-      // silent, page-corrupting kind of wrong. CSSOM wrapper objects keep their
-      // identity, so a WeakMap survives exactly what an index doesn't.
+      // silent, page-corrupting kind of wrong.
+      //
+      // The id is held against the rule *strongly*, and that is the whole
+      // point. This used to be a WeakRef, on the theory that CSSOM wrappers
+      // keep their identity and the sheet would hold them up. It doesn't: a
+      // CSSStyleRule wrapper lives exactly as long as something in script
+      // holds it, and nothing did — so every id minted while reading a pane
+      // was collected before anyone got round to editing, and every edit came
+      // back "no rule". Reading the cascade and then changing something, which
+      // is the entire workflow, was the reliable way to break it.
+      //
+      // These maps are per-document: the agent is a user script, so a
+      // navigation builds fresh closures and takes the old rules with them.
       const ruleIds = new WeakMap();
       const ruleRefs = new Map();
       // The authored text, captured the first time a rule is touched, so any
@@ -471,17 +482,13 @@ enum DevToolsAgent {
         if (id === undefined) {
           id = nextRuleId++;
           ruleIds.set(rule, id);
-          ruleRefs.set(id, new WeakRef(rule));
+          ruleRefs.set(id, rule);
         }
         return id;
       }
 
       function ruleFor(id) {
-        const ref = ruleRefs.get(id);
-        if (!ref) { return null; }
-        const rule = ref.deref();
-        if (!rule) { ruleRefs.delete(id); return null; }
-        return rule;
+        return ruleRefs.get(id) || null;
       }
 
       /// Replaces a declaration block wholesale.
