@@ -200,13 +200,15 @@ struct EmptyTabView: View {
             return
         }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        session.submitFromPalette(text, creatingTab: false)
+        // Straight to the tab, not through the palette's router: this is the
+        // one submission that comes from someone actually looking at the sea.
+        tab.submit(text, diving: true)
         completions.dismiss()
         text = ""
     }
 
     private func navigate(to entry: HistoryEntry) {
-        session.submitFromPalette(entry.url, creatingTab: false)
+        tab.submit(entry.url, diving: true)
         completions.dismiss()
         text = ""
     }

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The bottom of the home screen, as water for the board to sit on.
@@ -37,11 +38,20 @@ struct WaterBackground: View {
     /// Where the surface sits, as a fraction of the height.
     var surface: Double = 0.5
 
+    /// Whether the window this sea lives in is actually on screen.
+    ///
+    /// Occlusion, not focus: a minimised window, one covered by another app, or
+    /// one on a Space you've left is drawing for nobody, and without this the
+    /// timeline goes on waking the process thirty times a second to paint it.
+    /// The schedule's own `paused` flag is the off switch; the clock is
+    /// absolute, so on resume the sea is simply where it would have been.
+    @State private var windowIsVisible = true
+
     /// When set, the sea rises: over `riseDuration` the surface climbs from
-    /// `surface` to above the top edge, the water deepens toward opaque, and
-    /// bubbles stream up through it. Everything is computed from this date in
-    /// the canvas, so there is no animation state to keep in step — a frame is
-    /// a pure function of the clock.
+    /// `surface` to above the top edge and the water deepens toward opaque.
+    /// Everything is computed from this date in the canvas, so there is no
+    /// animation state to keep in step — a frame is a pure function of the
+    /// clock.
     var diveStartedAt: Date?
 
     private static let riseDuration: TimeInterval = 1.5
@@ -64,7 +74,7 @@ struct WaterBackground: View {
     var body: some View {
         // 30fps rather than the display's rate: this is a backdrop running
         // behind whatever the browser is actually doing.
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !windowIsVisible)) { timeline in
             Canvas(rendersAsynchronously: true) { context, size in
                 let t = timeline.date.timeIntervalSinceReferenceDate
                 let band = min(max(size.height * 0.17, 90), 155)
@@ -83,8 +93,15 @@ struct WaterBackground: View {
                 let surface = self.surface + (Self.risenSurface - self.surface) * dive
 
                 if let mark {
-                    context.drawLayer { layer in
-                        layer.fill(mark(size), with: markShading)
+                    // The erase pass composites through an offscreen layer, and
+                    // an unclipped one is allocated at the full canvas every
+                    // frame. The mark's own bounds are the only part that can
+                    // survive the erasing, so the layer is confined to them.
+                    let markPath = mark(size)
+                    var scoped = context
+                    scoped.clip(to: Path(markPath.boundingRect))
+                    scoped.drawLayer { layer in
+                        layer.fill(markPath, with: markShading)
                         // The same wave paths the water is about to draw, but
                         // as erasers: destinationOut with opaque black removes
                         // everything under them regardless of how transparent
@@ -146,8 +163,6 @@ struct WaterBackground: View {
                             endPoint: CGPoint(x: 0, y: size.height)
                         )
                     )
-                    Self.drawBubbles(in: &context, size: size, surface: surface,
-                                     time: t, intensity: dive)
                 }
 
                 for layer in Self.layers {
@@ -170,67 +185,7 @@ struct WaterBackground: View {
             }
             .allowsHitTesting(false)
         }
-    }
-
-    /// The stream of bubbles, each a pure function of its index and the clock.
-    ///
-    /// No particle state: bubble `i` has a size, a lane, a period and a sway
-    /// derived from hashing its index, and its position is where that puts it
-    /// at time `t`. Frames are independent, which is what lets the canvas be
-    /// redrawn from nothing thirty times a second — and what made the waves
-    /// loop seamlessly — so the bubbles work the same way.
-    private static func drawBubbles(
-        in context: inout GraphicsContext, size: CGSize,
-        surface: Double, time: Double, intensity: Double
-    ) {
-        func rnd(_ i: Int, _ salt: Double) -> Double {
-            abs(sin(Double(i) * 127.1 + salt * 311.7) * 43758.5453)
-                .truncatingRemainder(dividingBy: 1)
-        }
-        let top = size.height * surface + 6
-        let bottom = size.height + 24
-        guard bottom > top else { return }
-
-        for i in 0..<46 {
-            // The stream thickens as the water rises: each bubble has a turn.
-            guard rnd(i, 7) < intensity else { continue }
-
-            // Small bubbles are common, big ones rare — the power skews it —
-            // and the big ones rise faster, which is just what bubbles do.
-            let r = 2.6 + 7.5 * pow(rnd(i, 2), 1.8)
-            let period = (2.2 + 2.6 * rnd(i, 3)) / (0.75 + r / 12)
-            let u = ((time / period) + rnd(i, 4)).truncatingRemainder(dividingBy: 1)
-            let y = bottom - (bottom - top) * u
-
-            let sway = (5 + 11 * rnd(i, 5))
-                * sin(time * (0.7 + 0.9 * rnd(i, 6)) + rnd(i, 4) * 6.28)
-            let x = size.width * rnd(i, 1) + sway
-
-            // Born small and faint, gone just before the surface — and no two
-            // at the same strength, because uniform is what reads as pasted-on.
-            let fade = min(u / 0.10, min(1, (1 - u) / 0.08))
-            let a = fade * intensity * (0.55 + 0.45 * rnd(i, 8))
-
-            // No stroke and no glint dot: an outlined circle with a white
-            // highlight is the cartoon. What a distant bubble actually shows is
-            // a soft bright rim around a nearly-empty middle, which is a radial
-            // gradient and nothing else.
-            let rect = CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)
-            context.fill(
-                Path(ellipseIn: rect),
-                with: .radialGradient(
-                    Gradient(stops: [
-                        .init(color: .white.opacity(0.03 * a), location: 0),
-                        .init(color: .white.opacity(0.10 * a), location: 0.55),
-                        .init(color: .white.opacity(0.46 * a), location: 0.82),
-                        .init(color: .white.opacity(0.18 * a), location: 0.94),
-                        .init(color: .clear, location: 1),
-                    ]),
-                    center: CGPoint(x: x, y: y),
-                    startRadius: 0, endRadius: r
-                )
-            )
-        }
+        .background(WindowVisibility { windowIsVisible = $0 })
     }
 
     /// One layer's surface, closed down to the bottom edge so it can be filled.
@@ -274,5 +229,48 @@ struct WaterBackground: View {
         path.addLine(to: CGPoint(x: px(first), y: size.height))
         path.closeSubpath()
         return path
+    }
+}
+
+/// Reports whether the window this view sits in is visible on screen.
+///
+/// AppKit is the only party that actually knows — SwiftUI has no occlusion
+/// concept — so a zero-sized NSView rides along, watches its window's
+/// occlusion state, and phones the answer back.
+private struct WindowVisibility: NSViewRepresentable {
+    var onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Probe { Probe(onChange: onChange) }
+    func updateNSView(_ probe: Probe, context: Context) { probe.onChange = onChange }
+
+    final class Probe: NSView {
+        var onChange: (Bool) -> Void
+        private var observer: NSObjectProtocol?
+
+        init(onChange: @escaping (Bool) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        // Also the teardown: leaving the hierarchy arrives here with a nil
+        // window, which drops the observation. No deinit — a main-actor view's
+        // nonisolated deinit can't touch this state, and by the time one runs
+        // the view has already left its window.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+            guard let window else { return }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window, queue: .main
+            ) { [weak self, weak window] _ in
+                guard let self, let window else { return }
+                self.onChange(window.occlusionState.contains(.visible))
+            }
+            onChange(window.occlusionState.contains(.visible))
+        }
     }
 }
