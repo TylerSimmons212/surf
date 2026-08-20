@@ -48,10 +48,10 @@ struct WaterBackground: View {
     @State private var windowIsVisible = true
 
     /// When set, the sea rises: over `riseDuration` the surface climbs from
-    /// `surface` to above the top edge, the water deepens toward opaque, and
-    /// bubbles stream up through it. Everything is computed from this date in
-    /// the canvas, so there is no animation state to keep in step — a frame is
-    /// a pure function of the clock.
+    /// `surface` to above the top edge and the water deepens toward opaque.
+    /// Everything is computed from this date in the canvas, so there is no
+    /// animation state to keep in step — a frame is a pure function of the
+    /// clock.
     var diveStartedAt: Date?
 
     private static let riseDuration: TimeInterval = 1.5
@@ -163,8 +163,6 @@ struct WaterBackground: View {
                             endPoint: CGPoint(x: 0, y: size.height)
                         )
                     )
-                    Self.drawBubbles(in: &context, size: size, surface: surface,
-                                     time: t, intensity: dive)
                 }
 
                 for layer in Self.layers {
@@ -188,67 +186,6 @@ struct WaterBackground: View {
             .allowsHitTesting(false)
         }
         .background(WindowVisibility { windowIsVisible = $0 })
-    }
-
-    /// The stream of bubbles, each a pure function of its index and the clock.
-    ///
-    /// No particle state: bubble `i` has a size, a lane, a period and a sway
-    /// derived from hashing its index, and its position is where that puts it
-    /// at time `t`. Frames are independent, which is what lets the canvas be
-    /// redrawn from nothing thirty times a second — and what made the waves
-    /// loop seamlessly — so the bubbles work the same way.
-    private static func drawBubbles(
-        in context: inout GraphicsContext, size: CGSize,
-        surface: Double, time: Double, intensity: Double
-    ) {
-        func rnd(_ i: Int, _ salt: Double) -> Double {
-            abs(sin(Double(i) * 127.1 + salt * 311.7) * 43758.5453)
-                .truncatingRemainder(dividingBy: 1)
-        }
-        let top = size.height * surface + 6
-        let bottom = size.height + 24
-        guard bottom > top else { return }
-
-        for i in 0..<46 {
-            // The stream thickens as the water rises: each bubble has a turn.
-            guard rnd(i, 7) < intensity else { continue }
-
-            // Small bubbles are common, big ones rare — the power skews it —
-            // and the big ones rise faster, which is just what bubbles do.
-            let r = 2.6 + 7.5 * pow(rnd(i, 2), 1.8)
-            let period = (2.2 + 2.6 * rnd(i, 3)) / (0.75 + r / 12)
-            let u = ((time / period) + rnd(i, 4)).truncatingRemainder(dividingBy: 1)
-            let y = bottom - (bottom - top) * u
-
-            let sway = (5 + 11 * rnd(i, 5))
-                * sin(time * (0.7 + 0.9 * rnd(i, 6)) + rnd(i, 4) * 6.28)
-            let x = size.width * rnd(i, 1) + sway
-
-            // Born small and faint, gone just before the surface — and no two
-            // at the same strength, because uniform is what reads as pasted-on.
-            let fade = min(u / 0.10, min(1, (1 - u) / 0.08))
-            let a = fade * intensity * (0.55 + 0.45 * rnd(i, 8))
-
-            // No stroke and no glint dot: an outlined circle with a white
-            // highlight is the cartoon. What a distant bubble actually shows is
-            // a soft bright rim around a nearly-empty middle, which is a radial
-            // gradient and nothing else.
-            let rect = CGRect(x: x - r, y: y - r, width: 2 * r, height: 2 * r)
-            context.fill(
-                Path(ellipseIn: rect),
-                with: .radialGradient(
-                    Gradient(stops: [
-                        .init(color: .white.opacity(0.03 * a), location: 0),
-                        .init(color: .white.opacity(0.10 * a), location: 0.55),
-                        .init(color: .white.opacity(0.46 * a), location: 0.82),
-                        .init(color: .white.opacity(0.18 * a), location: 0.94),
-                        .init(color: .clear, location: 1),
-                    ]),
-                    center: CGPoint(x: x, y: y),
-                    startRadius: 0, endRadius: r
-                )
-            )
-        }
     }
 
     /// One layer's surface, closed down to the bottom edge so it can be filled.

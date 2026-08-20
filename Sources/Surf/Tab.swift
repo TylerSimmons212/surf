@@ -1235,12 +1235,18 @@ final class Tab: NSObject, Identifiable {
 
     // MARK: - Actions
 
-    func submit(_ input: String) {
+    /// - Parameter diving: whether to play the home screen's dive. Asked for by
+    ///   the caller rather than inferred from `mode == .home`, because a great
+    ///   many things start life on a home tab without anyone having looked at
+    ///   one: a tab made by ⌘T is born `.home` and loaded a keystroke later, and
+    ///   so is the first tab when a URL arrives in the launch environment.
+    ///   Inferring it animated the sea for both.
+    func submit(_ input: String, diving: Bool = false) {
         guard let url = URLResolver.resolve(input) else { return }
         hasNavigatedExplicitly = true
         pendingRestore = nil
         lastError = nil
-        if mode == .home {
+        if diving && mode == .home {
             // The screen stays on the home view while the page loads behind
             // it: the water rises to cover everything, and the flip to
             // `.browsing` is the reveal at the end, not this line.
