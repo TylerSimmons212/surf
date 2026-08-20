@@ -32,6 +32,9 @@ struct StylesPane: View {
     }
 
     @State private var mode: Mode = .rules
+    @State private var showsClasses = false
+    @State private var showsStates = false
+    @State private var newClass = ""
     @State private var filter = ""
     /// Only what someone actually wrote, rather than all three-hundred-odd
     /// computed properties. The default, because the authored set is the answer
@@ -42,6 +45,14 @@ struct StylesPane: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if showsClasses, mode == .rules {
+                Divider()
+                classStrip
+            }
+            if showsStates, mode == .rules {
+                Divider()
+                stateStrip
+            }
             Divider()
             content
         }
@@ -49,6 +60,13 @@ struct StylesPane: View {
         // On appear as well as on change: computed values are fetched lazily,
         // and hanging that solely off a *transition* means a pane that opens
         // already in Computed never asks for them and sits on "Reading…".
+        // Escape reaches the page's own handler only while the page has
+        // focus. If the panel is what's focused, this is the one that fires.
+        .onKeyPress(.escape) {
+            guard session.isPicking else { return .ignored }
+            session.setPicking(false)
+            return .handled
+        }
         .onAppear { session.isShowingComputed = mode == .computed }
         .onChange(of: mode) { _, new in session.isShowingComputed = new == .computed }
     }
@@ -57,6 +75,69 @@ struct StylesPane: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
+            // The picker belongs to whichever pane is answering a question
+            // about an element, not to Elements alone. Styles is where you
+            // most often want to change subject — you have just read why one
+            // heading is the wrong colour and want the next one — and sending
+            // you to Elements and back to do it is three clicks for something
+            // that should be zero.
+            IconButton(
+                systemName: "cursorarrow.rays",
+                size: 12,
+                weight: .medium,
+                width: 26,
+                height: 22,
+                cornerRadius: DevToolsTheme.corner,
+                tint: session.isPicking ? Color.accentColor : nil,
+                help: "Select an element on the page (⌥⌘C)"
+            ) {
+                session.setPicking(!session.isPicking)
+            }
+
+            Divider().frame(height: 14)
+
+            // A native Menu, so the system supplies the popup, the metrics
+            // and the announcement. Every item is a selector generated from
+            // the element itself — valid and matching by construction — so
+            // there is no invalid-selector path to design an error state for.
+            Menu {
+                ForEach(session.newRuleSelectors, id: \.self) { selector in
+                    Button(selector) {
+                        Task { @MainActor in _ = await session.addRule(selector) }
+                    }
+                }
+            } label: {
+                Label("New Rule", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(session.newRuleSelectors.isEmpty || mode != .rules)
+            .help("New rule for the selected element")
+
+            // ".cls" because that is what this thing is called in every
+            // other inspector, and recognition beats invention in chrome
+            // this small.
+            Toggle(isOn: $showsClasses) {
+                Text(".cls")
+                    .font(DevToolsTheme.caption.monospaced())
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.accessoryBar)
+            .controlSize(.small)
+            .disabled(mode != .rules)
+            .help(showsClasses ? "Hide the element's classes" : "Show and toggle the element's classes")
+
+            Toggle(isOn: $showsStates) {
+                Text(":hov")
+                    .font(DevToolsTheme.caption.monospaced())
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.accessoryBar)
+            .controlSize(.small)
+            .disabled(mode != .rules)
+            .help(showsStates ? "Hide element states" : "Simulate :hover, :focus and :active")
+
             Picker("Mode", selection: $mode) {
                 ForEach(Mode.allCases) { option in
                     // The count rides in the label because a segmented control
@@ -136,6 +217,99 @@ struct StylesPane: View {
             RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
                 .fill(DevToolsTheme.inputFill)
         }
+    }
+
+    // MARK: - Classes
+
+    /// The element's classes as native toggles, plus a field for a new one.
+    ///
+    /// A class switched off stays in the strip unchecked — the session
+    /// remembers what it took away — because a chip that vanished the moment
+    /// it was turned off could only be turned back on by retyping it.
+    private var classStrip: some View {
+        FlowLayout(spacing: 4, rowSpacing: 4) {
+            ForEach(session.elementClasses, id: \.name) { entry in
+                Toggle(isOn: Binding(
+                    get: { entry.isOn },
+                    set: { on in
+                        Task { @MainActor in await session.setClass(entry.name, enabled: on) }
+                    }
+                )) {
+                    Text(".\(entry.name)")
+                        .font(DevToolsTheme.caption.monospaced())
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.accessoryBar)
+                .controlSize(.small)
+            }
+
+            TextField("add class", text: $newClass)
+                .textFieldStyle(.plain)
+                .font(DevToolsTheme.caption.monospaced())
+                .frame(width: 88)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background {
+                    RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
+                        .fill(DevToolsTheme.inputFill)
+                }
+                .onSubmit {
+                    let name = newClass.trimmingCharacters(in: .whitespaces)
+                    guard !name.isEmpty else { return }
+                    newClass = ""
+                    Task { @MainActor in await session.setClass(name, enabled: true) }
+                }
+        }
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, 5)
+    }
+
+    // MARK: - States
+
+    /// The five forcible states as native toggles, and the word "simulated"
+    /// said plainly.
+    ///
+    /// Chrome and Safari force state through an engine hook this browser
+    /// cannot reach — page script has no way to set the real :hover bit. What
+    /// runs instead is a copy of each state rule with the pseudo-class
+    /// rewritten to an attribute of identical specificity, stamped onto this
+    /// one element. Same cascade weights, same visible result, but not the
+    /// engine's own state — so the strip says so instead of letting the
+    /// difference be discovered as a bug.
+    private var stateStrip: some View {
+        HStack(spacing: 4) {
+            ForEach(DevToolsSession.forcibleStates, id: \.self) { state in
+                Toggle(isOn: Binding(
+                    get: {
+                        session.forcedNode == session.selectedNode
+                            && session.forcedStates.contains(state)
+                    },
+                    set: { on in
+                        Task { @MainActor in await session.setForcedState(state, enabled: on) }
+                    }
+                )) {
+                    Text(":\(state)")
+                        .font(DevToolsTheme.caption.monospaced())
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.accessoryBar)
+                .controlSize(.small)
+            }
+
+            Spacer(minLength: 8)
+
+            Text("simulated")
+                .font(DevToolsTheme.caption)
+                .foregroundStyle(.tertiary)
+                .help(
+                    "Surf copies each state rule with the pseudo-class rewritten "
+                    + "to an attribute of equal specificity — the engine's own "
+                    + "element state can't be set from here. Styling matches; "
+                    + "engine side effects don't."
+                )
+        }
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, 5)
     }
 
     // MARK: - Content

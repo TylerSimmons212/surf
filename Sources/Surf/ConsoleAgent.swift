@@ -19,7 +19,10 @@ import WebKit
 /// each argument immediately and drops the reference. Retaining live objects
 /// for a console nobody has opened would turn every page visit into a leak, and
 /// would change when the page's own garbage collector runs — a correctness
-/// problem, not merely a size one.
+/// problem, not merely a size one. Unattached serialization is deliberately
+/// *shallow* — no nested previews, no expandable handles, caller location kept
+/// as an unparsed stack string — so the per-call cost on an uninspected page is
+/// a handful of typeof checks rather than a property walk.
 enum ConsoleAgent {
 
     static let eventHandlerName = "surfDevToolsConsole"
@@ -294,9 +297,12 @@ enum ConsoleAgent {
         return { url: url, line: line || 0, column: column || 0 };
       }
 
-      function __surfCaller() {
+      /// Parses a caller out of a raw stack string. Split out from the
+      /// capture so the parse can be deferred: while nothing is attached the
+      /// raw string is stored and this runs only if a panel ever drains it.
+      function __surfCallerFrom(stack) {
         try {
-          const lines = (new Error().stack || '').split('\\n');
+          const lines = (stack || '').split('\\n');
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i].trim();
             if (!line) { continue; }
@@ -312,9 +318,40 @@ enum ConsoleAgent {
         return null;
       }
 
+      function __surfCaller() {
+        try { return __surfCallerFrom(new Error().stack || ''); } catch (e) { return null; }
+      }
+
       // ---- Recording -------------------------------------------------------
 
       function __surfRecord(level, args, source) {
+        // Unattached is the common case — thousands of pages nobody ever
+        // inspects — and it must stay near-free. Arguments are described
+        // *shallowly*: same wire shape, but no per-key preview walk and no
+        // retained handle (retain() is a no-op while not live anyway). The
+        // caller is kept as the raw stack string and parsed only if a panel
+        // ever drains this backlog. The trade, deliberate and modest: an
+        // entry logged before attach shows no nested preview and can't be
+        // expanded after the fact.
+        if (!live) {
+          const entry = {
+            level: level,
+            args: Array.prototype.map.call(args, function (a) { return describe(a, true); }),
+            source: (source === false) ? null : (source || null),
+            groupDepth: groupDepth,
+            timestamp: Date.now(),
+            frame: frame
+          };
+          if (source === undefined || source === null) {
+            // No explicit location and not marked as having none: keep the
+            // raw stack for a lazy parse at drain time.
+            try { entry._stack = new Error().stack || ''; } catch (e) { entry._stack = ''; }
+          }
+          backlog.push(entry);
+          if (backlog.length > BACKLOG_CAP) { backlog.shift(); }
+          return;
+        }
+
         const entry = {
           level: level,
           args: Array.prototype.map.call(args, function (a) { return describe(a, false); }),
@@ -327,13 +364,7 @@ enum ConsoleAgent {
           timestamp: Date.now(),
           frame: frame
         };
-
-        if (live) {
-          __surfEnqueue(entry);
-          return;
-        }
-        backlog.push(entry);
-        if (backlog.length > BACKLOG_CAP) { backlog.shift(); }
+        __surfEnqueue(entry);
       }
 
       function __surfEnqueue(entry) {
@@ -719,6 +750,16 @@ enum ConsoleAgent {
         const entries = backlog;
         backlog = [];
         live = true;
+        // The deferred half of the cheap capture path: caller locations were
+        // stored as raw stack strings, and this — at most BACKLOG_CAP entries,
+        // once per attach — is where they get parsed.
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
+          if (entry._stack !== undefined) {
+            if (!entry.source) { entry.source = __surfCallerFrom(entry._stack); }
+            delete entry._stack;
+          }
+        }
         return ({ entries: entries, backlog: true });
       });
 

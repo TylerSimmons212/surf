@@ -26,33 +26,26 @@ struct StoragePane: View {
         .task { await session.loadStorage() }
     }
 
+    /// The stock segmented control, deliberately — same reasoning as the
+    /// panel's old pane switcher: built against the macOS 26 SDK it adopts
+    /// Liquid Glass on its own, and supplies the interaction, the metrics and
+    /// "tab, 2 of 6" for VoiceOver. The hand-rolled chip row this replaces
+    /// re-implemented all of that at 80% fidelity for zero gain.
     private var areaPicker: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 4) {
+        HStack {
+            Picker("Area", selection: $session.storageArea) {
                 ForEach(StorageArea.allCases) { area in
-                    Button {
-                        session.storageArea = area
-                    } label: {
-                        Label(area.label, systemImage: area.symbol)
-                            .font(DevToolsTheme.caption)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                    .fill(
-                                        session.storageArea == area
-                                            ? Color.accentColor.opacity(0.18)
-                                            : DevToolsTheme.hoverFill
-                                    )
-                            }
-                    }
-                    .buttonStyle(.plain)
+                    Text(area.label).tag(area)
                 }
             }
-            .padding(.horizontal, DevToolsTheme.barInset)
-            .padding(.vertical, 5)
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 0)
         }
-        .frame(height: 30)
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, 5)
     }
 
     private var toolbar: some View {

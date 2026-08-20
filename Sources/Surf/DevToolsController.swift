@@ -225,11 +225,18 @@ final class DevToolsController: NSObject, NSWindowDelegate {
         let isVisible = !PopOutController.shared.isPoppedOut(tab)
             && (session.pane == .elements || session.isPicking)
 
-        guard isVisible, let box = session.highlightBox else {
+        if isVisible, let box = session.highlightBox {
+            highlight.show(box)
+        } else {
             highlight.clear()
-            return
         }
-        highlight.show(box)
+
+        // The layout overlay is sturdier than the hover highlight: armed
+        // explicitly, so it survives pane switches — you arm a grid and then
+        // go read its rules in Styles. Only popping the tab out hides it,
+        // because the lens crops it into a lie.
+        let layoutVisible = !PopOutController.shared.isPoppedOut(tab)
+        highlight.setLayout(layoutVisible ? session.layoutOverlay : nil)
     }
 
     // MARK: - Title bar

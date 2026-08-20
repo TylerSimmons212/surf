@@ -128,6 +128,14 @@ enum DevToolsAgent {
           for (let i = 0; i < attrs.length; i++) {
             out.attributes.push({ name: attrs[i].name, value: attrs[i].value });
           }
+          // The tree's grid/flex badges. One computed-style read per element
+          // serialized — the same price Chrome pays for the same badges, and
+          // display is already resolved by the time anything is inspectable.
+          try {
+            const display = getComputedStyle(node).display;
+            if (display === 'grid' || display === 'inline-grid') { out.layout = 'grid'; }
+            else if (display === 'flex' || display === 'inline-flex') { out.layout = 'flex'; }
+          } catch (e) { /* detached or foreign; no badge */ }
         }
         if (node.nodeType === 3 || node.nodeType === 8) {
           const text = node.nodeValue || '';
@@ -457,8 +465,19 @@ enum DevToolsAgent {
       // Rules are addressed by a minted id, never by their index in the sheet.
       // Inserting a rule shifts every index after it, so an index captured
       // during one read edits a *different* rule on the next one — which is a
-      // silent, page-corrupting kind of wrong. CSSOM wrapper objects keep their
-      // identity, so a WeakMap survives exactly what an index doesn't.
+      // silent, page-corrupting kind of wrong.
+      //
+      // The id is held against the rule *strongly*, and that is the whole
+      // point. This used to be a WeakRef, on the theory that CSSOM wrappers
+      // keep their identity and the sheet would hold them up. It doesn't: a
+      // CSSStyleRule wrapper lives exactly as long as something in script
+      // holds it, and nothing did — so every id minted while reading a pane
+      // was collected before anyone got round to editing, and every edit came
+      // back "no rule". Reading the cascade and then changing something, which
+      // is the entire workflow, was the reliable way to break it.
+      //
+      // These maps are per-document: the agent is a user script, so a
+      // navigation builds fresh closures and takes the old rules with them.
       const ruleIds = new WeakMap();
       const ruleRefs = new Map();
       // The authored text, captured the first time a rule is touched, so any
@@ -471,17 +490,13 @@ enum DevToolsAgent {
         if (id === undefined) {
           id = nextRuleId++;
           ruleIds.set(rule, id);
-          ruleRefs.set(id, new WeakRef(rule));
+          ruleRefs.set(id, rule);
         }
         return id;
       }
 
       function ruleFor(id) {
-        const ref = ruleRefs.get(id);
-        if (!ref) { return null; }
-        const rule = ref.deref();
-        if (!rule) { ruleRefs.delete(id); return null; }
-        return rule;
+        return ruleRefs.get(id) || null;
       }
 
       /// Replaces a declaration block wholesale.
@@ -490,16 +505,23 @@ enum DevToolsAgent {
       /// `cssText` is the only CSSOM surface that preserves authored order.
       /// Setting properties one by one moves a re-enabled declaration to the
       /// end of the block, which quietly changes the cascade within the rule.
-      function applyStyleText(style, text, owner) {
-        const before = new Set();
-        for (let i = 0; i < style.length; i++) { before.add(style.item(i)); }
+      function applyStyleText(style, text, owner, probe) {
         style.cssText = text;
         // What the engine actually accepted. A value it can't parse is dropped
         // silently, and the panel needs to say so rather than show an edit that
         // didn't happen.
+        //
+        // `applied` enumerates as longhands — setting `margin` reports
+        // margin-top and friends, never `margin` itself. Fine for edits,
+        // where the caller knows its declaration's longhands from the read.
+        // Useless for a brand-new declaration, whose longhands nobody has
+        // been told — so `probe` asks about one property by name, which
+        // getPropertyValue answers for shorthands and longhands alike.
         const applied = [];
         for (let i = 0; i < style.length; i++) { applied.push(style.item(i)); }
-        return { ok: true, applied: applied, owner: owner };
+        const reply = { ok: true, applied: applied, owner: owner };
+        if (probe) { reply.probe = style.getPropertyValue(probe) || ''; }
+        return reply;
       }
 
       // ---- Colour resolution ----------------------------------------------
@@ -792,8 +814,14 @@ enum DevToolsAgent {
         return out;
       }
 
+      function isSurfSheet(sheet) {
+        return !!(sheet && sheet.ownerNode && sheet.ownerNode.dataset
+          && sheet.ownerNode.dataset.surfInspector === '1');
+      }
+
       function sheetLabel(sheet) {
         if (!sheet) { return '<style>'; }
+        if (isSurfSheet(sheet)) { return 'inspector'; }
         if (!sheet.href) { return sheet.ownerNode && sheet.ownerNode.nodeName === 'STYLE'
           ? '<style>' : 'inline'; }
         try {
@@ -864,6 +892,13 @@ enum DevToolsAgent {
               let hit = false;
               try { hit = target.matches(parsed.clean); } catch (e) { hit = false; }
               if (!hit) { continue; }
+              // Forcing stamps the selected element only, so only its own
+              // state rules convert; an ancestor's :hover stays "a state
+              // you're not in", which it is.
+              const allForced = d === 0 && parsed.states.length > 0
+                && parsed.states.every(
+                  (state) => forcedNow.indexOf(state.slice(1)) >= 0
+                );
               rules.push({
                 id: idForRule(rule),
                 selector: selectorText,
@@ -876,11 +911,18 @@ enum DevToolsAgent {
                 order: position,
                 declarations: declarations,
                 pseudo: parsed.pseudo || '',
-                states: parsed.states,
+                // A state rule whose every state is currently simulated on
+                // this element is applying in every way that matters — its
+                // rewritten copy is live — so it is reported with states
+                // emptied and flagged, and the whole pipeline (cascade,
+                // strikethrough, sections) treats it as active for free.
+                states: allForced ? [] : parsed.states,
+                forced: allForced,
                 inline: false,
                 distance: d,
                 from: d > 0 ? describe(target) : '',
-                recovered: !!context.recovered
+                recovered: !!context.recovered,
+                inspector: !!context.inspector
               });
               // One hit per element is enough; the heaviest branch is what
               // decides the fight and `calculate` already takes the maximum.
@@ -935,10 +977,17 @@ enum DevToolsAgent {
           }
         }
 
+        const forcedNow = (node.getAttribute
+          && (node.getAttribute('data-surf-force') || '').split(' ').filter(Boolean)) || [];
+
         const sheets = document.styleSheets || [];
         for (let s = 0; s < sheets.length; s++) {
           const sheet = sheets[s];
           if (sheet.disabled) { continue; }
+          // The force sheet is plumbing, not authorship. Its copies do the
+          // visual work; showing them would double every forced rule in the
+          // pane, so the originals are presented as forced instead.
+          if (isForceSheet(sheet)) { continue; }
           let list = null;
           try {
             list = sheet.cssRules;
@@ -962,13 +1011,19 @@ enum DevToolsAgent {
           }
           if (!list) { continue; }
           walk(list, {
-            conditions: [], layer: '', label: sheetLabel(sheet), parent: null, recovered: false
+            conditions: [], layer: '', label: sheetLabel(sheet), parent: null,
+            recovered: false, inspector: isSurfSheet(sheet)
           });
         }
 
         // The style attribute, which behaves as a final layer of its own.
+        //
+        // Emitted even when empty, deliberately: an element with no inline
+        // style still gets an element.style card, because that card is where
+        // "add a declaration to just this element" lives. Chrome does the
+        // same, and its absence reads as "this element can't be styled".
         const inline = readDeclarations(node.style, node);
-        if (inline.length) {
+        {
           rules.push({
             // Negative, so an inline block can never collide with a rule id.
             id: -idFor(node),
@@ -993,8 +1048,22 @@ enum DevToolsAgent {
           }
         }
 
+        // The four facts inactive-CSS reasoning runs on. Replaced elements
+        // are the ones that take a size even inline.
+        const REPLACED = ['img', 'input', 'textarea', 'select', 'button',
+          'video', 'audio', 'canvas', 'iframe', 'embed', 'object'];
+        const tag = (node.nodeName || '').toLowerCase();
+        const parent = node.parentElement;
+        const context = {
+          display: computed.display || '',
+          position: computed.position || '',
+          parentDisplay: parent ? (getComputedStyle(parent).display || '') : '',
+          replaced: REPLACED.indexOf(tag) >= 0
+        };
+
         return {
-          rules: rules, layers: layers, unreadable: unreadable, variables: variables
+          rules: rules, layers: layers, unreadable: unreadable,
+          variables: variables, context: context
         };
       }
 
@@ -1125,8 +1194,102 @@ enum DevToolsAgent {
         }
       }
 
-      window.addEventListener('scroll', scheduleWatch, { capture: true, passive: true });
-      window.addEventListener('resize', scheduleWatch, { passive: true });
+      // ---- Layout overlay -------------------------------------------------
+
+      let layoutWatched = -1;
+      let layoutScheduled = false;
+      let lastLayoutKey = '';
+
+      function layoutModel(node) {
+        if (!node || node.nodeType !== 1 || !node.getBoundingClientRect) { return null; }
+        const style = getComputedStyle(node);
+        const display = style.display;
+        const rect = node.getBoundingClientRect();
+        const out = {
+          nodeId: idFor(node),
+          bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        };
+
+        if (display === 'grid' || display === 'inline-grid') {
+          out.kind = 'grid';
+          // The *used* track sizes: a laid-out grid's computed template is a
+          // list of pixel lengths, whatever it was authored as. Implicit
+          // tracks aren't in it — the resolved value covers the explicit
+          // grid — which is the known gap here, shared with Firefox's
+          // earliest grid inspector.
+          function tracks(template, gapValue, origin) {
+            if (!template || template === 'none') { return []; }
+            const sizes = template.split(' ').map(parseFloat).filter(
+              (n) => !isNaN(n)
+            );
+            const gap = parseFloat(gapValue) || 0;
+            const spans = [];
+            let at = origin;
+            for (let i = 0; i < sizes.length; i++) {
+              spans.push({ start: at, end: at + sizes[i] });
+              at += sizes[i] + gap;
+            }
+            return spans;
+          }
+          const contentX = rect.x
+            + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.paddingLeft) || 0);
+          const contentY = rect.y
+            + (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0);
+          out.columns = tracks(style.gridTemplateColumns, style.columnGap, contentX);
+          out.rows = tracks(style.gridTemplateRows, style.rowGap, contentY);
+          return out;
+        }
+
+        if (display === 'flex' || display === 'inline-flex') {
+          out.kind = 'flex';
+          out.items = [];
+          const kids = node.children || [];
+          for (let i = 0; i < kids.length; i++) {
+            const r = kids[i].getBoundingClientRect();
+            if (r.width || r.height) {
+              out.items.push({ x: r.x, y: r.y, width: r.width, height: r.height });
+            }
+          }
+          return out;
+        }
+        return null;
+      }
+
+      function reportLayout(force) {
+        layoutScheduled = false;
+        if (layoutWatched < 0) { return; }
+        const node = nodeFor(layoutWatched);
+        const model = node ? layoutModel(node) : null;
+        if (!model) {
+          // The element stopped being a grid, or stopped being at all.
+          layoutWatched = -1;
+          lastLayoutKey = '';
+          post({ event: 'overlay.layoutChanged', layout: null });
+          return;
+        }
+        const key = JSON.stringify(model);
+        if (!force && key === lastLayoutKey) { return; }
+        lastLayoutKey = key;
+        post({ event: 'overlay.layoutChanged', layout: model });
+      }
+
+      function scheduleLayout() {
+        if (layoutScheduled || layoutWatched < 0) { return; }
+        layoutScheduled = true;
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(function () { reportLayout(false); });
+        } else {
+          setTimeout(function () { reportLayout(false); }, 16);
+        }
+      }
+
+      function scheduleBoth() {
+        scheduleWatch();
+        scheduleLayout();
+      }
+
+      window.addEventListener('scroll', scheduleBoth, { capture: true, passive: true });
+      window.addEventListener('resize', scheduleBoth, { passive: true });
 
       // ---- Commands -------------------------------------------------------
 
@@ -1349,7 +1512,7 @@ enum DevToolsAgent {
             ruleOriginals.set(key, node.style.cssText || '');
           }
           selfStyleEdits.add(node);
-          return (applyStyleText(node.style, text, key));
+          return (applyStyleText(node.style, text, key, params.probe));
         }
         const rule = ruleFor(params && params.ruleId);
         if (!rule || !rule.style) { return ({ error: 'no rule' }); }
@@ -1357,7 +1520,332 @@ enum DevToolsAgent {
         if (!ruleOriginals.has(key)) {
           ruleOriginals.set(key, rule.style.cssText || '');
         }
-        return (applyStyleText(rule.style, text, key));
+        return (applyStyleText(rule.style, text, key, params.probe));
+      });
+
+      // The stylesheet Surf owns on this page — where "new rule" rules go.
+      //
+      // A real <style> element rather than an adopted sheet, for one load-
+      // bearing reason: the matched-styles walk iterates document.styleSheets,
+      // and an adopted sheet is not in it. As a member of the ordinary sheet
+      // list, a rule added here is read, edited, disabled and reverted by all
+      // the existing machinery with no special cases — it is just the last
+      // sheet on the page, which is also the cascade position "my new rule
+      // should win ties" wants. Lost on navigation, like Chrome's
+      // inspector-stylesheet; the Changes pane is the record that survives.
+      function surfSheet() {
+        let node = document.querySelector('style[data-surf-inspector]');
+        if (!node) {
+          node = document.createElement('style');
+          node.dataset.surfInspector = '1';
+          (document.head || document.documentElement).appendChild(node);
+        }
+        return node.sheet;
+      }
+
+      // ---- Forced element state ------------------------------------------
+      //
+      // WebKit gives page script no way to set an element's :hover bit — that
+      // hook lives in the C++ inspector, behind the private XPC we can't use.
+      // What CSS itself offers instead: a selector has the same specificity
+      // whether it says `:hover` or `[data-surf-force~="hover"]` — both are
+      // (0,1,0) — so a copy of every hover rule with the pseudo rewritten to
+      // that attribute, plus the attribute stamped on one element, reproduces
+      // the styling with the cascade weights intact. Not the engine's own
+      // state (no scrollbar repaint, no :hover on ancestors it would imply),
+      // which is why the UI says "simulated" rather than pretending.
+      let forcedElement = null;
+
+      function forceSheetNode() {
+        let node = document.querySelector('style[data-surf-force-sheet]');
+        if (!node) {
+          node = document.createElement('style');
+          node.dataset.surfForceSheet = '1';
+          (document.head || document.documentElement).appendChild(node);
+        }
+        return node;
+      }
+
+      function stateToken(state) {
+        return new RegExp(':' + state + '(?![a-zA-Z-])', 'g');
+      }
+
+      function forceRuleTexts(states) {
+        const texts = [];
+        const tokens = states.map(stateToken);
+
+        function rewrite(selector) {
+          let out = selector;
+          for (let i = 0; i < states.length; i++) {
+            out = out.replace(tokens[i], '[data-surf-force~="' + states[i] + '"]');
+          }
+          return out;
+        }
+
+        function wrapText(prefixes, body) {
+          let out = body;
+          for (let i = prefixes.length - 1; i >= 0; i--) {
+            out = prefixes[i] + ' { ' + out + ' }';
+          }
+          return out;
+        }
+
+        function walk(rules, prefixes) {
+          for (let i = 0; i < rules.length; i++) {
+            const rule = rules[i];
+            if (rule.selectorText !== undefined && rule.style) {
+              const mentions = tokens.some(
+                (token) => { token.lastIndex = 0; return token.test(rule.selectorText); }
+              );
+              if (mentions) {
+                texts.push(wrapText(
+                  prefixes,
+                  rewrite(rule.selectorText) + ' { ' + rule.style.cssText + ' }'
+                ));
+              }
+              continue;
+            }
+            if (!rule.cssRules) { continue; }
+            const name = rule.constructor && rule.constructor.name;
+            let prefix = null;
+            if (name === 'CSSLayerBlockRule') {
+              prefix = '@layer ' + (rule.name || 'surf-anonymous');
+            } else if (rule.media && rule.media.mediaText) {
+              prefix = '@media ' + rule.media.mediaText;
+            } else if (name === 'CSSContainerRule') {
+              prefix = '@container ' + (rule.containerQuery || rule.conditionText || '');
+            } else if (rule.conditionText !== undefined) {
+              prefix = '@supports ' + rule.conditionText;
+            }
+            walk(rule.cssRules, prefix ? prefixes.concat(prefix) : prefixes);
+          }
+        }
+
+        const sheets = document.styleSheets || [];
+        for (let s = 0; s < sheets.length; s++) {
+          const sheet = sheets[s];
+          if (sheet.disabled) { continue; }
+          if (isForceSheet(sheet)) { continue; }
+          let list = null;
+          try { list = sheet.cssRules; } catch (e) {
+            // Cross-origin: unforceable for the same reason it's unreadable.
+            // The recovered-sheets machinery could feed this later.
+            const recovered = sheet.href && recoveredSheets.get(sheet.href);
+            if (recovered) { walk(recovered.cssRules, []); }
+            continue;
+          }
+          if (list) { walk(list, []); }
+        }
+        return texts;
+      }
+
+      function isForceSheet(sheet) {
+        return !!(sheet && sheet.ownerNode && sheet.ownerNode.dataset
+          && sheet.ownerNode.dataset.surfForceSheet === '1');
+      }
+
+      runtime.define('CSS.forceState', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || !node.setAttribute) { return ({ error: 'no element' }); }
+        const states = (params && params.states || []).filter(
+          (state) => STATE_PSEUDOS.indexOf(state) >= 0
+        );
+
+        // One forced element at a time: the stamp moves rather than spreads,
+        // so there is never a page wearing three forgotten hovers.
+        if (forcedElement && forcedElement !== node) {
+          forcedElement.removeAttribute('data-surf-force');
+        }
+
+        const sheetNode = forceSheetNode();
+        if (!states.length) {
+          node.removeAttribute('data-surf-force');
+          sheetNode.textContent = '';
+          forcedElement = null;
+          return ({ states: [] });
+        }
+
+        node.setAttribute('data-surf-force', states.join(' '));
+        forcedElement = node;
+        // Rebuilt wholesale each time: the rule set is a function of the
+        // forced states, and diffing it would be complexity with no payoff.
+        sheetNode.textContent = forceRuleTexts(states).join('\\n');
+        return ({ states: states, rules: sheetNode.sheet
+          ? sheetNode.sheet.cssRules.length : 0 });
+      });
+
+      runtime.define('Overlay.setLayout', (params) => {
+        const id = params && params.nodeId;
+        if (id === undefined || id === null) {
+          layoutWatched = -1;
+          lastLayoutKey = '';
+          post({ event: 'overlay.layoutChanged', layout: null });
+          return ({ ok: true });
+        }
+        const node = nodeFor(id);
+        if (!node) { return ({ error: 'no element' }); }
+        layoutWatched = id;
+        reportLayout(true);
+        return ({ ok: true });
+      });
+
+      runtime.define('DOM.setAttribute', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || !node.setAttribute) { return ({ error: 'no element' }); }
+        const name = (params && params.name || '').trim();
+        if (!name) { return ({ error: 'no attribute name' }); }
+        try {
+          if (params.remove) {
+            node.removeAttribute(name);
+          } else {
+            node.setAttribute(name, params.value !== undefined ? String(params.value) : '');
+          }
+        } catch (e) {
+          // setAttribute throws on an invalid name — the engine validating
+          // for us, reported rather than swallowed.
+          return ({ error: 'not a valid attribute name: ' + name });
+        }
+        return ({ ok: true });
+      });
+
+      runtime.define('DOM.setText', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node) { return ({ error: 'no node' }); }
+        if (node.nodeType !== 3 && node.nodeType !== 8) {
+          return ({ error: 'not a text or comment node' });
+        }
+        node.nodeValue = (params && params.value) !== undefined ? String(params.value) : '';
+        return ({ ok: true });
+      });
+
+      runtime.define('DOM.setClass', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || !node.classList) { return ({ error: 'no element' }); }
+        const name = (params && params.name || '').trim();
+        if (!name) { return ({ error: 'no class name' }); }
+        // toggle(force) rather than add/remove branches: idempotent, so a
+        // repeated message can't flip the state past where it was asked to go.
+        node.classList.toggle(name, !!params.on);
+        return ({ on: node.classList.contains(name) });
+      });
+
+      runtime.define('CSS.addRule', (params) => {
+        const selector = (params && params.selector || '').trim();
+        if (!selector) { return ({ error: 'no selector' }); }
+        const sheet = surfSheet();
+        if (!sheet) { return ({ error: 'no inspector stylesheet' }); }
+        try {
+          const index = sheet.insertRule(selector + ' { }', sheet.cssRules.length);
+          return ({ ruleId: idForRule(sheet.cssRules[index]) });
+        } catch (e) {
+          // insertRule refuses invalid selectors, which is the engine
+          // validating for us — the menu only offers generated ones, but the
+          // refusal is still reported rather than swallowed.
+          return ({ error: 'not a valid selector: ' + selector });
+        }
+      });
+
+      runtime.define('CSS.fontsForNode', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || node.nodeType !== 1) { return ({ error: 'no element' }); }
+        const cs = getComputedStyle(node);
+
+        // Split the family list respecting quotes — "Helvetica Neue", Arial.
+        function splitFamilies(value) {
+          const out = [];
+          let buffer = '';
+          let quote = null;
+          for (let i = 0; i < value.length; i++) {
+            const ch = value[i];
+            if (quote) {
+              if (ch === quote) { quote = null; } else { buffer += ch; }
+            } else if (ch === '"' || ch === "'") {
+              quote = ch;
+            } else if (ch === ',') {
+              if (buffer.trim()) { out.push(buffer.trim()); }
+              buffer = '';
+            } else {
+              buffer += ch;
+            }
+          }
+          if (buffer.trim()) { out.push(buffer.trim()); }
+          return out;
+        }
+
+        // Whether a family can render here, measured rather than assumed:
+        // the same string at the same size in "Family, monospace" and in
+        // bare monospace. Different width — the family took over. Checked
+        // against two baselines because one coincidental width match is
+        // possible; two is not, in practice.
+        const measureContext = colorContext();
+        function available(family) {
+          if (!measureContext) { return false; }
+          const sample = 'mmmMMMwwwlli019';
+          let differs = false;
+          const baselines = ['monospace', 'serif'];
+          for (let i = 0; i < baselines.length && !differs; i++) {
+            measureContext.font = '32px ' + baselines[i];
+            const base = measureContext.measureText(sample).width;
+            measureContext.font = '32px "' + family + '", ' + baselines[i];
+            if (Math.abs(measureContext.measureText(sample).width - base) > 0.5) {
+              differs = true;
+            }
+          }
+          if (differs) { return true; }
+          // A webfont metrically identical to both baselines would fool the
+          // probe; the FontFaceSet knows its own.
+          try {
+            return document.fonts.check('12px "' + family + '"');
+          } catch (e) { return false; }
+        }
+
+        const GENERICS = ['serif', 'sans-serif', 'monospace', 'cursive',
+          'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace',
+          'ui-rounded', 'math'];
+        const stack = splitFamilies(cs.fontFamily || '').map((family) => {
+          const generic = GENERICS.indexOf(family.toLowerCase()) >= 0;
+          return {
+            family: family,
+            generic: generic,
+            available: generic || available(family)
+          };
+        });
+        const winner = stack.find((entry) => entry.available);
+
+        const webfonts = [];
+        const seen = {};
+        try {
+          document.fonts.forEach((face) => {
+            const key = face.family + '|' + face.weight + '|' + face.style;
+            if (seen[key]) { return; }
+            seen[key] = true;
+            webfonts.push({
+              family: face.family.replace(/^["']|["']$/g, ''),
+              weight: face.weight, style: face.style, status: face.status
+            });
+          });
+        } catch (e) { /* FontFaceSet unavailable; the stack still answers */ }
+
+        return ({
+          used: winner ? winner.family : '',
+          stack: stack,
+          size: cs.fontSize || '',
+          weight: cs.fontWeight || '',
+          style: cs.fontStyle || '',
+          lineHeight: cs.lineHeight || '',
+          webfonts: webfonts
+        });
+      });
+
+      runtime.define('CSS.propertyNames', () => {
+        // One computed style enumerates every property this WebKit knows,
+        // including prefixed ones — the engine's list, not a shipped copy.
+        const names = [];
+        try {
+          const style = getComputedStyle(document.documentElement);
+          for (let i = 0; i < style.length; i++) { names.push(style.item(i)); }
+        } catch (e) { /* leave empty; an empty list just means no completion */ }
+        return ({ names: names });
       });
 
       runtime.define('CSS.revert', (params) => {

@@ -20,11 +20,29 @@ final class InspectorHighlightView: NSView {
         static let outline = NSColor(srgbRed: 0.30, green: 0.55, blue: 0.90, alpha: 0.95)
     }
 
+    /// Firefox's grid purple and a flex teal, because those are the colours
+    /// this feature's users already have burned in.
+    private enum LayoutPalette {
+        static let grid = NSColor(srgbRed: 0.58, green: 0.29, blue: 0.90, alpha: 1)
+        static let flex = NSColor(srgbRed: 0.05, green: 0.55, blue: 0.55, alpha: 1)
+    }
+
     private let marginLayer = CAShapeLayer()
     private let paddingLayer = CAShapeLayer()
     private let contentLayer = CAShapeLayer()
     private let outlineLayer = CAShapeLayer()
     private let labelLayer = CATextLayer()
+
+    // The layout overlay draws independently of the element highlight: you
+    // arm a grid and then go hover other nodes, and losing the grid every
+    // time the highlight moved would defeat the point of arming it.
+    private let layoutFrameLayer = CAShapeLayer()
+    private let layoutLinesLayer = CAShapeLayer()
+    private let layoutGapsLayer = CAShapeLayer()
+    private var layoutNumberLayers: [CATextLayer] = []
+
+    private var boxVisible = false
+    private var layoutVisible = false
 
     /// The page's height in CSS pixels, needed to flip from the web's
     /// top-left origin into AppKit's bottom-left one.
@@ -45,6 +63,17 @@ final class InspectorHighlightView: NSView {
         contentLayer.fillColor = Palette.content.cgColor
         outlineLayer.strokeColor = Palette.outline.cgColor
         outlineLayer.lineWidth = 1
+
+        layoutGapsLayer.fillColor = LayoutPalette.grid.withAlphaComponent(0.12).cgColor
+        layoutGapsLayer.strokeColor = nil
+        layoutLinesLayer.fillColor = nil
+        layoutLinesLayer.lineWidth = 1
+        layoutLinesLayer.lineDashPattern = [4, 3]
+        layoutFrameLayer.fillColor = nil
+        layoutFrameLayer.lineWidth = 1.5
+        for shape in [layoutGapsLayer, layoutLinesLayer, layoutFrameLayer] {
+            layer?.addSublayer(shape)
+        }
 
         labelLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
         labelLayer.fontSize = 11
@@ -96,6 +125,7 @@ final class InspectorHighlightView: NSView {
         layoutLabel(for: box, at: border)
 
         CATransaction.commit()
+        boxVisible = true
         isHidden = false
     }
 
@@ -122,7 +152,119 @@ final class InspectorHighlightView: NSView {
     }
 
     func clear() {
-        isHidden = true
+        boxVisible = false
         labelLayer.isHidden = true
+        for shape in [marginLayer, paddingLayer, contentLayer, outlineLayer] {
+            shape.path = nil
+        }
+        isHidden = !layoutVisible
+    }
+
+    // MARK: - Layout overlay
+
+    func setLayout(_ overlay: LayoutOverlay?) {
+        guard let overlay else {
+            layoutVisible = false
+            for shape in [layoutFrameLayer, layoutLinesLayer, layoutGapsLayer] {
+                shape.path = nil
+            }
+            for label in layoutNumberLayers { label.isHidden = true }
+            isHidden = !boxVisible
+            return
+        }
+
+        func flip(_ rect: CGRect) -> CGRect {
+            CGRect(
+                x: rect.minX, y: bounds.height - rect.maxY,
+                width: rect.width, height: rect.height
+            )
+        }
+        // A single y is flipped as a zero-height rect's edge.
+        func flipY(_ y: Double) -> CGFloat { bounds.height - CGFloat(y) }
+
+        let tint = overlay.kind == .grid ? LayoutPalette.grid : LayoutPalette.flex
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        layoutFrameLayer.strokeColor = tint.cgColor
+        layoutLinesLayer.strokeColor = tint.withAlphaComponent(0.8).cgColor
+        layoutGapsLayer.fillColor = tint.withAlphaComponent(0.12).cgColor
+
+        let frame = flip(overlay.bounds)
+        layoutFrameLayer.path = CGPath(rect: frame, transform: nil)
+
+        let lines = CGMutablePath()
+        let gaps = CGMutablePath()
+        var numbers: [(text: String, at: CGPoint)] = []
+
+        switch overlay.kind {
+        case .grid:
+            for line in LayoutOverlayGeometry.lines(for: overlay.columns) {
+                let x = CGFloat(line.position)
+                lines.move(to: CGPoint(x: x, y: frame.minY))
+                lines.addLine(to: CGPoint(x: x, y: frame.maxY))
+                numbers.append((
+                    "\(line.number)", CGPoint(x: x, y: frame.maxY + 2)
+                ))
+            }
+            for line in LayoutOverlayGeometry.lines(for: overlay.rows) {
+                let y = flipY(line.position)
+                lines.move(to: CGPoint(x: frame.minX, y: y))
+                lines.addLine(to: CGPoint(x: frame.maxX, y: y))
+                numbers.append((
+                    "\(line.number)", CGPoint(x: frame.minX - 14, y: y - 7)
+                ))
+            }
+            for gap in LayoutOverlayGeometry.gaps(in: overlay.columns) {
+                gaps.addRect(CGRect(
+                    x: gap.start, y: frame.minY,
+                    width: gap.end - gap.start, height: frame.height
+                ))
+            }
+            for gap in LayoutOverlayGeometry.gaps(in: overlay.rows) {
+                gaps.addRect(CGRect(
+                    x: frame.minX, y: flipY(gap.end),
+                    width: frame.width, height: gap.end - gap.start
+                ))
+            }
+
+        case .flex:
+            for item in overlay.items {
+                lines.addRect(flip(item))
+            }
+        }
+
+        layoutLinesLayer.path = lines
+        layoutGapsLayer.path = gaps
+        placeNumbers(numbers, tint: tint)
+
+        CATransaction.commit()
+        layoutVisible = true
+        isHidden = false
+    }
+
+    /// A pooled set of tiny labels — a 12-column grid is 13 numbers per axis,
+    /// and building text layers per frame during a scroll would churn.
+    private func placeNumbers(_ numbers: [(text: String, at: CGPoint)], tint: NSColor) {
+        while layoutNumberLayers.count < numbers.count {
+            let label = CATextLayer()
+            label.fontSize = 9
+            label.font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium)
+            label.foregroundColor = NSColor.white.cgColor
+            label.cornerRadius = 2
+            label.alignmentMode = .center
+            label.contentsScale = window?.backingScaleFactor ?? 2
+            layer?.addSublayer(label)
+            layoutNumberLayers.append(label)
+        }
+        for (index, label) in layoutNumberLayers.enumerated() {
+            guard index < numbers.count else { label.isHidden = true; continue }
+            let (text, at) = numbers[index]
+            label.backgroundColor = tint.withAlphaComponent(0.85).cgColor
+            label.string = text
+            label.frame = CGRect(x: at.x - 7, y: at.y, width: 14, height: 12)
+            label.isHidden = false
+        }
     }
 }

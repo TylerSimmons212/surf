@@ -121,7 +121,10 @@ struct ContentView: View {
         // Hidden titlebar with full-size content, so the page runs to every
         // window edge — nothing is reserved above it any more.
         .ignoresSafeArea()
-        .navigationTitle(session.selectedTab.displayTitle)
+        // The title lives on a leaf view so that only it observes
+        // `displayTitle` — a page animating its title ("(3) Inbox…") would
+        // otherwise re-evaluate this entire chrome body every tick.
+        .background { WindowTitle(tab: session.selectedTab) }
         .onChange(of: pointerNow) { _, pointer in
             scheduleReveal(ChromeReveal.resolve(pointer, current: revealed))
         }
@@ -696,5 +699,20 @@ private struct ErrorOverlay: View {
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial)
+    }
+}
+
+/// The window title as a zero-size leaf view.
+///
+/// `.navigationTitle` reads `displayTitle`, and wherever that read happens is
+/// what SwiftUI re-evaluates when the title mutates. On the chrome body that
+/// was the whole window; here it's an invisible point.
+private struct WindowTitle: View {
+    let tab: Tab
+
+    var body: some View {
+        Color.clear
+            .frame(width: 0, height: 0)
+            .navigationTitle(tab.displayTitle)
     }
 }

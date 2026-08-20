@@ -65,7 +65,12 @@ struct RuleSections: View {
     /// of its declarations did.
     private func visible(_ rules: [MatchedRule]) -> [MatchedRule] {
         // An inherited rule whose properties don't inherit reaches nothing.
-        let reaching = rules.filter(\.hasVisibleDeclarations)
+        // The style attribute stays even when empty: its card is where "add
+        // a declaration to just this element" lives, and the agent now emits
+        // it for every inspected element for exactly that reason.
+        let reaching = rules.filter {
+            $0.isStyleAttribute || $0.isInspectorRule || $0.hasVisibleDeclarations
+        }
         let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
         guard !needle.isEmpty else { return reaching }
         return reaching.filter { rule in
@@ -130,6 +135,14 @@ struct RuleCard: View {
                         declaration: declaration
                     )
                 }
+
+                // Only where typing would do something you can see: an
+                // inherited rule belongs to an ancestor, and a state rule
+                // isn't currently applying — adding into either is a write
+                // you then have to go hunting for.
+                if rule.isActive, !rule.isInherited {
+                    AddDeclarationRow(session: session, rule: rule)
+                }
             }
             .padding(.leading, DevToolsTheme.indent)
             .padding(.top, 1)
@@ -180,6 +193,18 @@ struct RuleCard: View {
                             Capsule().fill(Color.accentColor.opacity(0.14))
                         }
                 }
+            }
+
+            // Applying, but only because the strip says so — worth a badge,
+            // or the pane would claim the page always looks like this.
+            if rule.isForced {
+                Text("forced")
+                    .font(DevToolsTheme.badge)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background { Capsule().fill(Color.orange.opacity(0.12)) }
+                    .help("Applying because its state is simulated in the :hov strip")
             }
 
             Spacer(minLength: 6)

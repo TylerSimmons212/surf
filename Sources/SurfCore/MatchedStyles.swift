@@ -110,6 +110,17 @@ public struct MatchedRule: Sendable, Equatable, Identifiable {
     /// can say so — and, where the fetch succeeds, replace it with the real
     /// thing rather than leave a gap.
     public var isRecovered: Bool
+    /// From the sheet Surf itself added to the page — where "new rule" rules
+    /// live. They start empty, and an empty rule is normally hidden as
+    /// reaching nothing, so this is the flag that keeps a just-created rule
+    /// on screen long enough to type into it.
+    public var isInspectorRule: Bool
+    /// A state rule whose states are all currently being simulated on the
+    /// element. Reported with `states` emptied, so everything downstream —
+    /// cascade competition, strikethrough status, section placement — treats
+    /// it as genuinely applying, which visually it is; this flag exists only
+    /// so the pane can badge it as forced rather than natural.
+    public var isForced: Bool
 
     public init(
         id: Int,
@@ -128,7 +139,9 @@ public struct MatchedRule: Sendable, Equatable, Identifiable {
         isStyleAttribute: Bool = false,
         inheritDistance: Int = 0,
         inheritedLabel: String? = nil,
-        isRecovered: Bool = false
+        isRecovered: Bool = false,
+        isInspectorRule: Bool = false,
+        isForced: Bool = false
     ) {
         self.id = id
         self.selector = selector
@@ -148,6 +161,8 @@ public struct MatchedRule: Sendable, Equatable, Identifiable {
         self.inheritDistance = inheritDistance
         self.inheritedLabel = inheritedLabel
         self.isRecovered = isRecovered
+        self.isInspectorRule = isInspectorRule
+        self.isForced = isForced
     }
 
     /// Whether the rule is applying right now, as opposed to being shown

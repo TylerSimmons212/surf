@@ -34,14 +34,26 @@ struct ConsolePane: View {
 
             Divider().frame(height: 14)
 
+            // Native toggles rather than hand-rolled chips: a filter that is
+            // on or off is exactly what Toggle means, and the .button style
+            // brings the system's selected treatment, Liquid Glass included,
+            // plus a real on/off state for VoiceOver instead of a bare button.
+            // The never-empty rule lives in toggleConsoleLevel, so a refused
+            // switch-off simply stays on.
             ForEach(ConsoleLevel.allCases, id: \.self) { level in
-                LevelChip(
-                    level: level,
-                    count: session.consoleCounts[level] ?? 0,
-                    isOn: session.consoleLevels.contains(level)
-                ) {
-                    session.toggleConsoleLevel(level)
+                Toggle(isOn: Binding(
+                    get: { session.consoleLevels.contains(level) },
+                    set: { _ in session.toggleConsoleLevel(level) }
+                )) {
+                    LevelLabel(level: level, count: session.consoleCounts[level] ?? 0)
                 }
+                .toggleStyle(.button)
+                .buttonStyle(.accessoryBar)
+                .tint(level.isProblem ? ConsoleStyle.color(for: level) : nil)
+                .help(
+                    session.consoleLevels.contains(level)
+                        ? "Hide \(level.rawValue) output" : "Show \(level.rawValue) output"
+                )
             }
 
             Spacer(minLength: 8)
@@ -143,41 +155,20 @@ struct ConsolePane: View {
 
 // MARK: - Rows
 
-private struct LevelChip: View {
+private struct LevelLabel: View {
     let level: ConsoleLevel
     let count: Int
-    let isOn: Bool
-    let action: () -> Void
-
-    @State private var isHovering = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Text(label)
-                    .font(.system(size: 11, weight: isOn ? .medium : .regular))
-                if count > 0 {
-                    Text(count > 999 ? "999+" : "\(count)")
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundStyle(count > 0 && level.isProblem ? tint : .secondary)
-                }
-            }
-            .foregroundStyle(isOn ? Color.primary : Color.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background {
-                RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
-                    .fill(fill)
+        HStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 11))
+            if count > 0 {
+                Text(count > 999 ? "999+" : "\(count)")
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundStyle(level.isProblem ? ConsoleStyle.color(for: level) : .secondary)
             }
         }
-        .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
-        .help(isOn ? "Hide \(label.lowercased())" : "Show \(label.lowercased())")
-    }
-
-    private var fill: Color {
-        if isOn { return tint.opacity(level.isProblem ? 0.16 : 0.10) }
-        return isHovering ? DevToolsTheme.hoverFill : .clear
     }
 
     private var label: String {
@@ -189,8 +180,6 @@ private struct LevelChip: View {
         case .error: "Errors"
         }
     }
-
-    private var tint: Color { ConsoleStyle.color(for: level) }
 }
 
 private struct ConsoleRow: View {

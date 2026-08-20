@@ -714,6 +714,10 @@ final class Tab: NSObject, Identifiable {
             NotificationCenter.default.removeObserver(appearanceObserver)
         }
         appearanceObserver = nil
+        if let blockingObserver {
+            NotificationCenter.default.removeObserver(blockingObserver)
+        }
+        blockingObserver = nil
         releaseWebView()
     }
 
@@ -982,6 +986,13 @@ final class Tab: NSObject, Identifiable {
     @ObservationIgnored private var themeSweeps = 0
     private static let maxThemeSweeps = 60
 
+    /// Which sweep is the newest, now that the heavy half runs off the main
+    /// actor. A detached task can't be cancelled mid-thought, so a slow sweep
+    /// can finish after the one that superseded it — the stamp is taken before
+    /// the survey is requested and checked before anything is applied, and a
+    /// stale result is dropped rather than allowed to overwrite a newer one.
+    @ObservationIgnored private var themeGeneration = 0
+
     /// Restyles a page that doesn't offer the scheme the user asked for.
     ///
     /// Debounced, and cancelled on every navigation: a page mid-load reports
@@ -1020,138 +1031,61 @@ final class Tab: NSObject, Identifiable {
     private func synthesizeTheme() async {
         let target = AppearanceController.resolved
 
-        guard let survey = await isolatedAgent.value(
-            .themeCollect, as: ThemeBridge.Survey.self
-        ) else { return }
+        themeGeneration += 1
+        let generation = themeGeneration
 
-        // Measured, not asked. A site that already paints in the scheme the
-        // user wants needs nothing from us, and restyling it would swap its
-        // designers' work for an approximation of it. Declared signals —
-        // a meta tag, a media query — say what a site claims; this says what it
-        // did, and cross-origin stylesheets can't hide it.
-        debugLog("""
-            theme: target=\(target.rawValue) ground=\(survey.ground) \
-            themed=\(survey.themed) colours=\(survey.colors.count)
-            """)
+        // The raw envelope, not the decoded survey: decoding it is part of the
+        // heavy half, and belongs off the main actor with the rest.
+        guard let envelope = await isolatedAgent.rawReply(.themeCollect) else { return }
 
-        guard survey.ready else {
+        let established = establishedGround
+        let outcome = await Task.detached(priority: .userInitiated) {
+            ThemeBridge.synthesize(
+                envelope: envelope, target: target, establishedGround: established
+            )
+        }.value
+
+        // A newer sweep has been started, or the tab stopped being looked at,
+        // while this one was thinking. Its answer describes a page that has
+        // moved on; applying it would overwrite the newer sweep's work.
+        guard generation == themeGeneration, !Task.isCancelled else {
+            debugLog("theme: sweep superseded — dropped")
+            return
+        }
+
+        switch outcome {
+        case .unavailable:
+            return
+        case .parsing:
             debugLog("theme: document still parsing — waiting")
-            return
-        }
-
-        let observations = ThemeBridge.observations(from: survey)
-
-        // What the decision gets made on.
-        //
-        // `survey.ground` is the declared background of body or html, and is
-        // very often transparent — plenty of sites never set one and simply
-        // show the browser's canvas. Read literally, `rgba(0, 0, 0, 0)` parses
-        // as black and satisfies "already dark", which would leave every such
-        // site in light mode forever. But treating transparent as *light* is
-        // just as wrong: a page caught mid-load hasn't painted its background
-        // yet, and GitHub — which has a perfectly good dark mode — was being
-        // restyled on the strength of a background that simply hadn't arrived.
-        //
-        // Neither reading of "undeclared" is safe, so the declared value is
-        // abandoned and the largest thing the page actually paints is used
-        // instead. That is what the eye takes for the background, and a page
-        // with nothing painted yet has none — which is the signal to wait
-        // rather than to guess.
-        let decisionGround = SchemeDecision.decisionGround(
-            declared: survey.ground, observations: observations
-        )
-
-        guard let decisionGround else {
+        case .unpainted:
             debugLog("theme: nothing painted yet — waiting")
-            return
-        }
-
-        if !survey.themed,
-           SchemeDecision.alreadySatisfies(target, ground: decisionGround) {
-            let lightness = OKLCH(decisionGround.rgb).l
-            debugLog("theme: site already \(target.rawValue) (L=\(rounded(lightness))) — left alone")
+        case .satisfied:
             isolatedAgent.send(.themeDismissPreflight)
-            return
-        }
-
-        var plan = ThemePlan.build(
-            from: observations,
-            target: target,
-            establishedGround: survey.themed ? establishedGround : nil
-        )
-
-        // Gradients are values rather than single colours, so they take their
-        // own path — stops move together, or the light comes from the wrong
-        // side afterwards.
-        for reading in survey.colors where reading.property == "gradient" {
-            let transformed = CSSGradient.transformValue(reading.value, to: target)
-            guard transformed != reading.value else { continue }
-            plan.replacements["gradient|" + reading.value] = transformed
-        }
-
-        // Artwork is not recoloured, with one exception narrow enough to be
-        // safe: a mark carrying no colour at all, which would otherwise vanish.
-        // A black wordmark becomes a white one — what its designers drew for
-        // their own dark mode — and there is no hue to lose by flipping it.
-        var inverts: [String: String] = [:]
-        var hueInverts: [String: String] = [:]
-        for reading in survey.images {
-            guard let data = Data(base64Encoded: reading.pixels),
-                  let verdict = ImageAnalysis.verdict(rgba: [UInt8](data))
-            else { continue }
-
-            // What it will be sitting on once the theme lands, not what it sits
-            // on now: the surface behind it is about to move too.
-            let surface: SRGB = {
-                if let themed = plan.replacements["background|" + reading.backdrop]
-                    .flatMap(CSSColor.init(css:)) {
-                    return themed.rgb
-                }
-                if let backdrop = CSSColor(css: reading.backdrop), backdrop.alpha > 0.5 {
-                    return backdrop.rgb
-                }
-                return plan.pageBackground.rgb
-            }()
-
-            if ImageAnalysis.shouldInvert(verdict, on: surface) {
-                inverts[reading.key] = "1"
-            } else if ImageAnalysis.shouldInvertPreservingHue(verdict, on: surface) {
-                hueInverts[reading.key] = "1"
-            }
-        }
-
-        if !inverts.isEmpty || !hueInverts.isEmpty {
-            debugLog("""
-                theme: inverting \(inverts.count) colourless and \
-                \(hueInverts.count) coloured mark(s)
-                """)
-        }
-
-        guard !plan.isEmpty || !inverts.isEmpty || !hueInverts.isEmpty else {
+        case .unchanged:
             debugLog("theme: nothing to change — left alone")
             isolatedAgent.send(.themeDismissPreflight)
-            return
+        case let .apply(replacements, inverts, hueInverts, ground):
+            isolatedAgent.send(.themeApply, [
+                "plan": replacements,
+                "inverts": inverts,
+                "hueInverts": hueInverts,
+                "ground": ground.css,
+                "scheme": target.rawValue,
+            ])
+
+            debugLog("""
+                theme: applied \(replacements.count) substitutions, \
+                ground \(ground.css)
+                """)
+
+            establishedGround = ground
+            themeSweeps += 1
+
+            // Public API, and the fix for the white band that rubber-band
+            // scrolling would otherwise reveal under a darkened page.
+            webView.underPageBackgroundColor = ground.rgb.nsColor
         }
-
-        isolatedAgent.send(.themeApply, [
-            "plan": plan.replacements,
-            "inverts": inverts,
-            "hueInverts": hueInverts,
-            "ground": plan.pageBackground.css,
-            "scheme": target.rawValue,
-        ])
-
-        debugLog("""
-            theme: applied \(plan.replacements.count) substitutions, \
-            ground \(plan.pageBackground.css)
-            """)
-
-        establishedGround = plan.pageBackground
-        themeSweeps += 1
-
-        // Public API, and the fix for the white band that rubber-band scrolling
-        // would otherwise reveal under a darkened page.
-        webView.underPageBackgroundColor = plan.pageBackground.rgb.nsColor
     }
 
     // MARK: - Favicon

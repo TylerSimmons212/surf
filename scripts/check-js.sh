@@ -247,6 +247,26 @@ for (const [target, method] of [
   }
 }
 
+// Rule handles must be held strongly.
+//
+// A source check rather than a behavioural one, which is weaker than this
+// file's other tests and deliberate: reproducing it needs a live CSSOM, and
+// the bug it guards is worth catching cheaply. Rule ids were once held as
+// WeakRefs on the theory that the stylesheet keeps its wrappers alive. It
+// does not — the collector took every id minted while reading the Styles
+// pane, so editing anything you had just looked at failed with "no rule"
+// and the panel drew the edit as though it had landed.
+{
+  const source = Object.values(devTools.scripts).map(read).join('\n');
+  const handles = source.slice(
+    Math.max(0, source.indexOf('const ruleRefs')),
+    source.indexOf('function applyStyleText')
+  );
+  if (/WeakRef/.test(handles)) {
+    fail('rule handles are held weakly again — an id will not survive to be edited');
+  }
+}
+
 if (bad) { console.error(`check-js: ${bad} problem(s)`); process.exit(1); }
 console.log(
   `check-js: Swift and JavaScript agree — ` +
@@ -256,3 +276,40 @@ console.log(
 JS
 
 node "$OUT/check.mjs" "$OUT"
+
+# ---- Size budgets ----------------------------------------------------------
+#
+# Every byte here is parsed and evaluated at documentStart on real pages —
+# most of it in every frame — so growth is a per-page-load performance cost,
+# not a download cost. Ceilings are current size plus headroom; raising one
+# should be a deliberate act with a reason, not a side effect of a feature.
+BUDGET_FAIL=0
+check_size() {
+    local file="$1" budget="$2"
+    local size
+    size=$(wc -c < "$OUT/$file" | tr -d ' ')
+    if [ "$size" -gt "$budget" ]; then
+        echo "check-js: $file is ${size} bytes — over its ${budget}-byte budget." >&2
+        BUDGET_FAIL=1
+    fi
+}
+# Injected into every frame of every page.
+check_size theme.js              34000
+check_size block.js              14000
+check_size media.js              12000
+check_size runtime-isolated.js    3000
+check_size runtime-page.js        3000
+check_size page.js                3000
+check_size find.js                2000
+# Main frame only.
+check_size console.js            40000
+check_size network.js            33000
+check_size preflight.js           2000
+# Only while dev tools are attached — never on ordinary pages, so this one
+# budgets feature growth rather than per-page cost. Raised from 70000 when
+# the elements-pane work landed (74683 bytes at the time).
+check_size devtools.js           90000
+if [ "$BUDGET_FAIL" -ne 0 ]; then
+    echo "check-js: injected-script size budget exceeded — trim the script or raise the budget deliberately." >&2
+    exit 1
+fi

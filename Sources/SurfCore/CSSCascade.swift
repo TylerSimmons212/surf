@@ -116,18 +116,22 @@ public struct ResolvedStyles: Sendable {
     public var stateRules: [MatchedRule]
     /// By longhand property name.
     public var traces: [String: PropertyTrace]
+    /// The element facts inactive-CSS reasoning runs on.
+    public var context: StyleContext
     private var lost: [DeclarationRef: Set<String>]
 
     init(
         rules: [MatchedRule],
         stateRules: [MatchedRule],
         traces: [String: PropertyTrace],
-        lost: [DeclarationRef: Set<String>]
+        lost: [DeclarationRef: Set<String>],
+        context: StyleContext = StyleContext()
     ) {
         self.rules = rules
         self.stateRules = stateRules
         self.traces = traces
         self.lost = lost
+        self.context = context
     }
 
     public func status(
@@ -164,7 +168,8 @@ public enum CSSCascade {
     public static func resolve(
         rules allRules: [MatchedRule],
         layerOrder: [String] = [],
-        pseudoElement: String? = nil
+        pseudoElement: String? = nil,
+        context: StyleContext = StyleContext()
     ) -> ResolvedStyles {
         let scoped = allRules.filter { $0.pseudoElement == pseudoElement }
         let active = scoped.filter(\.isActive)
@@ -225,7 +230,8 @@ public enum CSSCascade {
             },
             stateRules: states,
             traces: traces,
-            lost: lost
+            lost: lost,
+            context: context
         )
     }
 

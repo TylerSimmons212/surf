@@ -109,18 +109,29 @@ enum PageScripts {
         // They belong in this list for one reason: `removeAllUserScripts()`
         // above takes them with it, so anything installed anywhere else is
         // dropped on the next rebuild with no error anywhere.
+        // Main frame only, and the choice is measured rather than cautious:
+        // dev tools' drain and setLive commands run through
+        // `callAsyncJavaScript(..., in: nil)` — the main frame — so a subframe
+        // copy of these agents buffered forever and was never asked for any of
+        // it. Injecting 50KB of capture into every ad iframe bought nothing
+        // the panes could show. Subframe *blocking* accounting still exists;
+        // it belongs to BlockBridge below.
+        add(ConsoleAgent.script, NetworkAgent.script,
+            to: controller, world: .page, mainFrameOnly: true)
         if blocking {
             add(
                 BlockBridge.script,
                 to: controller, world: .page,
                 // Every frame: a third-party iframe is where much of an ad
                 // stack does its work, and a panel blind to it would report one
-                // request where a page made forty.
+                // request where a page made forty. Added *after* the network
+                // agent, which matters: in the main frame this script taps the
+                // agent's single fetch/XHR wrap instead of wrapping a second
+                // time, and in subframes — where the agent isn't injected —
+                // it falls back to wrapping for itself.
                 mainFrameOnly: false
             )
         }
-        add(ConsoleAgent.script, NetworkAgent.script,
-            to: controller, world: .page, mainFrameOnly: false)
         if devTools {
             // Main frame only, so the node id space has exactly one authority.
             addRaw(

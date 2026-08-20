@@ -154,7 +154,55 @@ enum ThemeBridge {
     try {
 
     const viewport = Math.max(1, innerWidth * innerHeight);
+
+    // Scope: the whole document, or only the subtrees the observer saw change.
+    //
+    // The mutation records used to be thrown away, so every re-sweep paid for
+    // the whole document again. The observer now remembers which elements
+    // changed; a re-sweep walks only those subtrees and merges what it finds
+    // into the last survey, which reads identically on the Swift side.
+    // Anything that makes the scoped walk untrustworthy — too many roots, a
+    // change at the document root, an observer that was paused while the page
+    // moved — falls back to the full walk.
+    const cache = window.__surfColorCache;
+    let sweepRoots = null;
+    if (cache && !window.__surfMutationOverflow
+        && window.__surfMutationRoots && window.__surfMutationRoots.size) {
+      let candidates = Array.from(window.__surfMutationRoots).filter(function (node) {
+        return node && node.nodeType === 1 && node.isConnected;
+      });
+      const structural = candidates.some(function (node) {
+        return node === document.documentElement || node === document.body;
+      });
+      if (candidates.length && candidates.length <= 40 && !structural) {
+        // An ancestor's walk covers its descendants; keep only the outermost.
+        candidates = candidates.filter(function (node) {
+          return !candidates.some(function (other) {
+            return other !== node && other.contains(node);
+          });
+        });
+        sweepRoots = candidates;
+      }
+    }
+    // Consumed either way: whatever happens after this read is the next
+    // sweep's news, not this one's.
+    window.__surfMutationRoots = new Set();
+    window.__surfMutationOverflow = false;
+    // Remembered so the apply pass that follows can paint the same subtrees
+    // rather than re-walking a document that mostly didn't change.
+    window.__surfLastSweepRoots = sweepRoots;
+
     const found = new Map();
+    if (sweepRoots) {
+      // Start from the last survey so the merged report stays a full account
+      // of the page. Copied entry by entry, because `note` mutates in place.
+      cache.forEach(function (entry, key) {
+        found.set(key, {
+          value: entry.value, property: entry.property, area: entry.area,
+          interactive: entry.interactive, large: entry.large, on: entry.on
+        });
+      });
+    }
 
     // Sampling marks, to find the colourless ones that would vanish.
     //
@@ -163,34 +211,51 @@ enum ThemeBridge {
     // is not enough to tell ink from colour. getImageData throws for a
     // cross-origin image loaded without CORS — that refusal is the whole
     // answer, since an image we can't inspect is one we leave alone.
+    //
+    // Candidates are only noted during the walk; the canvas work runs after
+    // it, clear of the layout reads, and only when something new turned up —
+    // a re-sweep of a page whose images were all seen before pays nothing.
     if (!window.__surfSeenImages) { window.__surfSeenImages = new Set(); }
-    const sampled = [];
-    const canvas = document.createElement('canvas');
-    canvas.width = 64;
-    canvas.height = 64;
-    const context = canvas.getContext('2d', { willReadFrequently: true });
+    const imageCandidates = [];
 
-    function sampleImage(element, backdrop) {
-      if (sampled.length >= 16) { return; }
+    function considerImage(element, backdrop, box) {
+      if (imageCandidates.length >= 16) { return; }
       const source = element.currentSrc || element.src;
       if (!source || window.__surfSeenImages.has(source)) { return; }
       if (!element.complete || !element.naturalWidth) { return; }
-
-      const box = element.getBoundingClientRect();
       // Too small to matter, or far too large to be a mark rather than a
       // picture — and a picture is opaque and was never at risk.
       if (box.width < 8 || box.height < 8) { return; }
       if (box.width > 512 || box.height > 512) { return; }
-
       window.__surfSeenImages.add(source);
-      try {
-        context.clearRect(0, 0, 64, 64);
-        context.drawImage(element, 0, 0, 64, 64);
-        const data = context.getImageData(0, 0, 64, 64).data;
-        let binary = '';
-        for (let j = 0; j < data.length; j++) { binary += String.fromCharCode(data[j]); }
-        sampled.push({ key: source, pixels: btoa(binary), backdrop: backdrop || '' });
-      } catch (error) { /* tainted: left alone */ }
+      imageCandidates.push({ element: element, source: source, backdrop: backdrop || '' });
+    }
+
+    function sampleCandidates() {
+      const sampled = [];
+      if (!imageCandidates.length) { return sampled; }
+      const canvas = document.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 64;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      for (const candidate of imageCandidates) {
+        try {
+          context.clearRect(0, 0, 64, 64);
+          context.drawImage(candidate.element, 0, 0, 64, 64);
+          const data = context.getImageData(0, 0, 64, 64).data;
+          // In slices: a few apply calls per image rather than 16,384 string
+          // concatenations of one character each.
+          let binary = '';
+          for (let j = 0; j < data.length; j += 8192) {
+            binary += String.fromCharCode.apply(null, data.subarray(j, j + 8192));
+          }
+          sampled.push({
+            key: candidate.source, pixels: btoa(binary),
+            backdrop: candidate.backdrop
+          });
+        } catch (error) { /* tainted: left alone */ }
+      }
+      return sampled;
     }
 
     function opaque(value) {
@@ -210,6 +275,38 @@ enum ThemeBridge {
       return inherited;
     }
 
+    // Whether an element sits on something clickable. The old walk asked
+    // `closest()` for every element — a selector match against the whole
+    // ancestor chain, per element. The answer is inherited down the walk
+    // instead, resolved once per element, exactly like the backdrop.
+    const INTERACTIVE = 'a, button, [role="button"], input, select, textarea, summary';
+    const interactives = new Map();
+    function interactiveFor(element) {
+      let own = false;
+      try { own = element.matches(INTERACTIVE); } catch (error) { own = false; }
+      if (own) { interactives.set(element, true); return true; }
+      const parent = parentOf(element);
+      const inherited = parent ? (interactives.get(parent) || false) : false;
+      interactives.set(element, inherited);
+      return inherited;
+    }
+
+    // A scoped walk starts mid-tree, where the maps above have no ancestors
+    // to answer from. Prime them with the chain above the root, outermost
+    // first, so inheritance works the same as in a full walk.
+    function primeAncestors(element) {
+      const chain = [];
+      for (let node = parentOf(element); node; node = parentOf(node)) {
+        if (backdrops.has(node)) { break; }
+        chain.push(node);
+      }
+      for (let i = chain.length - 1; i >= 0; i--) {
+        const node = chain[i];
+        backdropFor(node, styleOf(node).backgroundColor);
+        interactiveFor(node);
+      }
+    }
+
     function note(value, property, area, interactive, large, on) {
       if (!opaque(value)) { return; }
       const key = property + '|' + value;
@@ -223,15 +320,13 @@ enum ThemeBridge {
       }
     }
 
-    eachElement(document, \(elementBudget), function (element) {
+    function visit(element) {
       const style = styleOf(element);
       if (style.display === 'none' || style.visibility === 'hidden') { return; }
 
       const box = element.getBoundingClientRect();
       const area = Math.max(0, box.width * box.height) / viewport;
-      const interactive = !!element.closest(
-        'a, button, [role="button"], input, select, textarea, summary'
-      );
+      const interactive = interactiveFor(element);
       const fontSize = parseFloat(style.fontSize) || 16;
       const weight = parseInt(style.fontWeight, 10) || 400;
       const large = fontSize >= 24 || (fontSize >= 18.5 && weight >= 700);
@@ -285,8 +380,24 @@ enum ThemeBridge {
         note(image, 'gradient', area, interactive, large, backdrop);
       }
 
-      if (element.localName === 'img') { sampleImage(element, backdrop); }
-    });
+      if (element.localName === 'img') { considerImage(element, backdrop, box); }
+    }
+
+    if (sweepRoots) {
+      let remaining = \(elementBudget);
+      for (const root of sweepRoots) {
+        if (remaining <= 0) { break; }
+        primeAncestors(root);
+        // The root itself changed too — querySelectorAll never includes it.
+        visit(root);
+        remaining -= 1;
+        remaining -= eachElement(root, Math.max(0, remaining), visit);
+      }
+    } else {
+      eachElement(document, \(elementBudget), visit);
+    }
+
+    const sampled = sampleCandidates();
 
     // What the page is actually sitting on, which decides whether it needs us
     // at all. Walked up from the body because a transparent body shows the
@@ -299,6 +410,9 @@ enum ThemeBridge {
     // Whether this page already carries a theme. When it does, the ground is
     // ours rather than the site's, and can't be read as evidence about it.
     const themed = !!document.getElementById('__surf_theme');
+
+    // Kept for the next scoped sweep to merge into.
+    window.__surfColorCache = found;
 
     return JSON.stringify({
       ground: ground || '', themed: themed, ready: true,
@@ -436,30 +550,74 @@ enum ThemeBridge {
     }
 
     try {
-      eachElement(document, \(elementBudget), function (element) {
+      // Read phase: every computed style is taken before anything at all is
+      // written back, so the walk forces at most one style flush rather than
+      // interleaving reads with the writes that dirty them.
+      const jobs = [];
+      const discoveredRoots = [];
+      function read(element) {
         const style = styleOf(element);
-
         const maskImage = style.maskImage || style.webkitMaskImage;
-        const masked = !!maskImage && maskImage !== 'none';
+        const job = {
+          element: element,
+          masked: !!maskImage && maskImage !== 'none',
+          background: style.backgroundColor,
+          color: style.color,
+          border: style.borderTopColor,
+          outline: style.outlineColor
+        };
+        if (element instanceof SVGElement) {
+          job.fill = style.fill;
+          job.stroke = style.stroke;
+        }
+        const image = style.backgroundImage;
+        if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
+          job.gradient = image;
+        }
+        jobs.push(job);
+      }
+      function onRoot(root) { discoveredRoots.push(root); }
+
+      // The subtrees the sweep just measured, or the whole document when it
+      // measured all of it. Painting only what was collected keeps a mutation
+      // burst from re-walking four thousand untouched elements.
+      const scoped = window.__surfLastSweepRoots;
+      if (scoped && scoped.length) {
+        let remaining = \(elementBudget);
+        for (const root of scoped) {
+          if (remaining <= 0) { break; }
+          if (!root.isConnected) { continue; }
+          read(root);
+          remaining -= 1;
+          remaining -= eachElement(root, Math.max(0, remaining), read, onRoot);
+        }
+      } else {
+        eachElement(document, \(elementBudget), read, onRoot);
+      }
+
+      // Write phase. Sheets first — a tree discovered on the way needs the
+      // rules, or nothing marked inside it will mean anything.
+      for (const root of discoveredRoots) {
+        if (root.host) { styleShadow(root); }
+        else if (root.documentElement) { styleDocument(root); }
+      }
+
+      for (const job of jobs) {
+        const element = job.element;
         // Same property and the same variable — the ink is delivered through
         // background-color either way; only the decision differs.
         paint(element, 'data-surf-bg', '--surf-bg',
-              plan[(masked ? 'maskink|' : 'background|') + style.backgroundColor]);
-        paint(element, 'data-surf-fg', '--surf-fg',
-              plan['text|' + style.color]);
-        paint(element, 'data-surf-bd', '--surf-bd',
-              plan['border|' + style.borderTopColor]);
-        paint(element, 'data-surf-ol', '--surf-ol',
-              plan['outline|' + style.outlineColor]);
+              plan[(job.masked ? 'maskink|' : 'background|') + job.background]);
+        paint(element, 'data-surf-fg', '--surf-fg', plan['text|' + job.color]);
+        paint(element, 'data-surf-bd', '--surf-bd', plan['border|' + job.border]);
+        paint(element, 'data-surf-ol', '--surf-ol', plan['outline|' + job.outline]);
 
-        if (element instanceof SVGElement) {
-          paint(element, 'data-surf-fl', '--surf-fl', plan['fill|' + style.fill]);
-          paint(element, 'data-surf-st', '--surf-st', plan['stroke|' + style.stroke]);
+        if (job.fill !== undefined) {
+          paint(element, 'data-surf-fl', '--surf-fl', plan['fill|' + job.fill]);
+          paint(element, 'data-surf-st', '--surf-st', plan['stroke|' + job.stroke]);
         }
-
-        const image = style.backgroundImage;
-        if (image && image !== 'none' && image.indexOf('gradient(') !== -1) {
-          paint(element, 'data-surf-gr', '--surf-gr', plan['gradient|' + image]);
+        if (job.gradient) {
+          paint(element, 'data-surf-gr', '--surf-gr', plan['gradient|' + job.gradient]);
         }
 
         if (element.localName === 'img') {
@@ -481,12 +639,7 @@ enum ThemeBridge {
             }
           }
         }
-      }, function (root) {
-        // A tree discovered on the way: give it the rules, or nothing marked
-        // inside it will mean anything.
-        if (root.host) { styleShadow(root); }
-        else if (root.documentElement) { styleDocument(root); }
-      });
+      }
     } finally {
       (window.__surfSheets || []).forEach(function (sheet) { sheet.disabled = false; });
     }
@@ -500,7 +653,20 @@ enum ThemeBridge {
     // torn off. Coalesced into one report, because a list that adds fifty rows
     // fires fifty times and they all want the same answer.
     if (!window.__surfObserver) {
-      window.__surfObserver = new MutationObserver(function () {
+      window.__surfObserver = new MutationObserver(function (records) {
+        // Remember where, not just that: the records are what let the next
+        // sweep walk the changed subtrees instead of the whole document.
+        // Past a point the bookkeeping stops paying for itself, and anything
+        // that isn't a plain element means the document itself moved — both
+        // fall back to a full sweep.
+        let roots = window.__surfMutationRoots;
+        if (!roots) { roots = window.__surfMutationRoots = new Set(); }
+        for (let i = 0; i < records.length; i++) {
+          const target = records[i].target;
+          if (target && target.nodeType === 1) { roots.add(target); }
+          else { window.__surfMutationOverflow = true; }
+          if (roots.size > 40) { window.__surfMutationOverflow = true; break; }
+        }
         if (window.__surfPending) { return; }
         window.__surfPending = setTimeout(function () {
           window.__surfPending = null;
@@ -531,6 +697,10 @@ enum ThemeBridge {
     }
     // Remembered so resuming knows whether it was ever watching to begin with.
     window.__surfObserverPaused = true;
+    // Whatever changes while nobody is watching goes unrecorded, so the sweep
+    // that catches the tab up cannot trust the mutation log — it walks the
+    // whole document once instead.
+    window.__surfMutationOverflow = true;
     return true;
     """
 
@@ -618,6 +788,10 @@ enum ThemeBridge {
     window.__surfObserver = null;
     window.__surfSheets = [];
     window.__surfSeenImages = null;
+    window.__surfColorCache = null;
+    window.__surfMutationRoots = null;
+    window.__surfMutationOverflow = false;
+    window.__surfLastSweepRoots = null;
     document.getElementById('__surf_theme')?.remove();
     document.getElementById('__surf_preflight')?.remove();
     document.getElementById('__surf_filters')?.remove();
@@ -640,7 +814,7 @@ enum ThemeBridge {
     """
 
     /// One colour the page reported, before any decision has been made about it.
-    struct Reading: Decodable {
+    struct Reading: Decodable, Sendable {
         var value: String
         var property: String
         var area: Double
@@ -651,7 +825,7 @@ enum ThemeBridge {
     }
 
     /// One image, reduced to something the analysis can read.
-    struct ImageReading: Decodable {
+    struct ImageReading: Decodable, Sendable {
         var key: String
         /// Base64 of a 64x64 RGBA reduction.
         var pixels: String
@@ -660,7 +834,7 @@ enum ThemeBridge {
         var backdrop: String
     }
 
-    struct Survey: Decodable {
+    struct Survey: Decodable, Sendable {
         var ground: String
         /// True once this page has been themed. The ground reading is then our
         /// own paint, and can't be used to judge what the site does.
@@ -670,6 +844,158 @@ enum ThemeBridge {
         var ready: Bool
         var colors: [Reading]
         var images: [ImageReading]
+    }
+
+    // MARK: - Synthesis
+
+    /// Everything one sweep decided, computed away from the main actor.
+    ///
+    /// The survey behind a busy page runs to thousands of colour observations
+    /// and a handful of base64 pixel buffers, and decoding it, judging every
+    /// image pixel by pixel and building the plan were all being paid for on
+    /// the main actor — per mutation burst, on the tab being looked at. All of
+    /// it is pure value work on `Sendable` types, so it happens on a detached
+    /// task now and only the answer crosses back.
+    enum SweepOutcome: Sendable {
+        /// The reply didn't decode into a survey — a page with no runtime, or
+        /// nothing to say. Matches the old silent early return.
+        case unavailable
+        /// The document is still parsing; nothing it reports is
+        /// representative yet.
+        case parsing
+        /// Nothing painted yet to decide from — wait rather than guess.
+        case unpainted
+        /// The site already draws the scheme the user asked for.
+        case satisfied
+        /// A survey arrived, but nothing in it needs changing.
+        case unchanged
+        /// A plan, ready to be sent to the page as it stands.
+        case apply(
+            replacements: [String: String],
+            inverts: [String: String],
+            hueInverts: [String: String],
+            ground: CSSColor
+        )
+    }
+
+    /// The whole judgement, from raw reply envelope to finished plan.
+    ///
+    /// Deliberately nonisolated and free of AppKit: it takes value types in
+    /// and hands a value type back, so a caller can run it wherever is cheap.
+    static func synthesize(
+        envelope: String,
+        target: ColorSchemeTarget,
+        establishedGround: CSSColor?
+    ) -> SweepOutcome {
+        guard let survey = try? PageProtocol.decode(
+            envelope, as: Survey.self,
+            method: PageProtocol.Method.themeCollect.rawValue
+        ) else { return .unavailable }
+
+        // Measured, not asked. A site that already paints in the scheme the
+        // user wants needs nothing from us, and restyling it would swap its
+        // designers' work for an approximation of it. Declared signals —
+        // a meta tag, a media query — say what a site claims; this says what
+        // it did, and cross-origin stylesheets can't hide it.
+        debugLog("""
+            theme: target=\(target.rawValue) ground=\(survey.ground) \
+            themed=\(survey.themed) colours=\(survey.colors.count)
+            """)
+
+        guard survey.ready else { return .parsing }
+
+        let observations = observations(from: survey)
+
+        // What the decision gets made on.
+        //
+        // `survey.ground` is the declared background of body or html, and is
+        // very often transparent — plenty of sites never set one and simply
+        // show the browser's canvas. Read literally, `rgba(0, 0, 0, 0)` parses
+        // as black and satisfies "already dark", which would leave every such
+        // site in light mode forever. But treating transparent as *light* is
+        // just as wrong: a page caught mid-load hasn't painted its background
+        // yet, and GitHub — which has a perfectly good dark mode — was being
+        // restyled on the strength of a background that simply hadn't arrived.
+        //
+        // Neither reading of "undeclared" is safe, so the declared value is
+        // abandoned and the largest thing the page actually paints is used
+        // instead. That is what the eye takes for the background, and a page
+        // with nothing painted yet has none — which is the signal to wait
+        // rather than to guess.
+        guard let decisionGround = SchemeDecision.decisionGround(
+            declared: survey.ground, observations: observations
+        ) else { return .unpainted }
+
+        if !survey.themed,
+           SchemeDecision.alreadySatisfies(target, ground: decisionGround) {
+            let lightness = String((OKLCH(decisionGround.rgb).l * 100).rounded() / 100)
+            debugLog("theme: site already \(target.rawValue) (L=\(lightness)) — left alone")
+            return .satisfied
+        }
+
+        var plan = ThemePlan.build(
+            from: observations,
+            target: target,
+            establishedGround: survey.themed ? establishedGround : nil
+        )
+
+        // Gradients are values rather than single colours, so they take their
+        // own path — stops move together, or the light comes from the wrong
+        // side afterwards.
+        for reading in survey.colors where reading.property == "gradient" {
+            let transformed = CSSGradient.transformValue(reading.value, to: target)
+            guard transformed != reading.value else { continue }
+            plan.replacements["gradient|" + reading.value] = transformed
+        }
+
+        // Artwork is not recoloured, with one exception narrow enough to be
+        // safe: a mark carrying no colour at all, which would otherwise vanish.
+        // A black wordmark becomes a white one — what its designers drew for
+        // their own dark mode — and there is no hue to lose by flipping it.
+        var inverts: [String: String] = [:]
+        var hueInverts: [String: String] = [:]
+        for reading in survey.images {
+            guard let data = Data(base64Encoded: reading.pixels),
+                  let verdict = ImageAnalysis.verdict(rgba: [UInt8](data))
+            else { continue }
+
+            // What it will be sitting on once the theme lands, not what it
+            // sits on now: the surface behind it is about to move too.
+            let surface: SRGB = {
+                if let themed = plan.replacements["background|" + reading.backdrop]
+                    .flatMap(CSSColor.init(css:)) {
+                    return themed.rgb
+                }
+                if let backdrop = CSSColor(css: reading.backdrop), backdrop.alpha > 0.5 {
+                    return backdrop.rgb
+                }
+                return plan.pageBackground.rgb
+            }()
+
+            if ImageAnalysis.shouldInvert(verdict, on: surface) {
+                inverts[reading.key] = "1"
+            } else if ImageAnalysis.shouldInvertPreservingHue(verdict, on: surface) {
+                hueInverts[reading.key] = "1"
+            }
+        }
+
+        if !inverts.isEmpty || !hueInverts.isEmpty {
+            debugLog("""
+                theme: inverting \(inverts.count) colourless and \
+                \(hueInverts.count) coloured mark(s)
+                """)
+        }
+
+        guard !plan.isEmpty || !inverts.isEmpty || !hueInverts.isEmpty else {
+            return .unchanged
+        }
+
+        return .apply(
+            replacements: plan.replacements,
+            inverts: inverts,
+            hueInverts: hueInverts,
+            ground: plan.pageBackground
+        )
     }
 
     /// Turns the page's report into the observations `SurfCore` reasons about.

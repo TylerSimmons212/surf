@@ -65,19 +65,6 @@ enum BlockBridge {
         if (!timer) { timer = setTimeout(flush, 250); }
       }
 
-      // What loaded. `buffered: true` replays the entries recorded before this
-      // observer existed, which at document start is most of a page's CSS and
-      // its first scripts.
-      try {
-        const observer = new PerformanceObserver((list) => {
-          const entries = list.getEntries();
-          for (let i = 0; i < entries.length; i++) {
-            note(entries[i].name, entries[i].initiatorType || 'other', true);
-          }
-        });
-        observer.observe({ type: 'resource', buffered: true });
-      } catch (error) { /* no Resource Timing: the loaded half is simply absent */ }
-
       // What didn't. A blocked subresource fails the same way a missing one
       // does, and fires this on the element that asked for it.
       document.addEventListener('error', (event) => {
@@ -94,43 +81,74 @@ enum BlockBridge {
         } catch (error) { /* not a URL we can compare */ }
       }, true);
 
-      // fetch and XHR report their own failures; nothing else can see them.
-      const nativeFetch = window.fetch;
-      if (typeof nativeFetch === 'function') {
-        window.fetch = function (input, init) {
-          const url = (input && typeof input === 'object' && input.url)
-            ? input.url
-            : String(input);
-          let result;
-          try {
-            result = nativeFetch.apply(this, arguments);
-          } catch (error) {
-            note(url, 'fetch', false);
-            throw error;
-          }
-          // A rejected fetch is a request that never arrived. An HTTP error is
-          // not — it resolves, and the server answered.
-          return result.catch((error) => { note(url, 'fetch', false); throw error; });
-        };
-      }
-
-      const open = XMLHttpRequest.prototype.open;
-      XMLHttpRequest.prototype.open = function (method, url) {
+      // One wrapper layer per frame, never two.
+      //
+      // In the main frame the network agent has already replaced fetch, XHR
+      // and sendBeacon and installed the one resource observer — it is a
+      // document-start script added before this one — so this script taps
+      // that wrap instead of wrapping the wrapped functions a second time.
+      // The tap's signature is `note`'s own: (url, kind, loaded).
+      //
+      // In subframes the network agent is not injected at all (its drain and
+      // setLive commands only ever run in the main frame, so a subframe copy
+      // could never surface anything), and this script keeps its own
+      // accounting — a third-party iframe is where much of an ad stack does
+      // its work.
+      const net = globalThis['\(NetworkAgent.globalName)'];
+      if (net && net.state && net.state.networkInstalled) {
+        net.state.blockTap = note;
+      } else {
+        // What loaded. `buffered: true` replays the entries recorded before
+        // this observer existed, which at document start is most of a page's
+        // CSS and its first scripts.
         try {
-          this.addEventListener('error', () => { note(String(url), 'xhr', false); });
-        } catch (error) { /* a subclass with a sealed prototype */ }
-        return open.apply(this, arguments);
-      };
+          const observer = new PerformanceObserver((list) => {
+            const entries = list.getEntries();
+            for (let i = 0; i < entries.length; i++) {
+              note(entries[i].name, entries[i].initiatorType || 'other', true);
+            }
+          });
+          observer.observe({ type: 'resource', buffered: true });
+        } catch (error) { /* no Resource Timing: the loaded half is simply absent */ }
 
-      // sendBeacon is how trackers report on their way out of a page, and it
-      // returns false when the request was refused rather than queued.
-      const beacon = navigator.sendBeacon;
-      if (typeof beacon === 'function') {
-        navigator.sendBeacon = function (url) {
-          const queued = beacon.apply(navigator, arguments);
-          if (!queued) { note(String(url), 'beacon', false); }
-          return queued;
+        // fetch and XHR report their own failures; nothing else can see them.
+        const nativeFetch = window.fetch;
+        if (typeof nativeFetch === 'function') {
+          window.fetch = function (input, init) {
+            const url = (input && typeof input === 'object' && input.url)
+              ? input.url
+              : String(input);
+            let result;
+            try {
+              result = nativeFetch.apply(this, arguments);
+            } catch (error) {
+              note(url, 'fetch', false);
+              throw error;
+            }
+            // A rejected fetch is a request that never arrived. An HTTP error is
+            // not — it resolves, and the server answered.
+            return result.catch((error) => { note(url, 'fetch', false); throw error; });
+          };
+        }
+
+        const open = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function (method, url) {
+          try {
+            this.addEventListener('error', () => { note(String(url), 'xhr', false); });
+          } catch (error) { /* a subclass with a sealed prototype */ }
+          return open.apply(this, arguments);
         };
+
+        // sendBeacon is how trackers report on their way out of a page, and it
+        // returns false when the request was refused rather than queued.
+        const beacon = navigator.sendBeacon;
+        if (typeof beacon === 'function') {
+          navigator.sendBeacon = function (url) {
+            const queued = beacon.apply(navigator, arguments);
+            if (!queued) { note(String(url), 'beacon', false); }
+            return queued;
+          };
+        }
       }
 
       // ------------------------------------------------------------------

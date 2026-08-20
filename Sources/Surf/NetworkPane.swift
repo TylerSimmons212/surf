@@ -97,39 +97,48 @@ struct NetworkPane: View {
         .padding(.vertical, DevToolsTheme.barVertical)
     }
 
+    /// One native segmented control, because the interaction was always
+    /// exclusive: a chip narrowed to just that kind and "All" went back —
+    /// which is a Picker wearing a costume. The system control gets the
+    /// selected treatment (Liquid Glass included) and announces itself
+    /// properly, and the counts stay in the labels.
     private var filters: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 4) {
-                KindChip(
-                    label: "All",
-                    count: session.network.count,
-                    isOn: session.networkKinds.count == NetworkKind.allCases.count
-                ) {
-                    session.networkKinds = Set(NetworkKind.allCases)
-                }
-
+        HStack {
+            Picker("Kind", selection: kindSelection) {
+                Text(countedLabel("All", session.network.count)).tag(NetworkKind?.none)
                 ForEach(NetworkKind.allCases) { kind in
                     let count = session.networkCounts[kind] ?? 0
                     if count > 0 {
-                        KindChip(
-                            label: kind.label,
-                            count: count,
-                            isOn: session.networkKinds == [kind]
-                        ) {
-                            // Clicking a chip narrows to just that kind, which
-                            // is what people want nine times in ten; All goes
-                            // back.
-                            session.networkKinds = session.networkKinds == [kind]
-                                ? Set(NetworkKind.allCases) : [kind]
-                        }
+                        Text(countedLabel(kind.label, count)).tag(NetworkKind?.some(kind))
                     }
                 }
             }
-            .padding(.horizontal, DevToolsTheme.barInset)
-            .padding(.vertical, 4)
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 0)
         }
-        .frame(height: 26)
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, 4)
     }
+
+    /// The set collapses to what the UI can say: everything, or one kind.
+    private var kindSelection: Binding<NetworkKind?> {
+        Binding(
+            get: {
+                session.networkKinds.count == 1 ? session.networkKinds.first : nil
+            },
+            set: { kind in
+                session.networkKinds = kind.map { [$0] } ?? Set(NetworkKind.allCases)
+            }
+        )
+    }
+
+    private func countedLabel(_ label: String, _ count: Int) -> String {
+        count > 0 ? "\(label) \(count)" : label
+    }
+
 
     // MARK: - List
 
@@ -231,31 +240,6 @@ enum NetworkColumns {
     static let time: CGFloat = 62
 }
 
-private struct KindChip: View {
-    let label: String
-    let count: Int
-    let isOn: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 3) {
-                Text(label)
-                Text("\(count)")
-                    .font(.system(size: 9).monospacedDigit())
-                    .foregroundStyle(.tertiary)
-            }
-            .font(DevToolsTheme.caption)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background {
-                RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .fill(isOn ? Color.accentColor.opacity(0.18) : DevToolsTheme.hoverFill)
-            }
-        }
-        .buttonStyle(.plain)
-    }
-}
 
 private struct RequestRow: View {
     let request: NetworkRequest

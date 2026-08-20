@@ -24,6 +24,17 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domScrollIntoView = "DOM.scrollIntoView"
     case domWatch = "DOM.watch"
     case domPathToNode = "DOM.pathToNode"
+    /// Adds or removes one class on one element.
+    case domSetClass = "DOM.setClass"
+    /// Sets or removes one attribute on one element.
+    case domSetAttribute = "DOM.setAttribute"
+    /// Rewrites a text or comment node's contents.
+    case domSetText = "DOM.setText"
+    /// Which fonts the element's text actually renders in.
+    case cssFontsForNode = "CSS.fontsForNode"
+    /// Simulates :hover and friends on one element, by selector rewriting —
+    /// WebKit exposes no engine hook for forcing element state.
+    case cssForceState = "CSS.forceState"
     case domAck = "DOM.ack"
 
     case cssGetMatchedStyles = "CSS.getMatchedStyles"
@@ -38,6 +49,13 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// Locates rules with no element involved, for replaying edits after a
     /// reload has cleared the selection.
     case cssFindRules = "CSS.findRules"
+    /// The engine's own property list, asked of the engine. A bundled list
+    /// would drift from the WebKit actually running; enumerating one computed
+    /// style declaration answers with exactly the properties this build
+    /// understands, which is the only correct completion source.
+    case cssPropertyNames = "CSS.propertyNames"
+    /// Creates an empty rule in Surf's own stylesheet on the page.
+    case cssAddRule = "CSS.addRule"
 
     case storageRead = "Storage.read"
     case storageWrite = "Storage.write"
@@ -50,6 +68,8 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case performanceWatchLayout = "Performance.watchLayout"
 
     case overlaySetInspectMode = "Overlay.setInspectMode"
+    /// Arms the grid/flex overlay on one element, or clears it with no node.
+    case overlaySetLayout = "Overlay.setLayout"
 
     case networkDrain = "Network.drain"
     case networkSetLive = "Network.setLive"
@@ -90,13 +110,15 @@ extension DevToolsMethod {
         switch self {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
-             .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
+             .domScrollIntoView, .domWatch, .domPathToNode, .domAck, .domSetClass,
+             .domSetAttribute, .domSetText,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
-             .cssAddRecoveredSheet, .cssFindRules,
+             .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames, .cssAddRule,
+             .cssForceState, .cssFontsForNode,
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
              .performanceRead, .performanceWatchLayout,
-             .overlaySetInspectMode:
+             .overlaySetInspectMode, .overlaySetLayout:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
              .runtimeCompletions,
@@ -132,6 +154,9 @@ public enum DevToolsEvent: Sendable, Equatable {
     /// A watched element moved — scrolled, resized, or animated. Reported from
     /// the page rather than polled, so the highlight tracks without lag.
     case boxChanged(nodeId: DOMNodeID, box: BoxModel?)
+    /// The armed layout overlay's geometry — fresh on arming, and again
+    /// whenever scroll or resize moves it. Nil means it cleared.
+    case layoutChanged(LayoutOverlay?)
     /// Requests observed, batched. `dropped` counts records the agent had to
     /// discard to stay bounded.
     case networkBatch(
@@ -192,6 +217,8 @@ public enum DevToolsProtocol {
             )
         case "network.overflowed":
             return .networkOverflowed
+        case "overlay.layoutChanged":
+            return .layoutChanged(DOMWire.decodeLayoutOverlay(dict["layout"]))
         case "dom.boxChanged":
             guard let nodeId = dict["nodeId"] as? Int else { return nil }
             return .boxChanged(nodeId: nodeId, box: DOMWire.decodeBox(dict["box"]))

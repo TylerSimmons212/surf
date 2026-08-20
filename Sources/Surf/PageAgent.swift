@@ -98,6 +98,36 @@ final class PageAgent: NSObject {
         return try PageProtocol.decode(json, as: Value.self, method: method.rawValue)
     }
 
+    /// Runs a method and hands back the raw reply envelope, undecoded.
+    ///
+    /// For the callers whose replies are heavy — a theme survey is thousands
+    /// of colour observations and a handful of base64 pixel buffers — so the
+    /// JSON decode can happen off the main actor, where `call` cannot put it.
+    /// Nil folds together the frame being gone and the runtime never having
+    /// installed, exactly as `value` does for its callers.
+    func rawReply(
+        _ method: PageProtocol.Method,
+        _ params: [String: Any] = [:],
+        in frame: WKFrameInfo? = nil
+    ) async -> String? {
+        precondition(
+            method.world == world,
+            "\(method.rawValue) belongs to the \(method.world.rawValue) world, not \(world.rawValue)"
+        )
+        guard let webView else { return nil }
+        let reply = try? await webView.callAsyncJavaScript(
+            Self.dispatchSource,
+            arguments: [
+                "handle": PageRuntime.handle,
+                "method": method.rawValue,
+                "params": params,
+            ],
+            in: frame,
+            contentWorld: world.contentWorld
+        )
+        return reply as? String
+    }
+
     /// Runs a method whose answer is only whether it worked.
     ///
     /// Failures are logged rather than thrown: these are all fire-and-forget

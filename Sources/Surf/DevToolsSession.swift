@@ -57,6 +57,10 @@ final class DevToolsSession: Identifiable {
         ///
         /// Separate from `allCases`, which stays in declaration order because
         /// `SURF_DEVTOOLS` parses a raw value and tests index it.
+        /// Panes whose whole content is about the selected element — so a
+        /// pick can land here rather than being redirected.
+        var showsSelectedElement: Bool { self == .elements || self == .styles }
+
         static let groups: [[Pane]] = [
             [.elements, .styles],
             [.network, .console],
@@ -271,6 +275,39 @@ final class DevToolsSession: Identifiable {
         bridge.send(.domWatch, ["nodeId": id])
         loadStyles()
         await refreshBox()
+        await refreshFonts()
+    }
+
+    private(set) var elementFonts: FontReport?
+
+    private func refreshFonts() async {
+        guard let selectedNode else { elementFonts = nil; return }
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssFontsForNode, ["nodeId": selectedNode]),
+              issued == generation
+        else { return }
+        elementFonts = reply["error"] == nil ? FontReport.decode(reply) : nil
+    }
+
+    /// Writes one box-model measurement — `margin-top: 12px` — as an inline
+    /// style on the selected element, and re-reads the box so the diagram
+    /// answers with what the engine actually did rather than what was asked.
+    ///
+    /// Rides Phase 1 entirely: the style-attribute rule always exists now
+    /// (the agent emits it even when empty, which was done for the add-row
+    /// and pays off again here), so this is an edit when the property is
+    /// already inline and an add when it isn't.
+    func setBoxValue(_ property: String, _ value: String) async {
+        guard let inline = styles?.rules.first(where: {
+            $0.isStyleAttribute && !$0.isInherited
+        }) else { return }
+
+        if let existing = inline.declarations.first(where: { $0.name == property }) {
+            await setValue(value, of: existing, in: inline)
+        } else {
+            _ = await addDeclaration(property, value, to: inline)
+        }
+        await refreshBox()
     }
 
     private func refreshBox() async {
@@ -399,7 +436,8 @@ final class DevToolsSession: Identifiable {
         styles = CSSCascade.resolve(
             rules: stylePayload.rules,
             layerOrder: stylePayload.layerOrder,
-            pseudoElement: stylePseudo
+            pseudoElement: stylePseudo,
+            context: stylePayload.context
         )
     }
 
@@ -471,10 +509,15 @@ final class DevToolsSession: Identifiable {
         )
     }
 
-    func setValue(_ value: String, of declaration: CSSDeclaration, in rule: MatchedRule) async {
+    func setValue(
+        _ value: String,
+        of declaration: CSSDeclaration,
+        in rule: MatchedRule,
+        live: Bool = false
+    ) async {
         var edited = declaration
         edited.value = value.trimmingCharacters(in: .whitespaces)
-        await apply(edited, replacing: declaration, in: rule)
+        await apply(edited, replacing: declaration, in: rule, live: live)
     }
 
     /// Puts the collected edits back after a reload.
@@ -620,6 +663,271 @@ final class DevToolsSession: Identifiable {
         await apply(edited, replacing: declaration, in: rule, live: live)
     }
 
+    /// The engine's own property vocabulary, fetched once per session.
+    ///
+    /// Once, not per document: the list is a fact about the WebKit build, not
+    /// about any page. Empty until someone actually opens an add-row — most
+    /// sessions never pay for it.
+    private(set) var cssPropertyNames: [String] = []
+
+    /// The states being simulated, and on which element. One element at a
+    /// time, matching the agent's stamp — and kept even when the selection
+    /// moves, because the workflow is "force hover on the menu, then inspect
+    /// the submenu it revealed".
+    private(set) var forcedStates: Set<String> = []
+    private(set) var forcedNode: DOMNodeID?
+
+    /// The states the strip offers. `target` and `visited` are parsed but not
+    /// offered: target requires a matching fragment to be honest, and visited
+    /// styling is privacy-restricted to the point that forcing it shows
+    /// nothing getComputedStyle will admit to.
+    static let forcibleStates = ["hover", "active", "focus", "focus-visible", "focus-within"]
+
+    func setForcedState(_ state: String, enabled: Bool) async {
+        guard let selectedNode else { return }
+        // Forcing on a new element implicitly releases the old one — the
+        // agent moves the stamp — so the local set starts over too.
+        var states = selectedNode == forcedNode ? forcedStates : []
+        if enabled { states.insert(state) } else { states.remove(state) }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(
+            .cssForceState, ["nodeId": selectedNode, "states": Array(states)]
+        ), issued == generation else { return }
+        if let failure = reply["error"] as? String {
+            debugLog("force state failed: \(failure)")
+            return
+        }
+        forcedStates = states
+        forcedNode = states.isEmpty ? nil : selectedNode
+        loadStyles()
+    }
+
+    /// The grid/flex overlay: which node it is armed on, and the geometry
+    /// the page last reported for it. Geometry arrives by event — fresh on
+    /// arming and again on scroll and resize — never by polling.
+    private(set) var layoutOverlayNode: DOMNodeID?
+    private(set) var layoutOverlay: LayoutOverlay?
+
+    /// Arms the overlay on a node, or disarms it when asked for the node it
+    /// is already on — a badge is a toggle, not a command.
+    func toggleLayoutOverlay(_ nodeId: DOMNodeID) {
+        let next: DOMNodeID? = layoutOverlayNode == nodeId ? nil : nodeId
+        layoutOverlayNode = next
+        if next == nil { layoutOverlay = nil }
+        var params: [String: any Sendable] = [:]
+        if let next { params["nodeId"] = next }
+        bridge.send(.overlaySetLayout, params)
+    }
+
+    /// The row being edited in the Elements tree, if any. Set by Return on
+    /// the selection or the row's context menu; the row view watches it and
+    /// swaps its markup for a field.
+    var editingNode: DOMNodeID?
+
+    /// Applies an edited attribute line to an element: parse, diff against
+    /// what it had, and write only what changed — every set echoes back
+    /// through the mutation observer, so writing the unchanged ones would
+    /// storm the tree with non-changes. Returns false when the text refuses
+    /// to parse (unclosed quote, trailing =), so the editor can say so
+    /// instead of guessing.
+    func applyAttributeText(_ text: String, to nodeId: DOMNodeID) async -> Bool {
+        guard let node = tree[nodeId] else { return false }
+        guard let parsed = DOMAttributeText.parse(text) else { return false }
+
+        let old = node.attributes.map {
+            DOMAttributeText.Attribute(name: $0.name, value: $0.value)
+        }
+        let issued = generation
+        for change in DOMAttributeText.diff(old: old, new: parsed) {
+            let params: [String: any Sendable] = switch change {
+            case .set(let name, let value):
+                ["nodeId": nodeId, "name": name, "value": value]
+            case .remove(let name):
+                ["nodeId": nodeId, "name": name, "remove": true]
+            }
+            guard let reply = try? await bridge.call(.domSetAttribute, params),
+                  issued == generation
+            else { return false }
+            if let failure = reply["error"] as? String {
+                debugLog("attribute edit failed: \(failure)")
+                return false
+            }
+        }
+        // Class or style may have been among the edits; what matches changed.
+        loadStyles()
+        return true
+    }
+
+    func setText(_ value: String, on nodeId: DOMNodeID) async {
+        let issued = generation
+        guard let reply = try? await bridge.call(
+            .domSetText, ["nodeId": nodeId, "value": value]
+        ), issued == generation else { return }
+        if let failure = reply["error"] as? String {
+            debugLog("text edit failed: \(failure)")
+        }
+    }
+
+    /// Classes toggled off through the strip, per node — kept so a chip
+    /// stays on screen unchecked after its class is removed from the element.
+    /// Without this the class would vanish from the attribute, therefore from
+    /// the strip, and switching it back on would mean retyping it.
+    private(set) var removedClasses: [DOMNodeID: Set<String>] = [:]
+
+    /// What the class strip shows for the selected element: the classes it
+    /// has, plus the ones this panel took away — each with its current state.
+    var elementClasses: [(name: String, isOn: Bool)] {
+        guard let selectedNode, let node = tree[selectedNode],
+              node.nodeType == .element
+        else { return [] }
+        let current = (node.attributes.first { $0.name.lowercased() == "class" }?.value ?? "")
+            .split(separator: " ").map(String.init)
+        let removed = removedClasses[selectedNode] ?? []
+        var seen = Set<String>()
+        var out: [(String, Bool)] = []
+        for name in current where seen.insert(name).inserted {
+            out.append((name, true))
+        }
+        for name in removed.sorted() where seen.insert(name).inserted {
+            out.append((name, false))
+        }
+        return out
+    }
+
+    /// Adds or removes a class on the selected element, and refreshes what
+    /// that changed: the rules that match are different now.
+    func setClass(_ name: String, enabled: Bool) async {
+        guard let selectedNode else { return }
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(
+            .domSetClass, ["nodeId": selectedNode, "name": name, "on": enabled]
+        ), issued == generation else { return }
+        if let failure = reply["error"] as? String {
+            debugLog("set class failed: \(failure)")
+            return
+        }
+        if enabled {
+            removedClasses[selectedNode]?.remove(name)
+        } else {
+            removedClasses[selectedNode, default: []].insert(name)
+        }
+        // The attribute change comes back through DOM.watch on its own; the
+        // styles need asking for, since a different set of rules matches now.
+        loadStyles()
+    }
+
+    /// Selectors worth offering for a new rule on the selected element —
+    /// generated from its tag, id and classes, so every one is valid and
+    /// matches by construction.
+    var newRuleSelectors: [String] {
+        guard let selectedNode, let node = tree[selectedNode],
+              node.nodeType == .element
+        else { return [] }
+        let attributes = Dictionary(
+            uniqueKeysWithValues: node.attributes.map { ($0.name.lowercased(), $0.value) }
+        )
+        return CSSSelectorSuggestion.candidates(
+            tag: node.nodeName,
+            id: attributes["id"],
+            classes: (attributes["class"] ?? "").split(separator: " ").map(String.init)
+        )
+    }
+
+    func loadPropertyNamesIfNeeded() {
+        guard cssPropertyNames.isEmpty else { return }
+        Task { @MainActor in
+            guard let reply = try? await bridge.call(.cssPropertyNames, [:]) else { return }
+            cssPropertyNames = reply["names"] as? [String] ?? []
+        }
+    }
+
+    /// Creates an empty rule for a selector, in Surf's own sheet on the page.
+    ///
+    /// The rule arrives empty and stays visible because it is flagged as the
+    /// inspector's (`isInspectorRule`); its declarations then come through
+    /// `addDeclaration` like anyone else's. Nothing is recorded in the
+    /// changeset here — an empty rule *is* no change, and the declarations
+    /// record themselves as they land.
+    func addRule(_ selector: String) async -> Bool {
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssAddRule, ["selector": selector]),
+              issued == generation
+        else { return false }
+        if let failure = reply["error"] as? String {
+            debugLog("add rule failed: \(failure)")
+            return false
+        }
+        loadStyles()
+        return true
+    }
+
+    /// Appends a brand-new declaration to a rule — the other half of editing.
+    ///
+    /// Returns whether the engine accepted it, so the add-row can complain in
+    /// place instead of routing through `rejectedEdit`, which is keyed by the
+    /// index of a declaration that, on failure, never came to exist.
+    func addDeclaration(
+        _ name: String, _ value: String, to rule: MatchedRule
+    ) async -> Bool {
+        let name = name.trimmingCharacters(in: .whitespaces).lowercased()
+        let value = value.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !value.isEmpty else { return false }
+
+        // Recomposed exactly like an edit: the whole block, in authored order,
+        // with the new line at the end — which is also where the cascade puts
+        // its weight, so the addition wins against anything earlier in the
+        // same rule, which is what "I just typed this" should mean.
+        let text = (rule.declarations
+            .filter { disabled[DeclarationRef(ruleId: rule.id, index: $0.index)] == nil }
+            .map(\.text)
+            + ["\(name): \(value)"])
+            .joined(separator: "; ")
+
+        var params: [String: any Sendable] = ["text": text, "probe": name]
+        if rule.isStyleAttribute {
+            params["nodeId"] = -rule.id
+        } else {
+            params["ruleId"] = rule.id
+        }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssSetRuleText, params),
+              issued == generation
+        else { return false }
+
+        if let failure = reply["error"] as? String {
+            debugLog("add declaration failed: \(failure) — \(name) on rule \(rule.id)")
+            return false
+        }
+        // Whether *this* line survived, asked of the engine by name. The
+        // `applied` list is no use here: it enumerates longhands, so a
+        // successful `margin` add reports margin-top and never `margin` —
+        // and a declaration that never existed has no longhand list to
+        // compare against. `getPropertyValue` answers for both kinds.
+        guard let probe = reply["probe"] as? String, !probe.isEmpty else {
+            debugLog("add declaration rejected by engine: \(name): \(value)")
+            return false
+        }
+
+        changeset.record(StyleChange(
+            ruleId: rule.id,
+            selector: rule.isStyleAttribute ? "element.style" : rule.selector,
+            sourceLabel: rule.isStyleAttribute ? "element" : rule.sourceLabel,
+            layer: rule.layer,
+            conditions: rule.conditions,
+            property: name,
+            original: nil,
+            updated: value
+        ))
+        editedRuleIds.insert(rule.id)
+        loadStyles()
+        return true
+    }
+
     func setImportant(_ important: Bool, of declaration: CSSDeclaration, in rule: MatchedRule) async {
         var edited = declaration
         edited.isImportant = important
@@ -682,10 +990,32 @@ final class DevToolsSession: Identifiable {
         // A value the engine can't parse is dropped without complaint. Catching
         // it here is the difference between "that isn't a colour" and an edit
         // that appears to have worked and didn't.
-        let applied = Set(reply["applied"] as? [String] ?? [])
-        if enabled, !applied.isEmpty,
-           !edited.longhands.contains(where: { applied.contains($0) }) {
+        // The agent could not find what it was asked to change: a stale rule
+        // id, a frame that navigated under us, a stylesheet that went away.
+        //
+        // This used to read as success. `applied` comes back absent, so the
+        // emptiness check below passes, the edit is recorded into the
+        // changeset and drawn as though it landed — while the page never
+        // moved. An edit that silently does nothing is the worst failure this
+        // pane can have, because you go and look for the bug somewhere else.
+        if let failure = reply["error"] as? String {
+            debugLog("style edit failed: \(failure) — \(original.name) on rule \(rule.id)")
             rejectedEdit = ref
+            return
+        }
+
+        let applied = Set(reply["applied"] as? [String] ?? [])
+        debugLog(
+            "style edit: \(original.name)=\(edited.value) rule=\(rule.id) "
+                + "live=\(live) applied=\(applied.count) props"
+        )
+        let rejected = enabled && !applied.isEmpty
+            && !edited.longhands.contains(where: { applied.contains($0) })
+        if rejected {
+            // Only complain once the edit is finished. Typing "1p" on the way
+            // to "12px" is not a mistake, and flashing "not a value color
+            // accepts" at every keystroke would make live editing unusable.
+            if !live { rejectedEdit = ref }
         } else {
             changeset.record(StyleChange(
                 ruleId: rule.id,
@@ -1678,8 +2008,14 @@ final class DevToolsSession: Identifiable {
         // Every id the agent handed out belonged to the old document.
         tree = DOMTree()
         visibleRows = []
+        removedClasses = [:]
+        layoutOverlayNode = nil
+        layoutOverlay = nil
+        forcedStates = []
+        forcedNode = nil
         selectedNode = nil
         selectedBox = nil
+        elementFonts = nil
         hoveredNode = nil
         hoveredBox = nil
         styleTask?.cancel()
@@ -1801,6 +2137,12 @@ final class DevToolsSession: Identifiable {
             hoveredNode = nodeId
             hoveredBox = box
 
+        case .layoutChanged(let overlay):
+            // Only if it's still the node we armed — a report racing a toggle
+            // would resurrect an overlay that was just dismissed.
+            guard overlay?.nodeId == layoutOverlayNode || overlay == nil else { return }
+            layoutOverlay = overlay
+
         case .boxChanged(let nodeId, let box):
             // Ignored unless it's still the element we asked about — a reply
             // for a node selected two clicks ago would drag the highlight back.
@@ -1811,7 +2153,15 @@ final class DevToolsSession: Identifiable {
             isPicking = false
             hoveredNode = nil
             hoveredBox = nil
-            pane = .elements
+            // Answer in the pane that asked.
+            //
+            // This used to switch to Elements unconditionally, which made the
+            // picker useless from Styles: arm it, click a heading, and land in
+            // the DOM tree having to navigate back to the pane you were
+            // reading. Both panes are about the selected element, so either is
+            // a valid place to land — only a pane that has nothing to do with
+            // the selection needs redirecting.
+            if !pane.showsSelectedElement { pane = .elements }
             revealAndSelect(nodeId)
             // The result is in the panel, so the panel comes forward. The page
             // was fronted to receive the click; that job is done.
