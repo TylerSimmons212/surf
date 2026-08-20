@@ -102,4 +102,37 @@ public struct Sticker: Codable, Equatable, Sendable, Identifiable {
     public static func removing(_ id: UUID, from list: [Sticker]) -> [Sticker] {
         list.filter { $0.id != id }
     }
+
+    /// The shelf with `id` moved into `targetID`'s place, or nil when nothing
+    /// would change.
+    ///
+    /// Remove-then-insert at the target's index, the same as `Island.move`, so
+    /// a sticker dragged rightwards lands *after* the one it was dropped on and
+    /// leftwards lands before it. Both read as "it takes that slot", which is
+    /// what the pointer is pointing at.
+    ///
+    /// Nil rather than an unchanged copy, because the caller's question is "did
+    /// this drag move anything", and answering it by comparing arrays would
+    /// make every crossing of a row a full equality check.
+    public static func moving(
+        _ id: UUID, before targetID: UUID, in list: [Sticker]
+    ) -> [Sticker]? {
+        guard let from = list.firstIndex(where: { $0.id == id }),
+              let to = list.firstIndex(where: { $0.id == targetID }),
+              from != to
+        else { return nil }
+        var moved = list
+        moved.insert(moved.remove(at: from), at: to)
+        return moved
+    }
+
+    /// The shelf with `id` moved to the end, or nil when it is already there.
+    public static func movingToEnd(_ id: UUID, in list: [Sticker]) -> [Sticker]? {
+        guard let from = list.firstIndex(where: { $0.id == id }),
+              from != list.count - 1
+        else { return nil }
+        var moved = list
+        moved.append(moved.remove(at: from))
+        return moved
+    }
 }

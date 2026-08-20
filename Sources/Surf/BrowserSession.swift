@@ -620,6 +620,16 @@ final class BrowserSession {
         scheduleSave()
     }
 
+    /// Takes the order a finished drag settled on.
+    ///
+    /// One way in, because a drag proposes an order rather than editing this
+    /// one as it goes — so there is nothing to undo when a drag ends without
+    /// being dropped, which is an ending macOS gives no notice of.
+    func setStickerOrder(_ order: [Sticker], in island: Island) {
+        island.replaceStickers(with: order)
+        scheduleSave()
+    }
+
     /// The live tab a sticker owns, if it has opened one.
     func tab(for sticker: Sticker) -> Tab? {
         currentIsland.tabs.first { $0.stickerID == sticker.id }
