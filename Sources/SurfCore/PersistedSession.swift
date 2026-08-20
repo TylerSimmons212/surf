@@ -14,17 +14,27 @@ public struct PersistedTab: Codable, Equatable, Sendable {
     /// decoder reaches for `decodeIfPresent` and a session written before
     /// groups existed still reads.
     public var groupID: UUID?
+    /// The sticker this tab belongs to, if any.
+    ///
+    /// A sticker's tab is a tab in every respect except one: it is not listed,
+    /// because the sticker on the shelf *is* its row. Carrying that as a field
+    /// on the tab — exactly as `groupID` is — means selection, hibernation,
+    /// media and persistence all keep working on it unchanged, and only the
+    /// sidebar's list has to know to leave it out.
+    public var stickerID: UUID?
 
     public init(
         url: String?,
         title: String,
         interactionState: Data? = nil,
-        groupID: UUID? = nil
+        groupID: UUID? = nil,
+        stickerID: UUID? = nil
     ) {
         self.url = url
         self.title = title
         self.interactionState = interactionState
         self.groupID = groupID
+        self.stickerID = stickerID
     }
 
     /// A tab sitting on the home screen has nothing worth restoring.

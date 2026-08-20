@@ -69,25 +69,10 @@ struct StickerTests {
         #expect(abs(tilt) <= 4.0)
     }
 
-    @Test("Shine angle is deterministic and stays near the diagonal")
-    func shineAngle() {
-        let sticker = Sticker(url: "https://example.com", title: "")!
-        #expect(sticker.shineAngleDegrees == sticker.shineAngleDegrees)
-        #expect((14.0...38.0).contains(sticker.shineAngleDegrees))
-        #expect((0.0...1.0).contains(sticker.shineOffset))
-    }
-
-    @Test("Tilt and shine vary independently across a shelf")
+    @Test("Tilt varies across a shelf")
     func appearanceVaries() {
-        // Salted separately, so neither is a function of the other — a shelf
-        // where they moved together would read as one printed sheet.
         let shelf = (0..<40).map { Sticker(url: "https://example.com/\($0)", title: "")! }
-        #expect(Set(shelf.map(\.shineAngleDegrees)).count > 8)
         #expect(Set(shelf.map(\.tiltDegrees)).count > 8)
-
-        let byTilt = shelf.sorted { $0.tiltDegrees < $1.tiltDegrees }
-        let byShine = shelf.sorted { $0.shineAngleDegrees < $1.shineAngleDegrees }
-        #expect(byTilt.map(\.id) != byShine.map(\.id))
     }
 
     @Test("Fallback hue is stable per host and within range")
@@ -125,6 +110,46 @@ struct StickerTests {
         let data = try JSONEncoder().encode(island)
         let decoded = try JSONDecoder().decode(PersistedIsland.self, from: data)
         #expect(decoded.stickers == [sticker])
+    }
+
+    @Test("A tab remembers the sticker it belongs to across a save")
+    func tabRemembersItsSticker() throws {
+        let stickerID = UUID()
+        let tab = PersistedTab(url: "https://example.com", title: "Example", stickerID: stickerID)
+        let decoded = try JSONDecoder().decode(
+            PersistedTab.self, from: JSONEncoder().encode(tab)
+        )
+        #expect(decoded.stickerID == stickerID)
+    }
+
+    @Test("A tab written before stickers owned tabs decodes as an ordinary one")
+    func legacyTabHasNoSticker() throws {
+        let json = #"{"url":"https://example.com","title":"Example"}"#
+        let tab = try JSONDecoder().decode(PersistedTab.self, from: Data(json.utf8))
+        #expect(tab.stickerID == nil)
+    }
+
+    @Test("A tab whose sticker is gone is handed back to the list")
+    func orphanedStickerTabIsFreed() {
+        // Otherwise it is an open tab with no row and no sticker to click:
+        // invisible in every surface, and still holding a web content process.
+        var island = PersistedIsland.home()
+        island.stickers = []
+        island.tabs = [
+            PersistedTab(url: "https://example.com", title: "Example", stickerID: UUID())
+        ]
+        #expect(island.sanitized().tabs.first?.stickerID == nil)
+    }
+
+    @Test("A tab whose sticker is still pinned keeps its place off the list")
+    func liveStickerTabKeepsItsOwner() {
+        let sticker = Sticker(url: "https://example.com", title: "Example")!
+        var island = PersistedIsland.home()
+        island.stickers = [sticker]
+        island.tabs = [
+            PersistedTab(url: sticker.url, title: sticker.title, stickerID: sticker.id)
+        ]
+        #expect(island.sanitized().tabs.first?.stickerID == sticker.id)
     }
 
     @Test("A lone home island with stickers but no tabs survives sanitizing")

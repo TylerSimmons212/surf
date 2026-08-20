@@ -5,8 +5,11 @@ import SwiftUI
 /// The grid of pinned-site stickers at the top of the sidebar.
 ///
 /// Its own `View` struct, per the rule at the top of `Sidebar`: this reads the
-/// current island's sticker list and nothing else, so a tab loading, retitling,
-/// or reporting progress never redraws the shelf.
+/// current island's sticker list and the selection, so a tab loading,
+/// retitling, or reporting progress never redraws the shelf. The selection is
+/// unavoidable — a sticker is a tab, so it has to show when it is the one on
+/// screen — but `showingStickerIDs` is built to answer that without touching
+/// the tab array.
 struct StickerShelf: View {
     let session: BrowserSession
 
@@ -23,6 +26,7 @@ struct StickerShelf: View {
     var body: some View {
         let island = session.currentIsland
         let stickers = island.stickers
+        let showing = session.showingStickerIDs
 
         // Always in the tree, even empty — `FlowLayout` collapses to zero
         // height with no children. Wrapping this in `if !stickers.isEmpty`
@@ -32,6 +36,7 @@ struct StickerShelf: View {
             ForEach(stickers) { sticker in
                 StickerTile(
                     sticker: sticker,
+                    isShowing: showing.contains(sticker.id),
                     onOpen: { session.open(sticker) },
                     onPeel: {
                         withAnimation(Self.peel) {
@@ -104,6 +109,9 @@ extension AnyTransition {
 /// launches). Hovering straightens and lifts it, like a thumb testing a corner.
 private struct StickerTile: View {
     let sticker: Sticker
+    /// Whether this sticker's tab is the page on screen. A sticker is a tab,
+    /// so it needs the same "you are here" the tab rows get.
+    let isShowing: Bool
     let onOpen: () -> Void
     let onPeel: () -> Void
 
@@ -140,13 +148,6 @@ private struct StickerTile: View {
                 backing(plate: press.plate.map(Color.init), wash: wash)
                 art(icon)
             }
-            .overlay {
-                shine(
-                    onLuminance: press.vinylLuminance(
-                        hasIcon: icon != nil, fallbackHue: sticker.fallbackHue
-                    )
-                )
-            }
             .compositingGroup()
             // The peel. As `peelProgress` runs 0→1 the fold line sweeps from
             // the bottom-trailing corner across the whole sticker: the art is
@@ -171,6 +172,17 @@ private struct StickerTile: View {
             .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
         .buttonStyle(.plain)
+        .overlay {
+            if isShowing {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    // Held off the edge, so the ring reads against a plate of
+                    // any colour instead of blending into a dark one.
+                    .padding(-3)
+                    .transition(.opacity.combined(with: .scale(scale: 0.86)))
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isShowing)
         .rotationEffect(.degrees(isHovering ? 0 : sticker.tiltDegrees))
         .scaleEffect(isPressed ? 0.92 : (isHovering ? 1.1 : 1))
         // A lifted sticker throws a longer, softer shadow than one laying flat.
@@ -218,55 +230,6 @@ private struct StickerTile: View {
             try? await Task.sleep(for: .seconds(0.52))
             onPeel()
         }
-    }
-
-    /// The gloss: a streak of light laying across the vinyl, which sweeps to
-    /// the far corner as the sticker lifts under the pointer. (After 5t3ph's
-    /// shine band.)
-    ///
-    /// Two things vary. The **angle and placement** are the sticker's own, so a
-    /// shelf doesn't look printed from one plate — see `Sticker.shineAngle`.
-    ///
-    /// The **make-up of the streak** varies with what it's laying on, because a
-    /// reflection is only visible as a difference from its surroundings. White
-    /// light on white vinyl is nothing at all, so on a light sticker the gloss
-    /// is read from its darker shoulder — the dimmer surround beside the
-    /// reflection — while on a dark one the bright core does the work and has
-    /// to be held well back, since the same white that vanishes on white vinyl
-    /// glares on near-black.
-    private func shine(onLuminance luminance: Double) -> some View {
-        let core = 0.10 + 0.30 * (1 - luminance)
-        let shoulder = 0.11 * luminance
-
-        return Color.clear
-            .overlay {
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: .black.opacity(shoulder), location: 0.34),
-                                .init(color: .white.opacity(core), location: 0.6),
-                                .init(color: .clear, location: 1),
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: 13, height: StickerShelf.tileSize * 2.2)
-                    .rotationEffect(.degrees(sticker.shineAngleDegrees))
-                    // Rests somewhere across the face, and sweeps to the far
-                    // edge when the sticker lifts.
-                    .offset(x: restingShineOffset + (isHovering ? 26 : 0))
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .allowsHitTesting(false)
-    }
-
-    /// Where the streak sits at rest — varied per sticker, and always starting
-    /// left of centre so there is room to sweep across on hover.
-    private var restingShineOffset: CGFloat {
-        -17 + CGFloat(sticker.shineOffset) * 9
     }
 
     /// The vinyl, with the icon's ink printed right across it — one surface,

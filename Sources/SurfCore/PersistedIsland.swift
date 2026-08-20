@@ -108,8 +108,20 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
             kept.append(tab)
         }
 
+        // A tab naming a sticker that isn't on the shelf is handed back to the
+        // list. Its row was being withheld on the sticker's behalf, and with no
+        // sticker to click there is nothing left that could reach it — an open
+        // tab, holding a web content process, invisible in every surface. The
+        // mirror of the group pruning below: there, the container outlived its
+        // members; here, a member outlived its container.
+        let pinned = Set(stickers?.map(\.id) ?? [])
         var result = self
-        result.tabs = kept
+        result.tabs = kept.map { tab in
+            guard let sticker = tab.stickerID, !pinned.contains(sticker) else { return tab }
+            var freed = tab
+            freed.stickerID = nil
+            return freed
+        }
         result.selectedIndex = newSelection ?? 0
         // A group whose every tab was just dropped has nothing left to name.
         // Groups are defined by their members, so an empty one isn't an empty
