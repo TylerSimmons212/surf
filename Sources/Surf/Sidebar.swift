@@ -69,6 +69,7 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             SidebarNavigationBar(session: session, isPinned: $isPinned, hold: hold)
+            StickerShelf(session: session)
             tabList
             SidebarMediaSection(session: session)
             IslandStrip(session: session, hold: hold)
@@ -274,7 +275,22 @@ struct Sidebar: View {
             drag: dragContext,
             session: session
         ))
-        .contextMenu { TabRowMenu(session: session, tab: tab) }
+        // One menu for the row, and it has to be this one: a `contextMenu` on
+        // `TabRow` itself would be the inner of two nested menus and win
+        // outright, leaving everything below unreachable by right-click.
+        .contextMenu {
+            TabRowMenu(
+                session: session,
+                tab: tab,
+                // Wrapped at the mutation, because that is what drives the
+                // new tile's slap-on transition.
+                onPin: {
+                    withAnimation(StickerShelf.slap) {
+                        session.pinSticker(for: tab)
+                    }
+                }
+            )
+        }
     }
 
     private var newTabButton: some View {
@@ -576,8 +592,21 @@ private struct GroupHeaderDropDelegate: DropDelegate {
 private struct TabRowMenu: View {
     let session: BrowserSession
     let tab: Tab
+    let onPin: () -> Void
 
     var body: some View {
+        // A home tab has no page to pin or copy, so both items would only ever
+        // silently do nothing there.
+        if tab.mode == .browsing {
+            Button(action: onPin) {
+                Label("Add Sticker", systemImage: "star.square.on.square")
+            }
+            Button(action: copyURL) {
+                Label("Copy Link", systemImage: "link")
+            }
+            Divider()
+        }
+
         Button("New Group with This Tab") { session.createGroup(with: tab) }
 
         // Only worth offering when there is somewhere else to put it.
@@ -596,7 +625,16 @@ private struct TabRowMenu: View {
 
         Divider()
 
-        Button("Close Tab") { session.close(tab) }
+        Button(role: .destructive) { session.close(tab) } label: {
+            Label("Close Tab", systemImage: "xmark")
+        }
+    }
+
+    private func copyURL() {
+        let url = tab.currentURL ?? tab.addressText
+        guard !url.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
     }
 }
 

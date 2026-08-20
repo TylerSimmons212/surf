@@ -53,6 +53,15 @@ final class Island: Identifiable {
     /// non-optional value so that no view needs a nil branch.
     @ObservationIgnored var rememberedSelection: Tab.ID?
 
+    /// Pinned sites, in shelf order — the stickers along the top of the
+    /// sidebar. Saved URLs, not tabs: they hold no web view and cost nothing
+    /// while unclicked.
+    ///
+    /// Per-island for the same reason `recentlyClosed` is: a sticker opens its
+    /// site in this island's cookie jar, so showing it in another island would
+    /// invite the site into the wrong identity with one click.
+    private(set) var stickers: [Sticker] = []
+
     /// Closed tabs, newest first, for ⌘⇧T.
     ///
     /// Per-island, not global. A shared buffer would let ⌘⇧T resurrect a work
@@ -85,6 +94,18 @@ final class Island: Identifiable {
             dataStoreID: persisted.dataStoreID
         )
         groups = (persisted.groups ?? []).map(TabGroup.init)
+        stickers = persisted.stickers ?? []
+    }
+
+    // MARK: - Stickers
+
+    /// A no-op when the URL is already pinned — see `Sticker.adding`.
+    func addSticker(_ sticker: Sticker) {
+        stickers = Sticker.adding(sticker, to: stickers)
+    }
+
+    func removeSticker(id: Sticker.ID) {
+        stickers = Sticker.removing(id, from: stickers)
     }
 
     // MARK: - Tabs
@@ -202,7 +223,10 @@ final class Island: Identifiable {
             dataStoreID: dataStoreID,
             tabs: tabs.map { $0.snapshot(refreshingState: refreshingState) },
             selectedIndex: tabs.firstIndex { $0.id == selectedID } ?? 0,
-            groups: groups.isEmpty ? nil : groups.map(\.snapshot)
+            groups: groups.isEmpty ? nil : groups.map(\.snapshot),
+            // Written as nil when empty, so a shelf nobody uses adds nothing
+            // to the file.
+            stickers: stickers.isEmpty ? nil : stickers
         )
     }
 }

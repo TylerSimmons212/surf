@@ -45,6 +45,10 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
     /// Optional for the same reason `PersistedTab.groupID` is: files written
     /// before groups existed have no key here and must still decode.
     public var groups: [PersistedTabGroup]?
+    /// Pinned sites, in shelf order. Optional so a `session.json` written
+    /// before stickers existed decodes unchanged — the same additive-field rule
+    /// `PersistedSession` follows.
+    public var stickers: [Sticker]?
 
     public init(
         id: UUID = UUID(),
@@ -54,7 +58,8 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         dataStoreID: UUID?,
         tabs: [PersistedTab] = [],
         selectedIndex: Int = 0,
-        groups: [PersistedTabGroup]? = nil
+        groups: [PersistedTabGroup]? = nil,
+        stickers: [Sticker]? = nil
     ) {
         self.id = id
         self.name = name
@@ -64,6 +69,7 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         self.tabs = tabs
         self.selectedIndex = selectedIndex
         self.groups = groups
+        self.stickers = stickers
     }
 
     /// The island the browser starts life as, and the only one that may use the
