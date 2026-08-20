@@ -451,6 +451,10 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/SurfCore/HistorySearch.swift` — autocomplete ranking
 - `Sources/SurfCore/AppearanceMode.swift` — the three-way scheme setting and
   what it resolves to against the OS
+- `Sources/SurfCore/AICLI.swift` — AI CLI detection: reading each CLI's own
+  record of who's signed in, model menus, and which provider runs
+- `Sources/SurfCore/AITabNaming.swift` — AI tab renaming: the prompt, the
+  per-CLI command line, and how much of the answer to believe
 - `Sources/SurfCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
 - `Sources/SurfCore/OKLCH.swift` — the perceptual colour space and hue-preserving
   gamut mapping

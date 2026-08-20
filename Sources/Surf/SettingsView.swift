@@ -3,10 +3,25 @@ import SwiftUI
 
 /// The Settings window (⌘,).
 ///
+/// Two tabs: General is everything about browsing; AI is the CLIs Surf can
+/// borrow a model from. Separate because their audiences are — every user
+/// touches General, and AI is empty machinery until a CLI is installed.
+struct SettingsView: View {
+    var body: some View {
+        TabView {
+            GeneralSettingsView()
+                .tabItem { Label("General", systemImage: "gearshape") }
+            AISettingsView()
+                .tabItem { Label("AI", systemImage: "sparkles") }
+        }
+        .frame(width: 460)
+    }
+}
+
 /// Each toggle carries a plain-language explanation of what it actually does,
 /// including where the guarantees stop. A privacy setting the user misreads is
 /// worse than no setting at all.
-struct SettingsView: View {
+struct GeneralSettingsView: View {
     @AppStorage(PreferenceKeys.rememberHistory) private var rememberHistory = false
     @AppStorage(PreferenceKeys.keepSignedIn) private var keepSignedIn = true
     @AppStorage(PreferenceKeys.restoreTabs) private var restoreTabs = true
@@ -196,7 +211,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
     }
 

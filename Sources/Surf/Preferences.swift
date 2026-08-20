@@ -15,6 +15,11 @@ enum PreferenceKeys {
     static let appearanceMode = "appearanceMode"
     static let synthesizeTheme = "synthesizeTheme"
     static let blockAds = "blockAds"
+    /// Which CLI powers AI features: an `AICLIProvider` raw value, or empty
+    /// for "the first one found". Per-feature keys (toggles, model picks) are
+    /// derived on `AIFeature` — they're per feature and per provider, and a
+    /// hand-maintained list here would drift.
+    static let aiProvider = "aiProvider"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"
@@ -44,6 +49,9 @@ extension PrivacySettings {
             // the user never asked to make; restyling redraws a page its
             // authors did draw. Only one of those needs asking first.
             PreferenceKeys.blockAds: true,
+            // Empty: whichever CLI is found first. A fresh machine has
+            // neither, and the AI tab explains itself either way.
+            PreferenceKeys.aiProvider: "",
         ])
     }
 
@@ -55,6 +63,46 @@ extension PrivacySettings {
             restoreTabs: defaults.bool(forKey: PreferenceKeys.restoreTabs),
             clearTracesOnQuit: defaults.bool(forKey: PreferenceKeys.clearTracesOnQuit)
         )
+    }
+}
+
+enum AIPreferences {
+
+    /// The provider AI features run through: the user's pick while it's still
+    /// on the machine, the first installed CLI otherwise. Nil when none is
+    /// installed at all.
+    @MainActor
+    static var selectedProvider: AICLIProvider? {
+        let installed = AICLIProvider.allCases.filter {
+            AICLIDetector.shared.status($0).isInstalled
+        }
+        let stored = UserDefaults.standard.string(forKey: PreferenceKeys.aiProvider)
+        if let stored, let pick = AICLIProvider(rawValue: stored), installed.contains(pick) {
+            return pick
+        }
+        // Unset: prefer a CLI that can actually run over one that's merely
+        // present — an expired Claude session shouldn't shadow a working Codex.
+        return installed.first { AICLIDetector.shared.status($0).isUsable } ?? installed.first
+    }
+
+    static func isEnabled(_ feature: AIFeature) -> Bool {
+        UserDefaults.standard.bool(forKey: feature.enabledKey)
+    }
+
+    /// What a feature should actually run right now, or nil when it can't:
+    /// toggled off, no CLI, or the CLI isn't signed in. Features check this at
+    /// the moment of use — state in Settings is advice, not authority.
+    @MainActor
+    static func resolved(_ feature: AIFeature) -> (provider: AICLIProvider, model: AIModelOption)? {
+        guard isEnabled(feature) else { return nil }
+        guard let provider = selectedProvider,
+              AICLIDetector.shared.status(provider).isUsable else { return nil }
+        let status = AICLIDetector.shared.status(provider)
+        let stored = UserDefaults.standard.string(forKey: feature.modelKey(for: provider))
+        guard let model = provider.validatedModel(
+            stored, options: status.modelOptions, descriptions: status.modelDescriptions
+        ) else { return nil }
+        return (provider, model)
     }
 }
 
