@@ -370,15 +370,37 @@ private struct GroupHeaderRow: View {
                 .animation(.snappy(duration: 0.22, extraBounce: 0), value: group.isCollapsed)
 
             if isRenaming {
+                // SwiftUI's own field, and `@FocusState` rather than the
+                // app's `SurfTextField`. That one asks AppKit for first
+                // responder directly, which is the right answer when it opens a
+                // screen — and the wrong one here, where it appears mid-click
+                // inside a scroll view: SwiftUI's focus system put the window
+                // back as first responder on the way out of the gesture, so the
+                // editor opened with the caret nowhere and typing went to the
+                // window. Asking through `@FocusState` is asking the system
+                // that was overruling it.
                 TextField("", text: $draft)
                     .textFieldStyle(.plain)
                     .font(.system(size: 11, weight: .semibold))
                     .focused($isFieldFocused)
                     .onSubmit(commitRename)
-                    // Escape abandons the edit. Without it the only way out of
-                    // the field is to commit, so a rename begun by accident has
-                    // to be undone by hand.
+                    // Escape abandons the edit. Without it the only way out is
+                    // to commit, so a rename begun by accident has to be undone
+                    // by hand.
                     .onExitCommand { isRenaming = false }
+                    // Clicking elsewhere in the sidebar doesn't move first
+                    // responder — a text field keeps it until something else
+                    // asks, which is ordinary AppKit and not worth fighting.
+                    // What can't be allowed is an editor left open behind the
+                    // user's back, so the two ways out that don't involve a key
+                    // are handled directly. Both save rather than discard: the
+                    // editor is a label you type into, and a label edit that
+                    // evaporates when you look away loses work for no reason.
+                    .onChange(of: isFieldFocused) { _, focused in
+                        if !focused { commitRename() }
+                    }
+                    // Selecting a tab is the usual way of clicking away.
+                    .onChange(of: session.selectedTabID) { _, _ in commitRename() }
             } else {
                 Text(group.name)
                     .font(.system(size: 11, weight: .semibold))
@@ -417,6 +439,14 @@ private struct GroupHeaderRow: View {
         }
         .opacity(isCarried ? 0 : 1)
         .onHover { isHovered = $0 }
+        // Declared before the single tap, which is what makes a double click
+        // reach it: with both on one view SwiftUI gives the first-declared
+        // gesture the chance to claim the sequence, so the fold waits out the
+        // double-click interval rather than firing on the way to a rename.
+        .onTapGesture(count: 2) {
+            guard !isRenaming else { return }
+            beginRename()
+        }
         // A single click folds; the whole header is the target, because a
         // chevron alone is a 9pt hit area on a row that has room to spare.
         .onTapGesture {
@@ -436,6 +466,10 @@ private struct GroupHeaderRow: View {
             drag: dragContext,
             session: session
         ))
+        // A floating sidebar hides the moment the pointer leaves it, taking a
+        // half-finished rename with it — and the field would be sitting there
+        // still open the next time the panel came back.
+        .onDisappear { commitRename() }
         .contextMenu {
             Button(group.isCollapsed ? "Expand" : "Collapse") {
                 session.toggleGroup(group.id)
@@ -454,12 +488,22 @@ private struct GroupHeaderRow: View {
         Task { @MainActor in isFieldFocused = true }
     }
 
+    /// Saving is the same on Enter and on clicking away.
+    ///
+    /// Guarded because both can arrive for one edit — committing with Enter
+    /// takes the field down, which ends editing, which reports it again.
+    /// Escape clears the flag first, so an abandoned edit passes through here
+    /// without saving anything.
     private func commitRename() {
-        session.renameGroup(group.id, to: draft)
+        guard isRenaming else { return }
         isRenaming = false
+        session.renameGroup(group.id, to: draft)
     }
 
     private func beginGroupDrag() -> NSItemProvider {
+        // Not while the name is being edited: a drag starting inside the field
+        // is someone selecting text, not moving a section.
+        guard !isRenaming else { return NSItemProvider() }
         // The section stands in for itself by its first tab, which is also the
         // slot the reorder moves.
         guard let first = session.tabs(in: group.id).first else {
