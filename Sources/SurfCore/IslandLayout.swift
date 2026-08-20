@@ -27,6 +27,14 @@ public enum IslandLayout {
     /// well-formed: at least one island, exactly one home island, and a
     /// selection that names a real one.
     ///
+    /// Note what is *not* repaired: two islands naming one data store. That
+    /// used to be dropped on sight — a jar wearing two names — and is now how
+    /// "bring over my logins" is spelled, so a shared store is left exactly as
+    /// written. What still can't be shared is home-ness: two islands may browse
+    /// the default jar, but only one of them is the island the browser started
+    /// life as, and a second claimant is demoted rather than dropped. Dropping
+    /// it would delete a workspace the user made, for a field they never saw.
+    ///
     /// The selection is *followed* rather than clamped, the same choice
     /// `PersistedSession.sanitized()` makes: if islands before the selected one
     /// are dropped, the index shifts to keep pointing at the same island.
@@ -39,7 +47,6 @@ public enum IslandLayout {
         var newSelection: Int?
         var seenHome = false
         var seenIDs: Set<UUID> = []
-        var seenStores: Set<UUID> = []
 
         for (index, island) in islands.enumerated() {
             // A duplicate id would make the sidebar and the tab list disagree
@@ -48,18 +55,16 @@ public enum IslandLayout {
 
             var island = island
             if island.isHome {
-                // Two islands sharing the default store isn't isolation with a
-                // cosmetic flaw, it's two islands that are secretly one. The
-                // first wins; later ones are dropped rather than silently
-                // handed a fresh store, because a store we invent here has no
-                // data in it and the tabs filed under it would look logged out
-                // for reasons nobody could trace.
-                if seenHome { continue }
+                // The first claimant keeps the title; a later one becomes an
+                // ordinary island that happens to share the default jar, which
+                // is a shape the app now supports and draws correctly. It is
+                // *not* handed a fresh store instead: a store invented here has
+                // no data in it, so its tabs would look logged out for reasons
+                // nobody could trace back to a decode.
+                if seenHome { island.isHomeIsland = false }
                 seenHome = true
             } else if let store = island.dataStoreID {
-                guard isValidDataStoreIdentifier(store),
-                      seenStores.insert(store).inserted
-                else { continue }
+                guard isValidDataStoreIdentifier(store) else { continue }
             }
 
             if index == selected { newSelection = kept.count }
@@ -73,6 +78,37 @@ public enum IslandLayout {
 
         let selection = newSelection ?? 0
         return (kept, selection < kept.count ? selection : 0)
+    }
+
+    /// Whether erasing `store` would take data some other island is still
+    /// browsing with.
+    ///
+    /// The guard on deletion, and the reason sharing a jar is safe to offer:
+    /// deleting an island erases its store, and an island created with "bring
+    /// over logins" points at a store it does not own. Erasing it would sign
+    /// the user out of the island they copied *from* — the direction nobody
+    /// checks, with no undo.
+    ///
+    /// `nil` — the default store — always answers true. That jar predates
+    /// islands and is never ours to erase, whoever is left pointing at it.
+    public static func storeIsShared(_ store: UUID?, claimedBy others: [UUID?]) -> Bool {
+        guard let store else { return true }
+        return others.contains(store)
+    }
+
+    /// A list of island names as a sentence reads it: "Home", "Home and Work",
+    /// "Home, Work and Play".
+    ///
+    /// Lives here rather than at the one alert that needs it because the rule
+    /// is prose, not layout, and prose that appears in a destructive dialog is
+    /// worth a test: this is the sentence that tells someone their logins are
+    /// safe, and it has to be true and readable at one, two and five islands.
+    public static func nameList(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        default: return names.dropLast().joined(separator: ", ") + " and " + names[names.count - 1]
+        }
     }
 
     /// The index to select after deleting the island at `deletedIndex`.

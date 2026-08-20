@@ -15,9 +15,15 @@ struct IslandStrip: View {
     var body: some View {
         HStack(spacing: 4) {
             ForEach(session.islands) { island in
+                // Names, not a flag: an island sharing a jar has to be able to
+                // say *whose*, or the only place the answer exists is a sheet
+                // the user saw once while making it.
+                let sharing = session.islandsSharingStore(with: island).map(\.name)
                 IslandChip(
                     island: island,
                     isCurrent: island.id == session.currentIsland.id,
+                    sharingLoginsWith: sharing,
+                    deleteTitle: session.deleteTitle(for: island),
                     onSelect: { session.select(island: island) },
                     onEdit: { session.beginEditing(island) },
                     onDelete: island.isHome ? nil : { session.requestDeleteIsland(island) }
@@ -53,6 +59,10 @@ struct IslandStrip: View {
 private struct IslandChip: View {
     let island: Island
     let isCurrent: Bool
+    /// The islands this one shares a cookie jar with, if any.
+    let sharingLoginsWith: [String]
+    /// What deleting it actually costs, which depends on the above.
+    let deleteTitle: String
     let onSelect: () -> Void
     let onEdit: () -> Void
     let onDelete: (() -> Void)?
@@ -69,6 +79,14 @@ private struct IslandChip: View {
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
                         .foregroundStyle(island.tint.color)
+                }
+                if !sharingLoginsWith.isEmpty {
+                    // Small and unlabelled on purpose — the chips are 24pt and
+                    // the strip holds six of them. It's a marker that there's
+                    // something to know, and the tooltip is where it's said.
+                    Image(systemName: "link")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(island.tint.color.opacity(0.8))
                 }
                 if island.isDegraded {
                     // Said out loud rather than discovered on the next launch:
@@ -95,15 +113,23 @@ private struct IslandChip: View {
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isCurrent)
         .animation(.easeOut(duration: 0.14), value: isHovering)
         .onHover { isHovering = $0 }
-        .help(island.isDegraded ? "\(island.name) — storage unavailable" : island.name)
+        .help(helpText)
         .contextMenu {
             Button("Rename…", action: onEdit)
             if let onDelete {
                 Divider()
-                // Named for what it actually does. "Delete Island" reads like
-                // closing a window; this throws away every login in it.
-                Button("Delete Island and Its Data", role: .destructive, action: onDelete)
+                // Named for what it actually does. Deleting an island that owns
+                // its jar throws away every login in it, and "Delete Island"
+                // reads like closing a window — so the title is built from
+                // which of the two this is.
+                Button(deleteTitle, role: .destructive, action: onDelete)
             }
         }
+    }
+
+    private var helpText: String {
+        if island.isDegraded { return "\(island.name) — storage unavailable" }
+        guard !sharingLoginsWith.isEmpty else { return island.name }
+        return "\(island.name) — signed in as \(IslandLayout.nameList(sharingLoginsWith))"
     }
 }

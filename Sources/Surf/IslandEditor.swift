@@ -10,10 +10,12 @@ import SwiftUI
 /// either one closed the thing you were reaching from. A sheet is modal to the
 /// window and stays put while you use them.
 ///
-/// Edits apply live to the island rather than on Done. Everything here is
-/// visible in the sidebar as you change it, and watching the chip you're naming
-/// change under you is worth more than the ability to back out — which is what
-/// Revert is for.
+/// Name, flag and colour land on Done — see `close()`. The two switches under
+/// them do not: what they choose is which cookie jar the island browses with,
+/// and that is settled by its first page load rather than by a button. So they
+/// apply as you flip them, which is safe for the one reason it needs to be —
+/// they only ever appear on an island this sheet just made, and cancelling
+/// takes that island with it.
 struct IslandEditorSheet: View {
     let session: BrowserSession
     let island: Island
@@ -30,6 +32,16 @@ struct IslandEditorSheet: View {
     /// sheet without running any button's action, so "was this cancelled?" can
     /// only be answered by what *didn't* happen.
     @State private var committed = false
+
+    /// The two things a new island can be given rather than start without.
+    ///
+    /// These apply the moment they're flipped, unlike the name and the colour
+    /// below them — and they have to. What they change is which cookie jar the
+    /// island browses with, which is settled by its first page load, not by a
+    /// button labelled Done. Backing out is still whole: cancelling a new
+    /// island deletes it, jar and all.
+    @State private var keepsLogins = false
+    @State private var keepsStickers = false
 
     @FocusState private var focus: Field?
     private enum Field { case name, symbol }
@@ -54,6 +66,8 @@ struct IslandEditorSheet: View {
                 labelled("Flag") { symbolPicker }
 
                 labelled("Water") { tintPicker }
+
+                if let source { labelled("Brings over from \(source.name)") { carryOver(source) } }
             }
 
             footer
@@ -74,6 +88,20 @@ struct IslandEditorSheet: View {
 
     // MARK: - Pieces
 
+    /// The island this one was made from, and only while this sheet is the one
+    /// making it.
+    ///
+    /// Read from the session in `body` rather than copied in `onAppear`, so the
+    /// switches are there in the sheet's first frame instead of appearing a
+    /// moment later and shoving everything below them down.
+    ///
+    /// Nil when revisiting an existing island: by then it has browsed, and a
+    /// jar cannot be swapped under pages that have already used it.
+    private var source: Island? {
+        guard session.islandEditorIsForNewIsland, !island.isHome else { return nil }
+        return session.islandEditorSource.flatMap { $0 === island ? nil : $0 }
+    }
+
     /// The chip exactly as the sidebar draws it, so the thing being edited and
     /// the thing being previewed can't drift apart.
     private var header: some View {
@@ -84,9 +112,7 @@ struct IslandEditorSheet: View {
                 Text(name.isEmpty ? "Uncharted" : name)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(tint)
-                Text(island.isHome
-                     ? "Your home break — everything you were already signed in to"
-                     : "Its own shore. Nothing washes over from the others.")
+                Text(subtitle)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -103,6 +129,69 @@ struct IslandEditorSheet: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(tint.opacity(0.4), lineWidth: 1)
         }
+    }
+
+    /// What the chip says it is, which has to follow the switches: an island
+    /// sharing a jar is not "its own shore", and saying so where the user can
+    /// see both at once is the cheapest possible way to be honest about it.
+    private var subtitle: String {
+        if island.isHome {
+            return "Your home break — everything you were already signed in to"
+        }
+        if keepsLogins, let source {
+            return "Signed in as \(source.name). Its own tabs, its own shelf."
+        }
+        return "Its own shore. Nothing washes over from the others."
+    }
+
+    /// The two switches, and the whole point of them: a new island is either a
+    /// new desk for the same accounts, or a different person entirely, and
+    /// which one you meant is not something the app can guess.
+    private func carryOver(_ source: Island) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            carryToggle(
+                "Stay signed in",
+                detail: "Shares \(source.name)'s logins, cookies and site data — the same "
+                    + "accounts at a new desk. It keeps sharing them: sign in or out on "
+                    + "either island and both follow.",
+                isOn: $keepsLogins
+            )
+            .onChange(of: keepsLogins) { _, keeps in
+                session.setIslandKeepsLogins(keeps, for: island)
+            }
+
+            Divider().opacity(0.5)
+
+            carryToggle(
+                "Bring the pinned sites",
+                detail: "Copies \(source.name)'s shelf of stickers. They're copies — peel "
+                    + "one off here and \(source.name) keeps its own.",
+                isOn: $keepsStickers
+            )
+            .onChange(of: keepsStickers) { _, keeps in
+                session.setIslandKeepsStickers(keeps, for: island)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .rect(cornerRadius: 10))
+    }
+
+    private func carryToggle(
+        _ title: String, detail: String, isOn: Binding<Bool>
+    ) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 12, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .tint(tint)
     }
 
     private var symbolPicker: some View {
@@ -235,6 +324,13 @@ struct IslandEditorSheet: View {
             } else if island.isHome {
                 Text("Your first island, and the one your old cookies washed up on. "
                      + "Everything you were signed in to before islands existed is still here.")
+            } else if keepsLogins, let source {
+                // Said plainly, because it is the one thing about a shared jar
+                // that surprises people later: this island is not private from
+                // the one it shares with, in either direction.
+                Text("This island browses as \(source.name) does. Sites see one account "
+                     + "across both, and anything signed in on one is signed in on the "
+                     + "other — so it's a second desk, not a second identity.")
             } else {
                 Text("Sign in to the same site on two islands and it'll swear you're "
                      + "two different people. Logins, cookies and site data never drift "
@@ -269,6 +365,9 @@ struct IslandEditorSheet: View {
         symbolText = island.symbol
         tint = island.tint.color
         isNew = session.islandEditorIsForNewIsland
+        // Read from the island rather than assumed, so the switch and the jar
+        // can't start out disagreeing about which one the user is on.
+        keepsLogins = session.islandKeepsLogins(island)
         focus = .name
     }
 
@@ -287,6 +386,9 @@ struct IslandEditorSheet: View {
 
     private func close() {
         committed = true
+        // Only ever true for the sheet that made this island, which is the only
+        // one that can leave an unused jar behind.
+        if isNew { session.finishCreatingIsland(island) }
         // Everything lands here, at once, or not at all.
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         // An island with no name is a chip you can't tell from the next one.

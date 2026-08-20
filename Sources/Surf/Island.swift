@@ -10,10 +10,15 @@ import WebKit
 /// in one is invisible to the other — which is what makes a work account and a
 /// personal account able to exist in the same browser at the same time.
 ///
-/// `dataStore` is a `let` acquired once from `IslandStores` and held for the
-/// island's life. A tab can sleep and wake, and a web view can be built and
-/// released underneath it, but the store outlives all of that: it is the thing
-/// that stays the same while everything holding it comes and goes.
+/// `dataStore` is looked up from `IslandStores`, which memoises one live object
+/// per identifier — so every read here hands back the same instance, and that
+/// instance outlives everything holding it. A tab can sleep and wake, and a web
+/// view can be built and released underneath it, while the store stays put.
+///
+/// Two islands may deliberately name the same jar: that is what an island
+/// created with "keep my logins" is. Sharing is a property of the identifier,
+/// so it costs nothing here — both islands read the same memoised store, which
+/// is precisely the guarantee `IslandStores` exists to make.
 @Observable
 @MainActor
 final class Island: Identifiable {
@@ -30,8 +35,24 @@ final class Island: Identifiable {
     /// into an identified store, because there is no supported way to move
     /// cookies between stores and the migration would sign the user out of
     /// everything they have.
-    @ObservationIgnored let dataStoreID: UUID?
-    @ObservationIgnored let dataStore: WKWebsiteDataStore
+    ///
+    /// Also nil for an island created *from* home asking to keep its logins:
+    /// sharing a jar is spelled by naming the same store, not by copying
+    /// anything. Which is the same reason it isn't `let` any more — see
+    /// `adoptStore`.
+    @ObservationIgnored private(set) var dataStoreID: UUID?
+
+    /// The store minted for this island alone, kept aside so the choice made
+    /// while creating it can be taken back. Nil for home, which was never
+    /// given one.
+    ///
+    /// Not persisted: the toggle only exists while an island is new and empty,
+    /// so by the next launch there is nothing left to undo.
+    @ObservationIgnored let ownStoreID: UUID?
+
+    var dataStore: WKWebsiteDataStore {
+        IslandStores.shared.store(forIdentifier: dataStoreID)
+    }
 
     /// The tabs in this island, in sidebar order.
     ///
@@ -70,19 +91,32 @@ final class Island: Identifiable {
     /// carry its back/forward history into a jar that never saw those pages.
     @ObservationIgnored var recentlyClosed: [PersistedTab] = []
 
-    var isHome: Bool { dataStoreID == nil }
+    /// The island the browser started life as. Stored rather than derived from
+    /// the store, because an island sharing home's jar uses the same store
+    /// without being home — it can be deleted, and home can't.
+    nonisolated let isHome: Bool
+
 
     /// Whether this island failed to get persistent storage this run, so the
     /// UI can say so rather than quietly forgetting the user on every quit.
     var isDegraded: Bool { IslandStores.shared.isDegraded(dataStoreID) }
 
-    init(id: UUID, name: String, symbol: String, tint: IslandTint, dataStoreID: UUID?) {
+    init(
+        id: UUID,
+        name: String,
+        symbol: String,
+        tint: IslandTint,
+        dataStoreID: UUID?,
+        ownStoreID: UUID? = nil,
+        isHome: Bool
+    ) {
         self.id = id
         self.name = name
         self.symbol = symbol
         self.tint = tint
         self.dataStoreID = dataStoreID
-        self.dataStore = IslandStores.shared.store(forIdentifier: dataStoreID)
+        self.ownStoreID = ownStoreID ?? dataStoreID
+        self.isHome = isHome
     }
 
     convenience init(_ persisted: PersistedIsland) {
@@ -91,10 +125,24 @@ final class Island: Identifiable {
             name: persisted.name,
             symbol: persisted.symbol,
             tint: persisted.tint,
-            dataStoreID: persisted.dataStoreID
+            dataStoreID: persisted.dataStoreID,
+            isHome: persisted.isHome
         )
         groups = (persisted.groups ?? []).map(TabGroup.init)
         stickers = persisted.stickers ?? []
+    }
+
+    /// Re-points this island at another jar.
+    ///
+    /// Only ever called on an island that is brand new and empty, from the
+    /// sheet that creates it — which is the only moment this is safe. A tab
+    /// takes its store at construction and hands it to a web view that may
+    /// already hold cookies, so switching under a live tab wouldn't move the
+    /// tab, it would leave it browsing as whoever it was before. `BrowserSession`
+    /// rebuilds the island's tabs around this call rather than trusting them to
+    /// notice.
+    func adoptStore(_ identifier: UUID?) {
+        dataStoreID = identifier
     }
 
     // MARK: - Stickers
@@ -106,6 +154,19 @@ final class Island: Identifiable {
 
     func removeSticker(id: Sticker.ID) {
         stickers = Sticker.removing(id, from: stickers)
+    }
+
+    /// Replaces the shelf wholesale — the "bring over pinned tabs" switch, and
+    /// the same switch turned back off.
+    ///
+    /// Each copy gets a fresh id. A sticker's id is what its lean and the shine
+    /// across it are derived from, so two shelves sharing ids would sit at
+    /// identical angles and read as one printed sheet rather than two — and
+    /// peeling one off is by id, which must only ever reach one shelf.
+    func replaceStickers(with replacement: [Sticker]) {
+        stickers = replacement.map {
+            Sticker(url: $0.url, title: $0.title, host: $0.host)
+        }
     }
 
     // MARK: - Tabs
@@ -221,6 +282,7 @@ final class Island: Identifiable {
             symbol: symbol,
             tint: tint,
             dataStoreID: dataStoreID,
+            isHomeIsland: isHome,
             tabs: tabs.map { $0.snapshot(refreshingState: refreshingState) },
             selectedIndex: tabs.firstIndex { $0.id == selectedID } ?? 0,
             groups: groups.isEmpty ? nil : groups.map(\.snapshot),
