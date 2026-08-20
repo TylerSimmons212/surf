@@ -288,10 +288,43 @@ final class Tab: NSObject, Identifiable {
     /// the sidebar, so asking a sleeping tab for its title would wake the whole
     /// session the moment the list drew.
     var displayTitle: String {
+        if let aiTitle, !aiTitle.isEmpty { return aiTitle }
         if !pageTitle.isEmpty { return pageTitle }
         if mode == .home { return "New Tab" }
         if let host = currentURL.flatMap(URL.init(string:))?.host { return host }
         return "Loading…"
+    }
+
+    // MARK: - AI naming
+
+    /// A model-written name for the current page, when the feature is on and
+    /// one arrived. Never persisted: the session file keeps the page's real
+    /// title, and a restored tab re-earns its AI name (from the session cache,
+    /// usually) the next time its page loads.
+    private(set) var aiTitle: String?
+
+    @ObservationIgnored private var aiNamingTask: Task<Void, Never>?
+
+    /// Kicks off naming for the page that just finished loading.
+    ///
+    /// Waits a beat first: titles routinely land *after* `didFinish`, and the
+    /// name should be made from the title the user actually sees. The result
+    /// is applied only if the tab is still on the same page — a name for the
+    /// last page must never land on this one.
+    private func scheduleAINaming() {
+        aiNamingTask?.cancel()
+        guard AIPreferences.isEnabled(.tabRenaming) else { return }
+        aiNamingTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            guard let url = self.webView.url?.absoluteString else { return }
+            let title = self.pageTitle
+            guard let name = await AITabNamer.shared.name(forURL: url, pageTitle: title) else {
+                return
+            }
+            guard !Task.isCancelled, self.webView.url?.absoluteString == url else { return }
+            self.aiTitle = name
+        }
     }
 
     // MARK: - Restore
@@ -1393,6 +1426,9 @@ extension Tab: WKNavigationDelegate {
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DevToolsController.shared.documentDidCommit(for: self)
+        // A new document: whatever the model named the old one is wrong now.
+        aiNamingTask?.cancel()
+        aiTitle = nil
         // Something arrived, so this is a window with a page in it.
         hasCommittedDocument = true
         emptyPopupWatchdog?.cancel()
@@ -1411,6 +1447,7 @@ extension Tab: WKNavigationDelegate {
         if let url = webView.url {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }
+        scheduleAINaming()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 
