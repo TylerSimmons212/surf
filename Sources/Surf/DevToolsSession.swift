@@ -277,6 +277,27 @@ final class DevToolsSession: Identifiable {
         await refreshBox()
     }
 
+    /// Writes one box-model measurement — `margin-top: 12px` — as an inline
+    /// style on the selected element, and re-reads the box so the diagram
+    /// answers with what the engine actually did rather than what was asked.
+    ///
+    /// Rides Phase 1 entirely: the style-attribute rule always exists now
+    /// (the agent emits it even when empty, which was done for the add-row
+    /// and pays off again here), so this is an edit when the property is
+    /// already inline and an add when it isn't.
+    func setBoxValue(_ property: String, _ value: String) async {
+        guard let inline = styles?.rules.first(where: {
+            $0.isStyleAttribute && !$0.isInherited
+        }) else { return }
+
+        if let existing = inline.declarations.first(where: { $0.name == property }) {
+            await setValue(value, of: existing, in: inline)
+        } else {
+            _ = await addDeclaration(property, value, to: inline)
+        }
+        await refreshBox()
+    }
+
     private func refreshBox() async {
         guard let selectedNode else { selectedBox = nil; return }
         let issued = generation

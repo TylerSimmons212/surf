@@ -93,9 +93,19 @@ struct ElementDetail: View {
 
     @ViewBuilder
     private var content: some View {
-        if let node, !node.attributes.isEmpty {
+        if let node {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
+                    // The diagram earns the top slot: "how big is this and
+                    // where did the space go" is the question this half of
+                    // the split answers most often, and it was answered by
+                    // one number in a toolbar until now.
+                    if let box = session.selectedBox {
+                        BoxModelView(session: session, box: box)
+                            .frame(maxWidth: 300)
+                            .frame(maxWidth: .infinity)
+                    }
+
                     ForEach(node.attributes) { attribute in
                         AttributeRow(
                             attribute: attribute,
@@ -104,17 +114,18 @@ struct ElementDetail: View {
                             onToggle: { toggle(attribute.name) }
                         )
                     }
+                    if node.attributes.isEmpty, session.selectedBox == nil {
+                        DevToolsPlaceholder(
+                            symbol: "tag",
+                            title: "No attributes",
+                            detail: "This element carries none."
+                        )
+                    }
                 }
                 .padding(.horizontal, DevToolsTheme.unit * 2)
                 .padding(.vertical, DevToolsTheme.unit)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-        } else if node != nil {
-            DevToolsPlaceholder(
-                symbol: "tag",
-                title: "No attributes",
-                detail: "This element carries none."
-            )
         } else {
             DevToolsPlaceholder(
                 symbol: "hand.point.up.left",
