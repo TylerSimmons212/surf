@@ -17,6 +17,58 @@ enum PageDomain {
           // Walks up from the topmost element at a few points along the strip
           // until it finds an opaque background. That handles fixed headers,
           // which is exactly the case the WebKit-provided colours get wrong.
+          // ---- Element-pick capture --------------------------------------
+          //
+          // Armed by the screenshot button, not by dev tools. Hover reports
+          // the element under the pointer; the native overlay draws the
+          // highlight (an injected one would answer elementFromPoint and
+          // poison its own hovers). Click chooses — suppressed in the capture
+          // phase so a link picked for its screenshot doesn't also navigate.
+          agent.define('capture.begin', () => {
+            if (agent.state.capturePick) { return true; }
+            const onMove = (event) => {
+              const el = document.elementFromPoint(event.clientX, event.clientY);
+              if (!el) { return; }
+              const rect = el.getBoundingClientRect();
+              agent.emit('capture', 'hover', {
+                x: rect.x, y: rect.y, width: rect.width, height: rect.height
+              });
+            };
+            const onClick = (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              const el = document.elementFromPoint(event.clientX, event.clientY);
+              const rect = el ? el.getBoundingClientRect() : null;
+              if (!rect) { return; }
+              agent.emit('capture', 'picked', {
+                x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+                scrollX: window.scrollX || 0, scrollY: window.scrollY || 0
+              });
+            };
+            const onKey = (event) => {
+              if (event.key !== 'Escape') { return; }
+              event.preventDefault();
+              agent.emit('capture', 'cancelled', {});
+            };
+            window.addEventListener('mousemove', onMove, { capture: true, passive: true });
+            window.addEventListener('click', onClick, { capture: true });
+            window.addEventListener('keydown', onKey, { capture: true });
+            agent.state.capturePick = { onMove: onMove, onClick: onClick, onKey: onKey };
+            document.documentElement.style.setProperty('cursor', 'crosshair', 'important');
+            return true;
+          });
+
+          agent.define('capture.end', () => {
+            const armed = agent.state.capturePick;
+            if (!armed) { return true; }
+            window.removeEventListener('mousemove', armed.onMove, { capture: true });
+            window.removeEventListener('click', armed.onClick, { capture: true });
+            window.removeEventListener('keydown', armed.onKey, { capture: true });
+            agent.state.capturePick = null;
+            document.documentElement.style.removeProperty('cursor');
+            return true;
+          });
+
           agent.define('page.metrics', () => {
             const root = document.scrollingElement || document.documentElement;
             return {

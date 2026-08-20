@@ -1271,16 +1271,15 @@ private struct SidebarNavigationBar: View {
 private struct ScreenshotButton: View {
     let tab: Tab
 
-    @State private var didCapture = false
-
     var body: some View {
         Menu {
+            Button("Select Area…") { tab.beginAreaCapture() }
             Button("Visible Area") { capture { await tab.captureVisibleArea() } }
             Button("Full Page") { capture { await tab.captureFullPage() } }
         } label: {
-            Image(systemName: didCapture ? "checkmark" : "camera")
+            Image(systemName: "camera")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(didCapture ? Color.green : Color.secondary)
+                .foregroundStyle(Color.secondary)
                 .frame(width: 26, height: 22)
                 .contentShape(Rectangle())
         }
@@ -1288,18 +1287,15 @@ private struct ScreenshotButton: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(tab.mode != .browsing)
-        .help("Screenshot — saves to Downloads")
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: didCapture)
+        .help("Screenshot")
     }
 
     private func capture(_ take: @escaping () async -> NSImage?) {
         Task { @MainActor in
-            guard let image = await take(),
-                  ScreenshotSaver.save(image, title: tab.displayTitle) != nil
-            else { return }
-            didCapture = true
-            try? await Task.sleep(for: .seconds(1.4))
-            didCapture = false
+            guard let image = await take() else { return }
+            // The preview is the feedback now — the checkmark this button
+            // used to flash was standing in for a window that didn't exist.
+            ScreenshotPreviewController.shared.show(image, title: tab.displayTitle)
         }
     }
 }

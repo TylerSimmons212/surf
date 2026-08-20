@@ -29,6 +29,9 @@ final class Tab: NSObject, Identifiable {
     /// by the container's layout rather than stored anywhere the page sees.
     var emulatedViewport: CGSize?
 
+    /// The element-pick capture veil, present only while picking.
+    @ObservationIgnored var captureOverlay: CaptureOverlayView?
+
 
     /// Home = the centered search field; browsing = chrome + page. This is
     /// per-tab, so a new tab opens on the search screen while others keep pages.
@@ -432,9 +435,16 @@ final class Tab: NSObject, Identifiable {
         isolatedAgent.register(on: controller)
         pageAgent.register(on: controller)
 
-        isolatedAgent.onEvent = { [weak self] header, _, _ in
-            guard header.domain == "theme", header.event == "mutated" else { return }
-            self?.pageDidMutate()
+        isolatedAgent.onEvent = { [weak self] header, data, _ in
+            guard let self else { return }
+            switch header.domain {
+            case "theme":
+                if header.event == "mutated" { pageDidMutate() }
+            case "capture":
+                handleCaptureEvent(header.event, data)
+            default:
+                break
+            }
         }
         pageAgent.onEvent = { [weak self] header, data, frame in
             guard let self, header.domain == "media", header.event == "report" else { return }
@@ -1449,6 +1459,10 @@ extension Tab: WKNavigationDelegate {
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DevToolsController.shared.documentDidCommit(for: self)
+        // An armed capture pick dies with its document — the agent's
+        // listeners just did, and a veil with nobody reporting hovers into
+        // it would sit there dimming the new page forever.
+        cancelAreaCapture()
         // A new document: whatever the model named the old one is wrong now.
         aiNamingTask?.cancel()
         aiTitle = nil

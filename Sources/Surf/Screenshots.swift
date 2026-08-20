@@ -61,6 +61,83 @@ extension Tab {
     }
 }
 
+extension Tab {
+
+    // MARK: - Element-pick capture
+
+    /// Arms the pick: veil up, agent listening, next click captures.
+    func beginAreaCapture() {
+        guard mode == .browsing, captureOverlay == nil else { return }
+        let overlay = CaptureOverlayView(frame: webView.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        webView.addSubview(overlay)
+        captureOverlay = overlay
+        isolatedAgent.send(.captureBegin)
+    }
+
+    func cancelAreaCapture() {
+        guard captureOverlay != nil else { return }
+        isolatedAgent.send(.captureEnd)
+        captureOverlay?.removeFromSuperview()
+        captureOverlay = nil
+    }
+
+    func handleCaptureEvent(_ event: String, _ data: Data) {
+        switch event {
+        case "hover":
+            guard let hover = try? JSONDecoder().decode(
+                PageProtocol.Event<CaptureEvent.Hover>.self, from: data
+            ) else { return }
+            captureOverlay?.show(hover.payload)
+
+        case "picked":
+            guard let pick = try? JSONDecoder().decode(
+                PageProtocol.Event<CaptureEvent.Pick>.self, from: data
+            ) else { return }
+            let region = pick.payload.pageRect
+            cancelAreaCapture()
+            Task { @MainActor in
+                await self.captureRegion(region)
+            }
+
+        case "cancelled":
+            cancelAreaCapture()
+
+        default:
+            break
+        }
+    }
+
+    /// A page-coordinate region: full-page snapshot, then the tested crop.
+    private func captureRegion(_ region: CGRect) async {
+        guard let full = await captureFullPage() else { return }
+        guard let cg = full.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        else { return }
+
+        let captured = CGSize(
+            width: webView.bounds.width,
+            height: min(full.size.height, 16000)
+        )
+        guard let pixelRect = ScreenshotCrop.pixelRect(
+            for: region,
+            capturedSize: CGSize(width: captured.width, height: full.size.height),
+            imageSize: CGSize(width: cg.width, height: cg.height)
+        ), let cropped = cg.cropping(to: pixelRect) else {
+            debugLog("screenshot: region fell outside the capture")
+            return
+        }
+
+        let image = NSImage(
+            cgImage: cropped,
+            size: CGSize(
+                width: pixelRect.width * (full.size.width / CGFloat(cg.width)),
+                height: pixelRect.height * (full.size.height / CGFloat(cg.height))
+            )
+        )
+        ScreenshotPreviewController.shared.show(image, title: displayTitle)
+    }
+}
+
 /// Writes a capture where downloads go, named for the page.
 @MainActor
 enum ScreenshotSaver {
