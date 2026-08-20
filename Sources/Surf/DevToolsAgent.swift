@@ -1407,6 +1407,17 @@ enum DevToolsAgent {
         return node.sheet;
       }
 
+      runtime.define('DOM.setClass', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || !node.classList) { return ({ error: 'no element' }); }
+        const name = (params && params.name || '').trim();
+        if (!name) { return ({ error: 'no class name' }); }
+        // toggle(force) rather than add/remove branches: idempotent, so a
+        // repeated message can't flip the state past where it was asked to go.
+        node.classList.toggle(name, !!params.on);
+        return ({ on: node.classList.contains(name) });
+      });
+
       runtime.define('CSS.addRule', (params) => {
         const selector = (params && params.selector || '').trim();
         if (!selector) { return ({ error: 'no selector' }); }

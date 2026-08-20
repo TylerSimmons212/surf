@@ -32,6 +32,8 @@ struct StylesPane: View {
     }
 
     @State private var mode: Mode = .rules
+    @State private var showsClasses = false
+    @State private var newClass = ""
     @State private var filter = ""
     /// Only what someone actually wrote, rather than all three-hundred-odd
     /// computed properties. The default, because the authored set is the answer
@@ -42,6 +44,10 @@ struct StylesPane: View {
     var body: some View {
         VStack(spacing: 0) {
             toolbar
+            if showsClasses, mode == .rules {
+                Divider()
+                classStrip
+            }
             Divider()
             content
         }
@@ -103,6 +109,19 @@ struct StylesPane: View {
             .fixedSize()
             .disabled(session.newRuleSelectors.isEmpty || mode != .rules)
             .help("New rule for the selected element")
+
+            // ".cls" because that is what this thing is called in every
+            // other inspector, and recognition beats invention in chrome
+            // this small.
+            Toggle(isOn: $showsClasses) {
+                Text(".cls")
+                    .font(DevToolsTheme.caption.monospaced())
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.accessoryBar)
+            .controlSize(.small)
+            .disabled(mode != .rules)
+            .help(showsClasses ? "Hide the element's classes" : "Show and toggle the element's classes")
 
             Picker("Mode", selection: $mode) {
                 ForEach(Mode.allCases) { option in
@@ -183,6 +202,51 @@ struct StylesPane: View {
             RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
                 .fill(DevToolsTheme.inputFill)
         }
+    }
+
+    // MARK: - Classes
+
+    /// The element's classes as native toggles, plus a field for a new one.
+    ///
+    /// A class switched off stays in the strip unchecked — the session
+    /// remembers what it took away — because a chip that vanished the moment
+    /// it was turned off could only be turned back on by retyping it.
+    private var classStrip: some View {
+        FlowLayout(spacing: 4, rowSpacing: 4) {
+            ForEach(session.elementClasses, id: \.name) { entry in
+                Toggle(isOn: Binding(
+                    get: { entry.isOn },
+                    set: { on in
+                        Task { @MainActor in await session.setClass(entry.name, enabled: on) }
+                    }
+                )) {
+                    Text(".\(entry.name)")
+                        .font(DevToolsTheme.caption.monospaced())
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.accessoryBar)
+                .controlSize(.small)
+            }
+
+            TextField("add class", text: $newClass)
+                .textFieldStyle(.plain)
+                .font(DevToolsTheme.caption.monospaced())
+                .frame(width: 88)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background {
+                    RoundedRectangle(cornerRadius: DevToolsTheme.corner, style: .continuous)
+                        .fill(DevToolsTheme.inputFill)
+                }
+                .onSubmit {
+                    let name = newClass.trimmingCharacters(in: .whitespaces)
+                    guard !name.isEmpty else { return }
+                    newClass = ""
+                    Task { @MainActor in await session.setClass(name, enabled: true) }
+                }
+        }
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, 5)
     }
 
     // MARK: - Content

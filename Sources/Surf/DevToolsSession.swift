@@ -636,6 +636,57 @@ final class DevToolsSession: Identifiable {
     /// sessions never pay for it.
     private(set) var cssPropertyNames: [String] = []
 
+    /// Classes toggled off through the strip, per node — kept so a chip
+    /// stays on screen unchecked after its class is removed from the element.
+    /// Without this the class would vanish from the attribute, therefore from
+    /// the strip, and switching it back on would mean retyping it.
+    private(set) var removedClasses: [DOMNodeID: Set<String>] = [:]
+
+    /// What the class strip shows for the selected element: the classes it
+    /// has, plus the ones this panel took away — each with its current state.
+    var elementClasses: [(name: String, isOn: Bool)] {
+        guard let selectedNode, let node = tree[selectedNode],
+              node.nodeType == .element
+        else { return [] }
+        let current = (node.attributes.first { $0.name.lowercased() == "class" }?.value ?? "")
+            .split(separator: " ").map(String.init)
+        let removed = removedClasses[selectedNode] ?? []
+        var seen = Set<String>()
+        var out: [(String, Bool)] = []
+        for name in current where seen.insert(name).inserted {
+            out.append((name, true))
+        }
+        for name in removed.sorted() where seen.insert(name).inserted {
+            out.append((name, false))
+        }
+        return out
+    }
+
+    /// Adds or removes a class on the selected element, and refreshes what
+    /// that changed: the rules that match are different now.
+    func setClass(_ name: String, enabled: Bool) async {
+        guard let selectedNode else { return }
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(
+            .domSetClass, ["nodeId": selectedNode, "name": name, "on": enabled]
+        ), issued == generation else { return }
+        if let failure = reply["error"] as? String {
+            debugLog("set class failed: \(failure)")
+            return
+        }
+        if enabled {
+            removedClasses[selectedNode]?.remove(name)
+        } else {
+            removedClasses[selectedNode, default: []].insert(name)
+        }
+        // The attribute change comes back through DOM.watch on its own; the
+        // styles need asking for, since a different set of rules matches now.
+        loadStyles()
+    }
+
     /// Selectors worth offering for a new rule on the selected element —
     /// generated from its tag, id and classes, so every one is valid and
     /// matches by construction.
@@ -1824,6 +1875,7 @@ final class DevToolsSession: Identifiable {
         // Every id the agent handed out belonged to the old document.
         tree = DOMTree()
         visibleRows = []
+        removedClasses = [:]
         selectedNode = nil
         selectedBox = nil
         hoveredNode = nil
