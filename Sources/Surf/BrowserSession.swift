@@ -154,7 +154,10 @@ final class BrowserSession {
         // Deletions a previous run couldn't finish, retried now — before any
         // island has built a web view, which is the one moment nothing is
         // holding a store.
-        Task { @MainActor in await IslandStores.shared.collectTombstones() }
+        // Spared: every store an island actually names. A tombstone says what
+        // some earlier run intended, and this says what is true now.
+        let claimed = Set(built.compactMap(\.dataStoreID))
+        Task { @MainActor in await IslandStores.shared.collectTombstones(sparing: claimed) }
 
         startReclaimTimer()
 
@@ -216,14 +219,23 @@ final class BrowserSession {
 
         // Every island, not just the one on screen: a background island's
         // tabs are no less the user's for not being visible right now.
+        //
+        // Except one still being made. It is in the list so the sheet naming it
+        // can preview it and switch to it, and it is the *current* island while
+        // that sheet is up — but the user hasn't agreed to it, so a save
+        // triggered in that window must not be what decides they have. The
+        // selection falls back with it, or a crash mid-creation would reopen on
+        // an island that was never written.
+        let settled = islands.filter { !$0.isProvisional }
+        let selected = currentIsland.isProvisional ? islandBeforeProvisional : currentIsland
         let snapshot = PersistedSession(
-            islands: islands.map { island in
+            islands: settled.map { island in
                 island.snapshot(
                     refreshingState: blocking,
                     selected: island === currentIsland ? selectedTabID : nil
                 )
             },
-            selectedIslandIndex: islands.firstIndex { $0 === currentIsland } ?? 0
+            selectedIslandIndex: settled.firstIndex { $0 === selected } ?? 0
         )
         // Strips each tab's back/forward blob when history is off.
         let redacted = PrivacyPolicy.redact(snapshot, for: settings)
@@ -382,21 +394,68 @@ final class BrowserSession {
     /// revisiting one. Cancelling means different things in the two cases.
     private(set) var islandEditorIsForNewIsland = false
 
+    /// Where "keep my logins" keeps them from, and whose shelf "keep my pinned
+    /// sites" copies. Always home.
+    ///
+    /// Home rather than wherever you were standing, and the difference matters
+    /// twice. Home is where the accounts actually are — its jar is the one the
+    /// browser has been filling since before islands existed, so it is what
+    /// "my logins" means without qualification. And a switch that brought a
+    /// different island's identity depending on which chip you happened to be
+    /// on is a switch nobody can predict: the same label, doing something else
+    /// each time you meet it.
+    ///
+    /// Nil while editing an existing island — there is nothing to bring over
+    /// after the fact, because the jar is settled the moment anything is
+    /// browsed in it.
+    private(set) var islandEditorSource: Island?
+
     /// Opens the editor for an island.
-    func beginEditing(_ island: Island, isNew: Bool = false) {
+    func beginEditing(_ island: Island, isNew: Bool = false, broughtFrom source: Island? = nil) {
         islandEditorIsForNewIsland = isNew
+        islandEditorSource = source
         islandBeingEdited = island
     }
 
     /// Makes an island, shows it, and opens its editor — the whole of what
     /// "New Island" means, in one place rather than at each call site.
+    ///
+    /// The new island starts fully separate: its own jar, an empty shelf. That
+    /// is what an island *is*, and the two switches in the sheet are how you
+    /// ask for less of it — never the other way round, so nobody carries their
+    /// work login into a personal island by not reading a sheet.
     @discardableResult
     func createIslandAndEdit() -> Island {
+        let previous = currentIsland
         let island = createIsland()
+        // Both halves of "this isn't real yet", set before anything can go
+        // wrong rather than cleaned up afterwards — a crash is precisely the
+        // event that skips the cleanup. The island stays out of the session
+        // file, and its store is marked for collection at the next launch
+        // unless the sheet claims it first.
+        island.isProvisional = true
+        if let store = island.dataStoreID { IslandStores.shared.tombstone(store) }
+        islandBeforeProvisional = previous
         select(island: island)
-        beginEditing(island, isNew: true)
+        beginEditing(island, isNew: true, broughtFrom: homeIsland)
         return island
     }
+
+    /// Where to put the user back if the island being made never happens.
+    ///
+    /// The provisional island is the current one while its sheet is up, and the
+    /// current island is what a save records as selected. Without this, dying
+    /// mid-creation would reopen on an island that no longer exists, and the
+    /// fallback — the first one — is not where they were.
+    private var islandBeforeProvisional: Island?
+
+    /// The island the browser started life as.
+    ///
+    /// `IslandLayout.normalize` guarantees exactly one, at launch and after
+    /// every decode, so the fallback is unreachable — and is the current island
+    /// rather than a crash, because failing to find home is not worth taking
+    /// somebody's browser down over.
+    var homeIsland: Island { islands.first(where: \.isHome) ?? currentIsland }
 
     /// The island a tab belongs to.
     ///
@@ -420,16 +479,143 @@ final class BrowserSession {
         symbol: String = IslandSymbols.fallback,
         tint: IslandTint? = nil
     ) -> Island {
+        // Always its own, whatever the sheet goes on to ask for. An island that
+        // shares a jar keeps this one aside — see `Island.ownStoreID` — so the
+        // switch can be turned back off and land on the same store it left,
+        // rather than on a second empty one.
         let island = Island(
             id: UUID(),
             name: name ?? IslandLayout.defaultName(existing: islands.map(\.name)),
             symbol: symbol,
             tint: tint ?? IslandTint.next(after: islands.map(\.tint)),
-            dataStoreID: UUID()
+            dataStoreID: UUID(),
+            isHome: false
         )
         islands.append(island)
         scheduleSave()
         return island
+    }
+
+    // MARK: - What a new island brings with it
+
+    /// The other islands browsing with this one's jar.
+    ///
+    /// Sharing is symmetric and by identifier, so this is the whole of it:
+    /// there is no owner, only a list of islands pointed at one store. Which is
+    /// what makes it safe — nothing has to track who copied whom.
+    func islandsSharingStore(with island: Island) -> [Island] {
+        islands.filter { $0 !== island && $0.dataStoreID == island.dataStoreID }
+    }
+
+    /// Whether this island is currently browsing with its source's logins.
+    func islandKeepsLogins(_ island: Island) -> Bool {
+        guard let source = islandEditorSource, source !== island else { return false }
+        return island.dataStoreID == source.dataStoreID
+    }
+
+    /// Points a brand new island at its source's jar, or back at its own.
+    ///
+    /// Only reachable while the creating sheet is up, and deliberately so. A
+    /// jar can be chosen freely for exactly as long as nothing has been browsed
+    /// in it; after that, switching would either strand data in a store nothing
+    /// names any more or sign the user out with no undo. So the choice is made
+    /// once, at the one moment it costs nothing.
+    func setIslandKeepsLogins(_ keeps: Bool, for island: Island) {
+        guard let source = islandEditorSource, source !== island else { return }
+        let target = keeps ? source.dataStoreID : island.ownStoreID
+        guard target != island.dataStoreID else { return }
+        rebuildTabs(of: island) { island.adoptStore(target) }
+        scheduleSave()
+    }
+
+    /// Copies the source island's shelf onto this one, or clears it again.
+    func setIslandKeepsStickers(_ keeps: Bool, for island: Island) {
+        guard let source = islandEditorSource, source !== island else { return }
+        guard keeps else {
+            // Peeled off one at a time rather than emptied in one go. A sticker
+            // owns the tab opened from it, and dropping the shelf wholesale
+            // would leave those tabs unlisted, unpinned and unreachable —
+            // holding a web content process nothing in the interface can get
+            // back to. Nothing can have been clicked while this sheet is up, so
+            // this is a loop over records with no tabs; going through the same
+            // door as every other unpinning is what keeps it true when that
+            // stops being the case.
+            for sticker in island.stickers { removeSticker(sticker, from: island) }
+            return
+        }
+        island.adoptStickers(copiedFrom: source.stickers)
+        scheduleSave()
+    }
+
+    /// Rebuilds an island's tabs around a change to which jar it browses with.
+    ///
+    /// A tab takes its store when it is constructed and hands it to a web view
+    /// that may already be holding cookies, so re-pointing the island alone
+    /// would leave its tabs browsing as whoever they were before — the exact
+    /// failure islands exist to prevent, and invisible from the outside.
+    ///
+    /// Safe only because the island is new and empty: the tabs thrown away here
+    /// are the blank one `select(island:)` conjured to satisfy the never-empty
+    /// rule, so nothing with a page or a history is ever discarded. Not even a
+    /// sticker's tab, which is unlisted rather than absent — the sheet this is
+    /// driven from is modal, so no sticker on the shelf it just copied can have
+    /// been clicked yet.
+    private func rebuildTabs(of island: Island, applying change: () -> Void) {
+        let outgoing = island.tabs
+        island.replaceTabs(with: [])
+        change()
+
+        // Built and adopted *before* the old ones are torn down. `selectedTab`
+        // is non-optional, and there must be no instant where it names a tab
+        // that has already been dismantled.
+        if island === currentIsland {
+            let fresh = island.makeTab()
+            fresh.session = self
+            island.append(fresh)
+            adoptSelection(fresh)
+        }
+        island.rememberedSelection = island.tabs.first?.id
+
+        for tab in outgoing {
+            if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+            DevToolsController.shared.close(for: tab)
+            tab.teardown()
+        }
+    }
+
+    /// Closes the book on a newly created island: the sheet that made it is
+    /// done, and the choice of jar is now settled for good.
+    ///
+    /// One loose end to tie. An island that ended up sharing was handed a store
+    /// of its own on the way here, and building its first blank tab was enough
+    /// to bring that store into being. Nothing ever browsed in it — but an
+    /// empty store nobody names is a directory on disk that no later pass can
+    /// safely attribute to anything, and this is the one moment it is certainly
+    /// unused and certainly unwanted.
+    func finishCreatingIsland(_ island: Island) {
+        islandEditorSource = nil
+        islandBeforeProvisional = nil
+        island.isProvisional = false
+
+        // Claimed first, written second. See `IslandStores.claim` — the reverse
+        // order fails by erasing the logins of an island the user can see.
+        if let store = island.dataStoreID { IslandStores.shared.claim(store) }
+        saveNow()
+
+        if let own = island.ownStoreID, own != island.dataStoreID {
+            Task { @MainActor in await IslandStores.shared.removeData(for: own) }
+        }
+    }
+
+    /// What deleting this island actually costs, said in the menu item itself.
+    ///
+    /// An island sharing a jar takes no logins with it, and calling that
+    /// "and Its Data" would frighten people out of tidying up a workspace that
+    /// was never holding anything of theirs.
+    func deleteTitle(for island: Island) -> String {
+        islandsSharingStore(with: island).isEmpty
+            ? "Delete Island and Its Data"
+            : "Delete Island"
     }
 
     /// Brings an island on screen.
@@ -504,14 +690,25 @@ final class BrowserSession {
     func requestDeleteIsland(_ island: Island) {
         guard !island.isHome, islands.count > 1 else { return }
 
+        // An island that shares its jar owns none of what's in it, so the
+        // warning must not claim otherwise — a workspace made to keep one login
+        // is the easiest island to want to throw away, and a sentence promising
+        // to erase that login is what stops people doing it.
+        let sharing = islandsSharingStore(with: island)
         let alert = NSAlert()
         alert.messageText = "Delete “\(island.name)”?"
-        alert.informativeText = """
+        alert.informativeText = sharing.isEmpty
+            ? """
             Its tabs will close, and every cookie, login and site setting that \
             belongs to this island will be erased. This cannot be undone.
             """
+            : """
+            Its tabs and pinned sites will go. Your logins stay — this island \
+            shares them with \(IslandLayout.nameList(sharing.map(\.name))), where you'll \
+            still be signed in.
+            """
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Delete Island and Its Data")
+        alert.addButton(withTitle: deleteTitle(for: island))
         alert.addButton(withTitle: "Cancel")
         // So Return cancels and the destructive button has to be aimed at.
         alert.buttons.last?.keyEquivalent = "\r"
@@ -541,6 +738,8 @@ final class BrowserSession {
         guard !island.isHome, islands.count > 1 else { return }
         guard let index = islands.firstIndex(where: { $0 === island }) else { return }
 
+        if island.isProvisional { islandBeforeProvisional = nil }
+
         if island === currentIsland {
             let fallback = IslandLayout.indexAfterDeleting(
                 islandAt: index, count: islands.count
@@ -559,7 +758,13 @@ final class BrowserSession {
         islands.remove(at: index)
         saveNow()
 
-        guard let storeID = island.dataStoreID else { return }
+        // Erased only if nothing else browses with it. `islands` no longer
+        // holds this island, so what remains is exactly the other claimants —
+        // and the default store, which answers `true` and is never ours to
+        // erase however many islands are pointed at it.
+        guard let storeID = island.dataStoreID,
+              !IslandLayout.storeIsShared(storeID, claimedBy: islands.map(\.dataStoreID))
+        else { return }
         Task { @MainActor in
             // Tombstoned first, then retried with a backoff. Tearing down the
             // tabs above is asynchronous, so WebKit is usually still holding

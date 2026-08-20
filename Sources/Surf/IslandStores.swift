@@ -115,6 +115,29 @@ final class IslandStores {
         }
     }
 
+    /// Marks a store as unwanted unless something claims it before the next
+    /// launch — the disk half of a provisional island.
+    ///
+    /// An island being created has a store from its first blank tab onward, so
+    /// abandoning it by crashing leaves a directory behind that nothing will
+    /// ever name again. Written down *before* it can be abandoned, because the
+    /// whole problem with a crash is that it doesn't stop to tidy up.
+    func tombstone(_ identifier: UUID) {
+        if !tombstones.contains(identifier) { tombstones.append(identifier) }
+    }
+
+    /// Takes a store back off the list: something owns it now.
+    ///
+    /// Ordered deliberately at the call site — a store is claimed *before* the
+    /// island naming it is written, never after. The two orderings fail in
+    /// opposite directions and only one of them is survivable: claim-then-crash
+    /// leaves an unclaimed store, which is a few empty kilobytes, while
+    /// write-then-crash leaves an island whose logins get erased at the next
+    /// launch.
+    func claim(_ identifier: UUID) {
+        tombstones.removeAll { $0 == identifier }
+    }
+
     /// Erases an island's storage from disk, and keeps trying until it does.
     func removeData(for identifier: UUID) async {
         if !tombstones.contains(identifier) { tombstones.append(identifier) }
@@ -140,8 +163,15 @@ final class IslandStores {
     /// Called at launch, before any island has built a web view — which is
     /// exactly why it succeeds where the live attempt failed: nothing is
     /// holding the store yet.
-    func collectTombstones() async {
-        let pending = tombstones
+    /// `claimed` is the stores the restored islands actually name, and nothing
+    /// in it is ever erased however it came to be listed here. A tombstone is a
+    /// record of intent, and intent can be stale: the launch that wrote one may
+    /// have died before it could record that the store had been claimed after
+    /// all. Erasing on the strength of a list alone would sign somebody out of
+    /// an island sitting right there in their sidebar.
+    func collectTombstones(sparing claimed: Set<UUID> = []) async {
+        let pending = tombstones.filter { !claimed.contains($0) }
+        tombstones = pending
         guard !pending.isEmpty else { return }
         let onDisk = Set(await Self.identifiersOnDisk())
         var remaining: [UUID] = []

@@ -8,9 +8,13 @@ struct IslandLayoutTests {
     private func island(
         _ name: String,
         store: UUID? = UUID(),
-        id: UUID = UUID()
+        id: UUID = UUID(),
+        isHome: Bool? = false
     ) -> PersistedIsland {
-        PersistedIsland(id: id, name: name, symbol: "🌊", tint: .surf, dataStoreID: store)
+        PersistedIsland(
+            id: id, name: name, symbol: "🌊", tint: .surf,
+            dataStoreID: store, isHomeIsland: isHome
+        )
     }
 
     // MARK: - Identifiers
@@ -59,28 +63,47 @@ struct IslandLayoutTests {
         #expect(islands[selected].name == "Personal")
     }
 
-    /// Two islands sharing the default store aren't isolation with a cosmetic
-    /// flaw — they're two islands that are secretly one.
-    @Test("Only the first home island survives")
-    func duplicateHomeDropped() {
+    /// Only one island came first, and only one is undeletable. A second
+    /// claimant is demoted rather than dropped: it may well be a workspace the
+    /// user made from home, and deleting somebody's islands to repair a field
+    /// they never saw is the worse of the two failures by a distance.
+    @Test("A second home island is demoted, not dropped")
+    func duplicateHomeDemoted() {
         let (islands, _) = IslandLayout.normalize(
             [.home(), island("Work"), .home()], selected: 0
         )
         #expect(islands.filter(\.isHome).count == 1)
-        #expect(islands.count == 2)
+        #expect(islands.count == 3)
+        // Demoted, not re-homed onto a fresh jar: it keeps browsing the default
+        // store, which is where its logins actually are.
+        #expect(islands.last?.dataStoreID == nil)
+        #expect(islands.last?.isHome == false)
     }
 
-    /// Same reasoning one level down: two islands pointed at one store are one
-    /// cookie jar wearing two names.
-    @Test("Islands sharing a data store are collapsed to the first")
-    func duplicateStoreDropped() {
+    /// Two islands pointed at one store used to be dropped on sight. It is now
+    /// how "keep my logins" is spelled, so it has to survive a decode intact —
+    /// dropping one here would delete a workspace at launch.
+    @Test("Islands sharing a data store are both kept")
+    func sharedStoreSurvives() {
         let shared = UUID()
         let (islands, _) = IslandLayout.normalize(
-            [.home(), island("Work", store: shared), island("Copy", store: shared)],
+            [.home(), island("Work", store: shared), island("Work Desk", store: shared)],
             selected: 0
         )
+        #expect(islands.count == 3)
+        #expect(islands.map(\.name) == ["Home", "Work", "Work Desk"])
+    }
+
+    /// The same shape one level up: an island sharing *home's* jar is an
+    /// ordinary island that happens to browse the default store.
+    @Test("An island sharing home's store is kept and is not home")
+    func sharedDefaultStoreSurvives() {
+        let (islands, _) = IslandLayout.normalize(
+            [.home(), island("Second Desk", store: nil)], selected: 1
+        )
         #expect(islands.count == 2)
-        #expect(islands.last?.name == "Work")
+        #expect(islands.filter(\.isHome).count == 1)
+        #expect(islands.last?.isHome == false)
     }
 
     /// A dropped island must not silently be replaced by a fresh store: the
@@ -101,9 +124,9 @@ struct IslandLayoutTests {
     /// this feature cannot afford to make.
     @Test("The selection follows its island when earlier ones are dropped")
     func selectionFollows() {
-        let shared = UUID()
+        let twin = UUID()
         let (islands, selected) = IslandLayout.normalize(
-            [.home(), island("A", store: shared), island("B", store: shared), island("C")],
+            [.home(), island("A", id: twin), island("B", id: twin), island("C")],
             selected: 3
         )
         #expect(islands[selected].name == "C")
@@ -113,9 +136,9 @@ struct IslandLayoutTests {
     /// it falls back rather than pointing past the end.
     @Test("A dropped selection falls back to the first island")
     func droppedSelectionFallsBack() {
-        let shared = UUID()
+        let twin = UUID()
         let (islands, selected) = IslandLayout.normalize(
-            [.home(), island("A", store: shared), island("B", store: shared)],
+            [.home(), island("A", id: twin), island("B", id: twin)],
             selected: 2
         )
         #expect(selected == 0)
@@ -164,6 +187,40 @@ struct IslandLayoutTests {
         #expect(IslandLayout.defaultName(existing: awkward) == "Island \(awkward.count + 1)")
     }
 
+    // MARK: - Sharing a jar
+
+    /// The guard that makes sharing safe to offer. Erasing a store somebody
+    /// else is still browsing with signs them out in the direction nobody
+    /// checks, with no undo.
+    @Test("A store another island still claims is never erased")
+    func sharedStoreIsNotErased() {
+        let mine = UUID(), theirs = UUID()
+        // Nothing else points at it: erasing is the whole point of deleting.
+        #expect(IslandLayout.storeIsShared(mine, claimedBy: [theirs, nil]) == false)
+        #expect(IslandLayout.storeIsShared(mine, claimedBy: []) == false)
+        // Somebody else does.
+        #expect(IslandLayout.storeIsShared(mine, claimedBy: [theirs, mine]))
+    }
+
+    /// The default store predates islands and holds every cookie from before
+    /// the feature existed. It is never ours to erase, however few islands are
+    /// left pointing at it — including none.
+    @Test("The default store is never erasable")
+    func defaultStoreIsNeverErased() {
+        #expect(IslandLayout.storeIsShared(nil, claimedBy: []))
+        #expect(IslandLayout.storeIsShared(nil, claimedBy: [UUID()]))
+    }
+
+    /// This sentence appears in a destructive dialog, telling someone their
+    /// logins are safe. It has to read as English at every length.
+    @Test("Shared islands are listed the way a sentence reads them")
+    func namesReadAsProse() {
+        #expect(IslandLayout.nameList([]).isEmpty)
+        #expect(IslandLayout.nameList(["Home"]) == "Home")
+        #expect(IslandLayout.nameList(["Home", "Work"]) == "Home and Work")
+        #expect(IslandLayout.nameList(["Home", "Work", "Play"]) == "Home, Work and Play")
+    }
+
     // MARK: - Orphans
 
     /// The net under an interrupted deletion. A store nothing claims is
@@ -181,6 +238,20 @@ struct IslandLayoutTests {
     /// The dangerous direction: a store that *is* claimed must never be swept,
     /// and the home island claims none, so its absence from `onDisk` proves
     /// nothing.
+    /// Two islands, one store, and the store is claimed twice over — a sweep
+    /// that counted claimants rather than sets would erase it on the second
+    /// pass and sign both islands out.
+    @Test("A store two islands share is not an orphan")
+    func sharedStoresAreNotOrphans() {
+        let shared = UUID()
+        #expect(
+            IslandLayout.orphanedDataStoreIDs(
+                known: [island("Work", store: shared), island("Desk", store: shared)],
+                onDisk: [shared]
+            ).isEmpty
+        )
+    }
+
     @Test("A claimed store is never swept, and duplicates report once")
     func claimedStoresSurvive() {
         let claimed = UUID()

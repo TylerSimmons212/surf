@@ -220,7 +220,7 @@ struct SurfApp: App {
 
             // Named for what it does. "Delete Island" reads like closing a
             // window; this throws away every login inside it.
-            Button("Delete Island and Its Data", role: .destructive) {
+            Button(session.deleteTitle(for: session.currentIsland), role: .destructive) {
                 session.requestDeleteIsland(session.currentIsland)
             }
             .disabled(session.currentIsland.isHome)

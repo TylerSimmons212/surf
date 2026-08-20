@@ -26,6 +26,45 @@ struct PersistedIslandTests {
         )
     }
 
+    // MARK: - Which island is home
+
+    /// The rule before islands could share a jar, and still the rule for every
+    /// file written back then: no key, and the store answers the question. A
+    /// wrong answer here makes home deletable, or makes a workspace permanent.
+    @Test("An island written before sharing existed is home iff it has no store")
+    func homeInferredFromStoreInOldFiles() throws {
+        let json = """
+        {"id":"\(UUID().uuidString)","name":"Home","symbol":"🏝️","tint":"surf",
+         "tabs":[],"selectedIndex":0}
+        """
+        let decoded = try JSONDecoder().decode(
+            PersistedIsland.self, from: Data(json.utf8)
+        )
+        #expect(decoded.dataStoreID == nil)
+        #expect(decoded.isHome)
+    }
+
+    /// The shape "keep my logins" leaves behind when the source was home: the
+    /// default store, and not home. Inferring from the store alone would call
+    /// this island home, which would make it undeletable and would demote the
+    /// real one at the next launch.
+    @Test("An island sharing home's store is not itself home")
+    func sharedDefaultStoreIsNotHome() throws {
+        let shared = PersistedIsland(
+            name: "Work Desk", symbol: "🖥️", tint: .kelp,
+            dataStoreID: nil, isHomeIsland: false
+        )
+        #expect(shared.isHome == false)
+
+        // And it survives the round trip, which is the only part that matters
+        // at launch — the flag is written by every save from here on.
+        let data = try JSONEncoder().encode(shared)
+        let decoded = try JSONDecoder().decode(PersistedIsland.self, from: data)
+        #expect(decoded.isHome == false)
+        #expect(decoded.dataStoreID == nil)
+        #expect(PersistedIsland.home().isHome)
+    }
+
     // MARK: - Migration
 
     /// The upgrade path everyone takes exactly once. It has to be silent: the

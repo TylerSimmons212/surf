@@ -19,12 +19,13 @@ public struct PersistedTabGroup: Codable, Equatable, Sendable, Identifiable {
 /// One island as written to disk: an identity, a cookie jar, and the tabs
 /// filed under it.
 ///
-/// `dataStoreID` carries the whole isolation model in one optional. `nil` means
+/// `dataStoreID` names the jar, and `isHomeIsland` names the island that came
+/// first — one field each, because they stopped being the same question the
+/// moment two islands were allowed to share a jar on purpose. `nil` means
 /// WebKit's default store — the jar the browser has been filling since before
-/// islands existed. Making that a property of the *data* rather than an
-/// `if index == 0` somewhere is what keeps it true after the user renames,
-/// reorders, or deletes islands around it: the home island is the one without
-/// an identifier, wherever it happens to sit.
+/// islands existed. Both are properties of the *data* rather than an
+/// `if index == 0` somewhere, which is what keeps them true after the user
+/// renames, reorders, or deletes islands around them.
 ///
 /// `id` is deliberately not `dataStoreID`. An island's identity outlives its
 /// storage — you can wipe an island's data without the island ceasing to
@@ -40,6 +41,18 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
     public var tint: IslandTint
     /// nil == the shared default store.
     public var dataStoreID: UUID?
+    /// Whether this is *the* home island.
+    ///
+    /// Stored rather than derived, now that an island can be created asking to
+    /// keep the logins of the one it was made from: such an island points at
+    /// the same jar as its source, and when that source is home it points at
+    /// the default store too. So `dataStoreID == nil` says which cookies an
+    /// island browses with, and no longer says which island came first.
+    ///
+    /// Optional, and read through `isHome` below, so a file written before
+    /// islands could share a jar decodes unchanged — back then the old rule
+    /// was exact, because sharing was impossible.
+    public var isHomeIsland: Bool?
     public var tabs: [PersistedTab]
     public var selectedIndex: Int
     /// Optional for the same reason `PersistedTab.groupID` is: files written
@@ -56,6 +69,7 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         symbol: String,
         tint: IslandTint,
         dataStoreID: UUID?,
+        isHomeIsland: Bool? = nil,
         tabs: [PersistedTab] = [],
         selectedIndex: Int = 0,
         groups: [PersistedTabGroup]? = nil,
@@ -66,6 +80,7 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         self.symbol = symbol
         self.tint = tint
         self.dataStoreID = dataStoreID
+        self.isHomeIsland = isHomeIsland
         self.tabs = tabs
         self.selectedIndex = selectedIndex
         self.groups = groups
@@ -85,12 +100,13 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
             symbol: "🏝️",
             tint: .surf,
             dataStoreID: nil,
+            isHomeIsland: true,
             tabs: tabs,
             selectedIndex: selectedIndex
         )
     }
 
-    public var isHome: Bool { dataStoreID == nil }
+    public var isHome: Bool { isHomeIsland ?? (dataStoreID == nil) }
 
     /// Drops tabs with nothing worth restoring, following the selection the way
     /// `PersistedSession.sanitized()` does.
