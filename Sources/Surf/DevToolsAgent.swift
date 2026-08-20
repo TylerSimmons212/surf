@@ -128,6 +128,14 @@ enum DevToolsAgent {
           for (let i = 0; i < attrs.length; i++) {
             out.attributes.push({ name: attrs[i].name, value: attrs[i].value });
           }
+          // The tree's grid/flex badges. One computed-style read per element
+          // serialized — the same price Chrome pays for the same badges, and
+          // display is already resolved by the time anything is inspectable.
+          try {
+            const display = getComputedStyle(node).display;
+            if (display === 'grid' || display === 'inline-grid') { out.layout = 'grid'; }
+            else if (display === 'flex' || display === 'inline-flex') { out.layout = 'flex'; }
+          } catch (e) { /* detached or foreign; no badge */ }
         }
         if (node.nodeType === 3 || node.nodeType === 8) {
           const text = node.nodeValue || '';
@@ -1172,8 +1180,102 @@ enum DevToolsAgent {
         }
       }
 
-      window.addEventListener('scroll', scheduleWatch, { capture: true, passive: true });
-      window.addEventListener('resize', scheduleWatch, { passive: true });
+      // ---- Layout overlay -------------------------------------------------
+
+      let layoutWatched = -1;
+      let layoutScheduled = false;
+      let lastLayoutKey = '';
+
+      function layoutModel(node) {
+        if (!node || node.nodeType !== 1 || !node.getBoundingClientRect) { return null; }
+        const style = getComputedStyle(node);
+        const display = style.display;
+        const rect = node.getBoundingClientRect();
+        const out = {
+          nodeId: idFor(node),
+          bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+        };
+
+        if (display === 'grid' || display === 'inline-grid') {
+          out.kind = 'grid';
+          // The *used* track sizes: a laid-out grid's computed template is a
+          // list of pixel lengths, whatever it was authored as. Implicit
+          // tracks aren't in it — the resolved value covers the explicit
+          // grid — which is the known gap here, shared with Firefox's
+          // earliest grid inspector.
+          function tracks(template, gapValue, origin) {
+            if (!template || template === 'none') { return []; }
+            const sizes = template.split(' ').map(parseFloat).filter(
+              (n) => !isNaN(n)
+            );
+            const gap = parseFloat(gapValue) || 0;
+            const spans = [];
+            let at = origin;
+            for (let i = 0; i < sizes.length; i++) {
+              spans.push({ start: at, end: at + sizes[i] });
+              at += sizes[i] + gap;
+            }
+            return spans;
+          }
+          const contentX = rect.x
+            + (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.paddingLeft) || 0);
+          const contentY = rect.y
+            + (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0);
+          out.columns = tracks(style.gridTemplateColumns, style.columnGap, contentX);
+          out.rows = tracks(style.gridTemplateRows, style.rowGap, contentY);
+          return out;
+        }
+
+        if (display === 'flex' || display === 'inline-flex') {
+          out.kind = 'flex';
+          out.items = [];
+          const kids = node.children || [];
+          for (let i = 0; i < kids.length; i++) {
+            const r = kids[i].getBoundingClientRect();
+            if (r.width || r.height) {
+              out.items.push({ x: r.x, y: r.y, width: r.width, height: r.height });
+            }
+          }
+          return out;
+        }
+        return null;
+      }
+
+      function reportLayout(force) {
+        layoutScheduled = false;
+        if (layoutWatched < 0) { return; }
+        const node = nodeFor(layoutWatched);
+        const model = node ? layoutModel(node) : null;
+        if (!model) {
+          // The element stopped being a grid, or stopped being at all.
+          layoutWatched = -1;
+          lastLayoutKey = '';
+          post({ event: 'overlay.layoutChanged', layout: null });
+          return;
+        }
+        const key = JSON.stringify(model);
+        if (!force && key === lastLayoutKey) { return; }
+        lastLayoutKey = key;
+        post({ event: 'overlay.layoutChanged', layout: model });
+      }
+
+      function scheduleLayout() {
+        if (layoutScheduled || layoutWatched < 0) { return; }
+        layoutScheduled = true;
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(function () { reportLayout(false); });
+        } else {
+          setTimeout(function () { reportLayout(false); }, 16);
+        }
+      }
+
+      function scheduleBoth() {
+        scheduleWatch();
+        scheduleLayout();
+      }
+
+      window.addEventListener('scroll', scheduleBoth, { capture: true, passive: true });
+      window.addEventListener('resize', scheduleBoth, { passive: true });
 
       // ---- Commands -------------------------------------------------------
 
@@ -1556,6 +1658,21 @@ enum DevToolsAgent {
         sheetNode.textContent = forceRuleTexts(states).join('\\n');
         return ({ states: states, rules: sheetNode.sheet
           ? sheetNode.sheet.cssRules.length : 0 });
+      });
+
+      runtime.define('Overlay.setLayout', (params) => {
+        const id = params && params.nodeId;
+        if (id === undefined || id === null) {
+          layoutWatched = -1;
+          lastLayoutKey = '';
+          post({ event: 'overlay.layoutChanged', layout: null });
+          return ({ ok: true });
+        }
+        const node = nodeFor(id);
+        if (!node) { return ({ error: 'no element' }); }
+        layoutWatched = id;
+        reportLayout(true);
+        return ({ ok: true });
       });
 
       runtime.define('DOM.setAttribute', (params) => {

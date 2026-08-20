@@ -669,6 +669,23 @@ final class DevToolsSession: Identifiable {
         loadStyles()
     }
 
+    /// The grid/flex overlay: which node it is armed on, and the geometry
+    /// the page last reported for it. Geometry arrives by event — fresh on
+    /// arming and again on scroll and resize — never by polling.
+    private(set) var layoutOverlayNode: DOMNodeID?
+    private(set) var layoutOverlay: LayoutOverlay?
+
+    /// Arms the overlay on a node, or disarms it when asked for the node it
+    /// is already on — a badge is a toggle, not a command.
+    func toggleLayoutOverlay(_ nodeId: DOMNodeID) {
+        let next: DOMNodeID? = layoutOverlayNode == nodeId ? nil : nodeId
+        layoutOverlayNode = next
+        if next == nil { layoutOverlay = nil }
+        var params: [String: any Sendable] = [:]
+        if let next { params["nodeId"] = next }
+        bridge.send(.overlaySetLayout, params)
+    }
+
     /// The row being edited in the Elements tree, if any. Set by Return on
     /// the selection or the row's context menu; the row view watches it and
     /// swaps its markup for a field.
@@ -1958,6 +1975,8 @@ final class DevToolsSession: Identifiable {
         tree = DOMTree()
         visibleRows = []
         removedClasses = [:]
+        layoutOverlayNode = nil
+        layoutOverlay = nil
         forcedStates = []
         forcedNode = nil
         selectedNode = nil
@@ -2082,6 +2101,12 @@ final class DevToolsSession: Identifiable {
         case .inspectHover(let nodeId, let box):
             hoveredNode = nodeId
             hoveredBox = box
+
+        case .layoutChanged(let overlay):
+            // Only if it's still the node we armed — a report racing a toggle
+            // would resurrect an overlay that was just dismissed.
+            guard overlay?.nodeId == layoutOverlayNode || overlay == nil else { return }
+            layoutOverlay = overlay
 
         case .boxChanged(let nodeId, let box):
             // Ignored unless it's still the element we asked about — a reply

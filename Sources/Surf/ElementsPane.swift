@@ -243,6 +243,15 @@ private struct DOMRowView: View {
                 RowEditor(session: session, row: row)
             } else {
                 markup
+                if let node, !node.layout.isEmpty, row.kind != .close {
+                    LayoutBadge(
+                        kind: node.layout,
+                        isOn: session.layoutOverlayNode == row.nodeId
+                    ) {
+                        session.toggleLayoutOverlay(row.nodeId)
+                    }
+                }
+                Spacer(minLength: 0)
             }
         }
         .padding(.leading, DevToolsTheme.rowInset + indent)
@@ -324,7 +333,10 @@ private struct DOMRowView: View {
             // the empty space beside it. No devtools lets you drag-select in
             // the tree; clicking picks the node, and the context menu covers
             // copying.
-            .frame(maxWidth: .infinity, alignment: .leading)
+            //
+            // No greedy frame here: the layout badge sits directly after the
+            // markup, Firefox-style, and a full-width text would push it to
+            // the far edge of the pane where it reads as unrelated chrome.
     }
 
     /// The row as syntax-coloured markup.
@@ -541,5 +553,33 @@ private struct RowEditor: View {
 
     private func close() {
         if session.editingNode == row.nodeId { session.editingNode = nil }
+    }
+}
+
+/// The "grid" / "flex" chip beside a container's markup — the way into the
+/// layout overlay, and the way back out.
+private struct LayoutBadge: View {
+    let kind: String
+    let isOn: Bool
+    let action: () -> Void
+
+    private var tint: Color { kind == "grid" ? .purple : .teal }
+
+    var body: some View {
+        Button(action: action) {
+            Text(kind)
+                .font(DevToolsTheme.badge)
+                .foregroundStyle(isOn ? Color.white : tint)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 0.5)
+                .background {
+                    Capsule().fill(isOn ? tint : tint.opacity(0.14))
+                }
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help(isOn
+            ? "Hide the \(kind) overlay"
+            : "Show \(kind) lines and gaps on the page")
     }
 }

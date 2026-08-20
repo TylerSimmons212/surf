@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Layout overlay verification</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 32px; }
+  .grid {
+    display: grid;
+    grid-template-columns: 120px 1fr 2fr;
+    grid-template-rows: 60px 100px;
+    gap: 16px 24px;
+    padding: 12px;
+    border: 1px solid #ccc;
+    max-width: 640px;
+  }
+  .grid > div { background: #e8eef8; border-radius: 6px; padding: 8px; }
+  .flexrow {
+    display: flex;
+    gap: 12px;
+    padding: 10px;
+    border: 1px solid #ccc;
+    max-width: 640px;
+    margin-top: 24px;
+  }
+  .flexrow > div { background: #e4f2ef; border-radius: 6px; padding: 14px; flex: 1; }
+  .flexrow > div:first-child { flex: 2; }
+  .nested {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-top: 24px;
+    max-width: 400px;
+  }
+  .nested > div { background: #f6ecdd; border-radius: 6px; padding: 10px; }
+</style>
+</head>
+<body>
+  <h1>Layout overlay verification</h1>
+  <p>Each container below should carry a badge in the Elements tree. Toggling
+     it draws lines, numbers and gap shading on this page — and they should
+     track when you scroll.</p>
+
+  <div class="grid">
+    <div>120px</div><div>1fr</div><div>2fr</div>
+    <div>row 2</div><div>row 2</div><div>row 2</div>
+  </div>
+
+  <div class="flexrow">
+    <div>flex: 2</div><div>flex: 1</div><div>flex: 1</div>
+  </div>
+
+  <div class="nested">
+    <div>1fr</div><div>1fr</div>
+  </div>
+
+  <div style="height: 800px"></div>
+  <p>Scrolled down here, the armed overlay should have followed.</p>
+</body>
+</html>

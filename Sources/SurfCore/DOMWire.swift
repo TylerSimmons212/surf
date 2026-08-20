@@ -84,8 +84,43 @@ public enum DOMWire {
             // Absent means "not sent", which is different from "none" — the
             // tree uses exactly that distinction to know what it still owes.
             childIds: (dict["children"] as? [[String: Any]]).map { $0.compactMap { $0["id"] as? Int } },
-            value: dict["value"] as? String ?? ""
+            value: dict["value"] as? String ?? "",
+            layout: dict["layout"] as? String ?? ""
         )
+    }
+
+    public static func decodeLayoutOverlay(_ value: Any?) -> LayoutOverlay? {
+        guard let dict = value as? [String: Any],
+              let kind = LayoutOverlay.Kind(rawValue: dict["kind"] as? String ?? ""),
+              let nodeId = dict["nodeId"] as? Int,
+              let bounds = decodeRect(dict["bounds"])
+        else { return nil }
+
+        func spans(_ value: Any?) -> [LayoutOverlay.Span] {
+            (value as? [[String: Any]] ?? []).compactMap { entry in
+                guard let start = entry["start"] as? Double,
+                      let end = entry["end"] as? Double
+                else { return nil }
+                return LayoutOverlay.Span(start: start, end: end)
+            }
+        }
+
+        return LayoutOverlay(
+            kind: kind,
+            nodeId: nodeId,
+            bounds: bounds,
+            columns: spans(dict["columns"]),
+            rows: spans(dict["rows"]),
+            items: (dict["items"] as? [Any] ?? []).compactMap(decodeRect)
+        )
+    }
+
+    static func decodeRect(_ value: Any?) -> CGRect? {
+        guard let dict = value as? [String: Any],
+              let x = dict["x"] as? Double, let y = dict["y"] as? Double,
+              let width = dict["width"] as? Double, let height = dict["height"] as? Double
+        else { return nil }
+        return CGRect(x: x, y: y, width: width, height: height)
     }
 
     /// A node and everything sent with it, flattened. The tree stores nodes by

@@ -38,6 +38,10 @@ public struct DOMNode: Sendable, Equatable, Identifiable {
     public var childIds: [DOMNodeID]?
     /// Text and comment contents.
     public var value: String
+    /// "grid" or "flex" when the element is that kind of container, else
+    /// empty — the tree's layout badges, decided by the agent at serialize
+    /// time from computed display.
+    public var layout: String
 
     public init(
         id: DOMNodeID,
@@ -47,7 +51,8 @@ public struct DOMNode: Sendable, Equatable, Identifiable {
         attributes: [DOMAttribute] = [],
         childCount: Int = 0,
         childIds: [DOMNodeID]? = nil,
-        value: String = ""
+        value: String = "",
+        layout: String = ""
     ) {
         self.id = id
         self.parentId = parentId
@@ -57,6 +62,7 @@ public struct DOMNode: Sendable, Equatable, Identifiable {
         self.childCount = childCount
         self.childIds = childIds
         self.value = value
+        self.layout = layout
     }
 
     public var isElement: Bool { nodeType == .element }

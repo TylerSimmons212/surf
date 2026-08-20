@@ -66,6 +66,8 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case performanceWatchLayout = "Performance.watchLayout"
 
     case overlaySetInspectMode = "Overlay.setInspectMode"
+    /// Arms the grid/flex overlay on one element, or clears it with no node.
+    case overlaySetLayout = "Overlay.setLayout"
 
     case networkDrain = "Network.drain"
     case networkSetLive = "Network.setLive"
@@ -114,7 +116,7 @@ extension DevToolsMethod {
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
              .performanceRead, .performanceWatchLayout,
-             .overlaySetInspectMode:
+             .overlaySetInspectMode, .overlaySetLayout:
             .agent
         case .runtimeEvaluate, .runtimeGetProperties, .runtimeReleaseObject,
              .runtimeCompletions,
@@ -150,6 +152,9 @@ public enum DevToolsEvent: Sendable, Equatable {
     /// A watched element moved — scrolled, resized, or animated. Reported from
     /// the page rather than polled, so the highlight tracks without lag.
     case boxChanged(nodeId: DOMNodeID, box: BoxModel?)
+    /// The armed layout overlay's geometry — fresh on arming, and again
+    /// whenever scroll or resize moves it. Nil means it cleared.
+    case layoutChanged(LayoutOverlay?)
     /// Requests observed, batched. `dropped` counts records the agent had to
     /// discard to stay bounded.
     case networkBatch(
@@ -210,6 +215,8 @@ public enum DevToolsProtocol {
             )
         case "network.overflowed":
             return .networkOverflowed
+        case "overlay.layoutChanged":
+            return .layoutChanged(DOMWire.decodeLayoutOverlay(dict["layout"]))
         case "dom.boxChanged":
             guard let nodeId = dict["nodeId"] as? Int else { return nil }
             return .boxChanged(nodeId: nodeId, box: DOMWire.decodeBox(dict["box"]))
