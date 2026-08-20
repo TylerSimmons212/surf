@@ -40,6 +40,13 @@ enum PageDomain {
               const el = document.elementFromPoint(event.clientX, event.clientY);
               const rect = el ? el.getBoundingClientRect() : null;
               if (!rect) { return; }
+              // The element itself is kept, not just its rect. The full-page
+              // capture lays the document out at another viewport size, and
+              // the page *reflows* — vh heroes, centred columns, responsive
+              // grids all move — so a rect measured now addresses a layout
+              // that will not exist when the snapshot is taken. capture.rect
+              // asks again, after.
+              agent.state.capturePicked = el;
               agent.emit('capture', 'picked', {
                 x: rect.x, y: rect.y, width: rect.width, height: rect.height,
                 scrollX: window.scrollX || 0, scrollY: window.scrollY || 0
@@ -56,6 +63,21 @@ enum PageDomain {
             agent.state.capturePick = { onMove: onMove, onClick: onClick, onKey: onKey };
             document.documentElement.style.setProperty('cursor', 'crosshair', 'important');
             return true;
+          });
+
+          // The picked element's rect as of *now* — called after the
+          // full-page relayout, when the pick-time rect has gone stale.
+          agent.define('capture.rect', () => {
+            const el = agent.state.capturePicked;
+            // One-shot: read and release, so a picked node never outlives
+            // its capture just because it was kept for the re-measure.
+            agent.state.capturePicked = null;
+            if (!el || !el.getBoundingClientRect) { return null; }
+            const rect = el.getBoundingClientRect();
+            return {
+              x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+              scrollX: window.scrollX || 0, scrollY: window.scrollY || 0
+            };
           });
 
           agent.define('capture.end', () => {

@@ -94,10 +94,9 @@ extension Tab {
             guard let pick = try? JSONDecoder().decode(
                 PageProtocol.Event<CaptureEvent.Pick>.self, from: data
             ) else { return }
-            let region = pick.payload.pageRect
             cancelAreaCapture()
             Task { @MainActor in
-                await self.captureRegion(region)
+                await self.capturePicked(pick.payload)
             }
 
         case "cancelled":
@@ -108,33 +107,87 @@ extension Tab {
         }
     }
 
-    /// A page-coordinate region: full-page snapshot, then the tested crop.
-    private func captureRegion(_ region: CGRect) async {
-        guard let full = await captureFullPage() else { return }
-        guard let cg = full.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        else { return }
+    /// The picked element, by whichever path tells the truth about it.
+    ///
+    /// Two paths, because the full-page trick has a cost the first version
+    /// paid in wrong screenshots: laying the document out at another
+    /// viewport size makes the page *reflow* — vh heroes, centred columns,
+    /// responsive grids all move — so a rect measured at pick time addresses
+    /// a layout that no longer exists under the snapshot. An element fully
+    /// in view is therefore captured from the viewport as it stands, zero
+    /// relayout; only an element that outruns the window takes the resize,
+    /// and then the agent re-measures the *element* after the reflow, so
+    /// the crop follows wherever the new layout put it.
+    private func capturePicked(_ pick: CaptureEvent.Pick) async {
+        let viewport = webView.bounds.size
+        let viewportRect = CGRect(x: pick.x, y: pick.y, width: pick.width, height: pick.height)
 
-        let captured = CGSize(
-            width: webView.bounds.width,
-            height: min(full.size.height, 16000)
-        )
-        guard let pixelRect = ScreenshotCrop.pixelRect(
-            for: region,
-            capturedSize: CGSize(width: captured.width, height: full.size.height),
-            imageSize: CGSize(width: cg.width, height: cg.height)
-        ), let cropped = cg.cropping(to: pixelRect) else {
-            debugLog("screenshot: region fell outside the capture")
+        let image: NSImage?
+        let target: CGRect
+        let capturedSize: CGSize
+
+        if CGRect(origin: .zero, size: viewport)
+            .insetBy(dx: -1, dy: -1)
+            .contains(viewportRect) {
+            image = try? await webView.takeSnapshot(configuration: nil)
+            target = viewportRect
+            capturedSize = image?.size ?? viewport
+        } else {
+            guard let container = webView.superview as? WebViewContainer else { return }
+            struct Metrics: Decodable {
+                var height: Double
+            }
+            guard let metrics = await isolatedAgent.value(
+                .pageMetrics, [:], as: Metrics.self
+            ) else { return }
+
+            let size = CGSize(
+                width: viewport.width,
+                height: min(CGFloat(metrics.height), 16000)
+            )
+            container.captureOverride = size
+            container.layoutSubtreeIfNeeded()
+            // Let the reflow — and anything lazy it woke — settle before
+            // asking where the element ended up.
+            try? await Task.sleep(for: .milliseconds(80))
+
+            let fresh = await isolatedAgent.value(
+                .captureRect, [:], as: CaptureEvent.Pick.self
+            )
+
+            let configuration = WKSnapshotConfiguration()
+            configuration.rect = CGRect(origin: .zero, size: size)
+            image = try? await webView.takeSnapshot(configuration: configuration)
+            container.captureOverride = nil
+
+            target = (fresh ?? pick).pageRect
+            capturedSize = image?.size ?? size
+        }
+
+        guard let image,
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let pixelRect = ScreenshotCrop.pixelRect(
+                  for: target,
+                  capturedSize: capturedSize,
+                  imageSize: CGSize(width: cg.width, height: cg.height)
+              ),
+              let cropped = cg.cropping(to: pixelRect)
+        else {
+            debugLog("screenshot: region crop failed")
             return
         }
 
-        let image = NSImage(
-            cgImage: cropped,
-            size: CGSize(
-                width: pixelRect.width * (full.size.width / CGFloat(cg.width)),
-                height: pixelRect.height * (full.size.height / CGFloat(cg.height))
-            )
+        let scale = CGFloat(cg.width) / max(capturedSize.width, 1)
+        ScreenshotPreviewController.shared.show(
+            NSImage(
+                cgImage: cropped,
+                size: CGSize(
+                    width: pixelRect.width / scale,
+                    height: pixelRect.height / scale
+                )
+            ),
+            title: displayTitle
         )
-        ScreenshotPreviewController.shared.show(image, title: displayTitle)
     }
 }
 

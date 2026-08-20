@@ -30,18 +30,19 @@ final class ScreenshotPreviewController: NSObject, NSWindowDelegate {
         // taller than the screen.
         let screen = NSScreen.main?.visibleFrame
             ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let chrome: CGFloat = 64
         let maxContent = CGSize(
-            width: min(920, screen.width * 0.7),
-            height: min(760, screen.height * 0.8)
+            width: min(960, screen.width * 0.7),
+            height: min(800, screen.height * 0.8)
         )
         let fit = min(
             1,
-            maxContent.width / max(image.size.width, 1),
-            (maxContent.height - 60) / max(image.size.height, 1)
+            (maxContent.width - 48) / max(image.size.width, 1),
+            (maxContent.height - chrome - 48) / max(image.size.height, 1)
         )
         let content = CGSize(
-            width: max(340, image.size.width * fit),
-            height: max(200, image.size.height * fit + 60)
+            width: max(380, image.size.width * fit + 48),
+            height: max(240, image.size.height * fit + chrome + 48)
         )
 
         let panel = NSPanel(
@@ -83,45 +84,71 @@ private struct ScreenshotPreviewView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView([.vertical, .horizontal]) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(10)
-            }
-            .background(Color(nsColor: .underPageBackgroundColor))
-
-            Divider()
-
-            HStack(spacing: 8) {
-                Text("\(Int(image.size.width)) × \(Int(image.size.height))")
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary)
-
-                if let flash {
-                    Text(flash)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.green)
-                        .transition(.opacity)
-                }
-
-                Spacer(minLength: 12)
-
-                Button("Copy") { copy() }
-                    .keyboardShortcut("c", modifiers: .command)
-                Button("Save As…") { saveAs() }
-                // The headline action: what the old flow did unconditionally
-                // is now the default button rather than the only outcome.
-                Button("Save to Downloads") { saveToDownloads() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .controlSize(.small)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            stage
+            footer
         }
-        .frame(minWidth: 340, minHeight: 200)
+        .frame(minWidth: 380, minHeight: 240)
         .onExitCommand { onClose() }
+    }
+
+    /// The shot as an object on a surface, not wallpaper filling a frame —
+    /// and draggable, because the fastest export is dropping it straight
+    /// into Slack or an email.
+    private var stage: some View {
+        ZStack {
+            Color(nsColor: .underPageBackgroundColor)
+
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
+                .padding(24)
+                .onDrag { NSItemProvider(object: image) }
+                .help("Drag me into any app")
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.secondary)
+
+            if let flash {
+                Label(flash, systemImage: "checkmark")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.green)
+                    .transition(.opacity)
+            }
+
+            Spacer(minLength: 12)
+
+            SharePickerButton(image: image)
+
+            Button {
+                copy()
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .keyboardShortcut("c", modifiers: .command)
+            .help("Copy to the clipboard (⌘C)")
+
+            Button("Save As…") { saveAs() }
+
+            // The headline action: what the old flow did unconditionally is
+            // now the default button rather than the only outcome.
+            Button {
+                saveToDownloads()
+            } label: {
+                Label("Save to Downloads", systemImage: "arrow.down.circle")
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.bar)
     }
 
     private func copy() {
@@ -161,6 +188,52 @@ private struct ScreenshotPreviewView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.6))
             withAnimation(.easeOut(duration: 0.3)) { flash = nil }
+        }
+    }
+}
+
+/// The system share sheet, from a real anchor.
+///
+/// `NSSharingServicePicker` insists on an NSView to point its popover at, so
+/// the button is a small representable rather than a SwiftUI Button — the
+/// price of the native sheet, which is worth paying: AirDrop, Messages, and
+/// whatever the user has installed, none of it reimplemented.
+private struct SharePickerButton: NSViewRepresentable {
+    let image: NSImage
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(
+            title: "Share",
+            image: NSImage(
+                systemSymbolName: "square.and.arrow.up",
+                accessibilityDescription: "Share"
+            ) ?? NSImage(),
+            target: context.coordinator,
+            action: #selector(Coordinator.share(_:))
+        )
+        button.bezelStyle = .rounded
+        button.controlSize = .regular
+        button.imagePosition = .imageLeading
+        return button
+    }
+
+    func updateNSView(_ view: NSButton, context: Context) {
+        context.coordinator.image = image
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(image: image) }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var image: NSImage
+
+        init(image: NSImage) {
+            self.image = image
+        }
+
+        @objc func share(_ sender: NSButton) {
+            let picker = NSSharingServicePicker(items: [image])
+            picker.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }
 }

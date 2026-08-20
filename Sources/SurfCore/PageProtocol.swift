@@ -32,6 +32,8 @@ public enum PageProtocol {
         /// Arms element-pick capture: hover highlights, click chooses.
         case captureBegin = "capture.begin"
         case captureEnd = "capture.end"
+        /// The picked element's rect, re-measured after a relayout.
+        case captureRect = "capture.rect"
 
         // Page world — where the site's own `navigator` and media elements
         // are. An isolated world has its own `navigator`, with nothing in it.
@@ -51,7 +53,7 @@ public enum PageProtocol {
             switch self {
             case .themeCollect, .themeApply, .themeRevert,
                  .themeDismissPreflight, .pageTopColor, .pageFavicons, .pageMetrics,
-                 .captureBegin, .captureEnd:
+                 .captureBegin, .captureEnd, .captureRect:
                 return .isolated
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,
