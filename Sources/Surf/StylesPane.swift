@@ -49,6 +49,13 @@ struct StylesPane: View {
         // On appear as well as on change: computed values are fetched lazily,
         // and hanging that solely off a *transition* means a pane that opens
         // already in Computed never asks for them and sits on "Reading…".
+        // Escape reaches the page's own handler only while the page has
+        // focus. If the panel is what's focused, this is the one that fires.
+        .onKeyPress(.escape) {
+            guard session.isPicking else { return .ignored }
+            session.setPicking(false)
+            return .handled
+        }
         .onAppear { session.isShowingComputed = mode == .computed }
         .onChange(of: mode) { _, new in session.isShowingComputed = new == .computed }
     }
@@ -57,6 +64,27 @@ struct StylesPane: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
+            // The picker belongs to whichever pane is answering a question
+            // about an element, not to Elements alone. Styles is where you
+            // most often want to change subject — you have just read why one
+            // heading is the wrong colour and want the next one — and sending
+            // you to Elements and back to do it is three clicks for something
+            // that should be zero.
+            IconButton(
+                systemName: "cursorarrow.rays",
+                size: 12,
+                weight: .medium,
+                width: 26,
+                height: 22,
+                cornerRadius: DevToolsTheme.corner,
+                tint: session.isPicking ? Color.accentColor : nil,
+                help: "Select an element on the page (⌥⌘C)"
+            ) {
+                session.setPicking(!session.isPicking)
+            }
+
+            Divider().frame(height: 14)
+
             Picker("Mode", selection: $mode) {
                 ForEach(Mode.allCases) { option in
                     // The count rides in the label because a segmented control
