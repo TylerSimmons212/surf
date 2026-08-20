@@ -669,6 +669,55 @@ final class DevToolsSession: Identifiable {
         loadStyles()
     }
 
+    /// The row being edited in the Elements tree, if any. Set by Return on
+    /// the selection or the row's context menu; the row view watches it and
+    /// swaps its markup for a field.
+    var editingNode: DOMNodeID?
+
+    /// Applies an edited attribute line to an element: parse, diff against
+    /// what it had, and write only what changed — every set echoes back
+    /// through the mutation observer, so writing the unchanged ones would
+    /// storm the tree with non-changes. Returns false when the text refuses
+    /// to parse (unclosed quote, trailing =), so the editor can say so
+    /// instead of guessing.
+    func applyAttributeText(_ text: String, to nodeId: DOMNodeID) async -> Bool {
+        guard let node = tree[nodeId] else { return false }
+        guard let parsed = DOMAttributeText.parse(text) else { return false }
+
+        let old = node.attributes.map {
+            DOMAttributeText.Attribute(name: $0.name, value: $0.value)
+        }
+        let issued = generation
+        for change in DOMAttributeText.diff(old: old, new: parsed) {
+            let params: [String: any Sendable] = switch change {
+            case .set(let name, let value):
+                ["nodeId": nodeId, "name": name, "value": value]
+            case .remove(let name):
+                ["nodeId": nodeId, "name": name, "remove": true]
+            }
+            guard let reply = try? await bridge.call(.domSetAttribute, params),
+                  issued == generation
+            else { return false }
+            if let failure = reply["error"] as? String {
+                debugLog("attribute edit failed: \(failure)")
+                return false
+            }
+        }
+        // Class or style may have been among the edits; what matches changed.
+        loadStyles()
+        return true
+    }
+
+    func setText(_ value: String, on nodeId: DOMNodeID) async {
+        let issued = generation
+        guard let reply = try? await bridge.call(
+            .domSetText, ["nodeId": nodeId, "value": value]
+        ), issued == generation else { return }
+        if let failure = reply["error"] as? String {
+            debugLog("text edit failed: \(failure)")
+        }
+    }
+
     /// Classes toggled off through the strip, per node — kept so a chip
     /// stays on screen unchecked after its class is removed from the element.
     /// Without this the class would vanish from the attribute, therefore from

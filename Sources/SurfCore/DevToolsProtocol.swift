@@ -26,6 +26,10 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domPathToNode = "DOM.pathToNode"
     /// Adds or removes one class on one element.
     case domSetClass = "DOM.setClass"
+    /// Sets or removes one attribute on one element.
+    case domSetAttribute = "DOM.setAttribute"
+    /// Rewrites a text or comment node's contents.
+    case domSetText = "DOM.setText"
     /// Simulates :hover and friends on one element, by selector rewriting —
     /// WebKit exposes no engine hook for forcing element state.
     case cssForceState = "CSS.forceState"
@@ -103,6 +107,7 @@ extension DevToolsMethod {
         case .runtimePing,
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck, .domSetClass,
+             .domSetAttribute, .domSetText,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
              .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames, .cssAddRule,
              .cssForceState,

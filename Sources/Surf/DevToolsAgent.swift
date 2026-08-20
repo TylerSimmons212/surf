@@ -1558,6 +1558,35 @@ enum DevToolsAgent {
           ? sheetNode.sheet.cssRules.length : 0 });
       });
 
+      runtime.define('DOM.setAttribute', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || !node.setAttribute) { return ({ error: 'no element' }); }
+        const name = (params && params.name || '').trim();
+        if (!name) { return ({ error: 'no attribute name' }); }
+        try {
+          if (params.remove) {
+            node.removeAttribute(name);
+          } else {
+            node.setAttribute(name, params.value !== undefined ? String(params.value) : '');
+          }
+        } catch (e) {
+          // setAttribute throws on an invalid name — the engine validating
+          // for us, reported rather than swallowed.
+          return ({ error: 'not a valid attribute name: ' + name });
+        }
+        return ({ ok: true });
+      });
+
+      runtime.define('DOM.setText', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node) { return ({ error: 'no node' }); }
+        if (node.nodeType !== 3 && node.nodeType !== 8) {
+          return ({ error: 'not a text or comment node' });
+        }
+        node.nodeValue = (params && params.value) !== undefined ? String(params.value) : '';
+        return ({ ok: true });
+      });
+
       runtime.define('DOM.setClass', (params) => {
         const node = nodeFor(params && params.nodeId);
         if (!node || !node.classList) { return ({ error: 'no element' }); }

@@ -34,10 +34,29 @@ struct ElementsPane: View {
             session.setPicking(false)
             return .handled
         }
+        // Return edits the selected row — the Finder rename convention,
+        // chosen over Chrome's double-click because double-click here
+        // already toggles children, and because on a Mac "Return renames"
+        // is muscle memory that predates every inspector.
+        .onKeyPress(.return) {
+            guard let selected = session.selectedNode, session.editingNode == nil,
+                  let node = session.tree[selected], isEditable(node)
+            else { return .ignored }
+            session.editingNode = selected
+            return .handled
+        }
         .onKeyPress(.rightArrow) { session.expandSelection(); return .handled }
         .onKeyPress(.leftArrow) { session.collapseSelection(); return .handled }
         .onKeyPress(.downArrow) { session.moveSelection(by: 1); return .handled }
         .onKeyPress(.upArrow) { session.moveSelection(by: -1); return .handled }
+    }
+
+    private func isEditable(_ node: DOMNode) -> Bool {
+        switch node.nodeType {
+        case .element: true
+        case .text, .comment: true
+        default: false
+        }
     }
 
     // MARK: - Toolbar
@@ -213,10 +232,18 @@ private struct DOMRowView: View {
     private var node: DOMNode? { session.tree[row.nodeId] }
     private var isSelected: Bool { session.selectedNode == row.nodeId }
 
+    private var isEditing: Bool {
+        session.editingNode == row.nodeId && row.kind != .close
+    }
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 3) {
             disclosure
-            markup
+            if isEditing {
+                RowEditor(session: session, row: row)
+            } else {
+                markup
+            }
         }
         .padding(.leading, DevToolsTheme.rowInset + indent)
         .padding(.trailing, DevToolsTheme.rowInset)
@@ -236,6 +263,13 @@ private struct DOMRowView: View {
             // Replaces what dragging across the row used to give you.
             Button("Copy Markup") {
                 copy(String(attributed.characters))
+            }
+            Divider()
+            if let node, node.nodeType == .element, row.kind != .close {
+                Button("Edit Attributes") { session.editingNode = row.nodeId }
+            }
+            if let node, node.nodeType == .text || node.nodeType == .comment {
+                Button("Edit Text") { session.editingNode = row.nodeId }
             }
             if let node, node.nodeType == .text || node.nodeType == .comment {
                 Button("Copy Text") { copy(node.value) }
@@ -416,5 +450,96 @@ enum ElementsStyle {
         var text = AttributedString(value)
         text.foregroundColor = Color.secondary.opacity(0.6)
         return text
+    }
+}
+
+/// The row's editing form: one mono field where the markup was.
+///
+/// For an element the field holds its attribute line — `class="card"
+/// id="hero"` — parsed and diffed on commit so only what changed is written.
+/// For a text or comment node it holds the text. Escape restores the row
+/// untouched; a line that refuses to parse (an unclosed quote) shakes its
+/// refusal in place rather than guessing at what was meant.
+private struct RowEditor: View {
+    let session: DevToolsSession
+    let row: DOMRow
+
+    @State private var draft = ""
+    @State private var refused = false
+    @FocusState private var isFocused: Bool
+
+    private var node: DOMNode? { session.tree[row.nodeId] }
+    private var isElement: Bool { node?.nodeType == .element }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if isElement, let node {
+                // The tag is shown but not editable: renaming an element is
+                // a replaceChild that orphans every id the panel holds for
+                // the subtree — a different feature, not a field.
+                Text("<\(node.nodeName)")
+                    .font(DevToolsTheme.mono)
+                    .foregroundStyle(ElementsStyle.tagColor)
+            }
+
+            TextField(isElement ? "attributes" : "text", text: $draft)
+                .textFieldStyle(.plain)
+                .font(DevToolsTheme.mono)
+                .focused($isFocused)
+                .onSubmit { commit() }
+                .onExitCommand { close() }
+                .onChange(of: draft) { _, _ in refused = false }
+                .padding(.horizontal, 3)
+                .background {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(DevToolsTheme.inputFill)
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(
+                            refused ? Color.orange : Color.accentColor.opacity(0.5),
+                            lineWidth: refused ? 1 : 0.5
+                        )
+                }
+
+            if isElement {
+                Text(">")
+                    .font(DevToolsTheme.mono)
+                    .foregroundStyle(ElementsStyle.tagColor)
+            }
+        }
+        .onAppear {
+            guard let node else { return }
+            draft = isElement
+                ? DOMAttributeText.serialize(node.attributes.map {
+                    DOMAttributeText.Attribute(name: $0.name, value: $0.value)
+                })
+                : node.value
+            isFocused = true
+        }
+    }
+
+    private func commit() {
+        guard let node else { close(); return }
+        if isElement {
+            let text = draft
+            Task { @MainActor in
+                if await session.applyAttributeText(text, to: node.id) {
+                    close()
+                } else {
+                    refused = true
+                }
+            }
+        } else {
+            let text = draft
+            Task { @MainActor in
+                await session.setText(text, on: node.id)
+                close()
+            }
+        }
+    }
+
+    private func close() {
+        if session.editingNode == row.nodeId { session.editingNode = nil }
     }
 }
