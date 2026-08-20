@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Force-state verification</title>
+<style>
+  body { font-family: -apple-system, sans-serif; margin: 40px; max-width: 640px; }
+  p.sizer { font-size: 18px; color: #333; }
+
+  .btn {
+    padding: 10px 22px; border: 2px solid #2957A8; border-radius: 8px;
+    background: white; color: #2957A8; font-size: 15px; cursor: pointer;
+  }
+  .btn:hover { background: #2957A8; color: white; }
+  .btn:active { background: #16305e; border-color: #16305e; }
+
+  a.link { color: #2957A8; text-decoration: none; }
+  a.link:hover { text-decoration: underline; color: #B3261E; }
+
+  input.field { padding: 8px; border: 1px solid #bbb; border-radius: 6px; font-size: 14px; }
+  input.field:focus { outline: 3px solid #F2A33C; border-color: #F2A33C; }
+
+  .card { padding: 16px; border: 1px solid #ddd; border-radius: 10px; margin-top: 16px; }
+  .card:focus-within { border-color: #2957A8; box-shadow: 0 0 0 3px rgba(41, 87, 168, 0.25); }
+
+  /* A hover rule behind a condition, to exercise the wrapper rebuild. */
+  @media (min-width: 300px) {
+    @layer decorations {
+      .btn:hover { transform: translateY(-2px); }
+    }
+  }
+</style>
+</head>
+<body>
+  <h1>Force-state verification</h1>
+  <p class="sizer">Edit my font-size in Styles — I should change as you type.</p>
+
+  <p><button class="btn">Force :hover on me</button>
+     — background should flip blue, and (via the @media/@layer rule) lift 2px.</p>
+
+  <p><a class="link" href="#">Force :hover here</a> — turns red and underlined.</p>
+
+  <p><input class="field" placeholder="Force :focus on me"> — amber outline.</p>
+
+  <div class="card">
+    <p style="margin: 0 0 8px;">Force :focus-within on this card — blue ring.</p>
+    <input class="field" placeholder="or on me, for real focus">
+  </div>
+</body>
+</html>

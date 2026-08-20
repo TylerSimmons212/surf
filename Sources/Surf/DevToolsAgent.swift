@@ -884,6 +884,13 @@ enum DevToolsAgent {
               let hit = false;
               try { hit = target.matches(parsed.clean); } catch (e) { hit = false; }
               if (!hit) { continue; }
+              // Forcing stamps the selected element only, so only its own
+              // state rules convert; an ancestor's :hover stays "a state
+              // you're not in", which it is.
+              const allForced = d === 0 && parsed.states.length > 0
+                && parsed.states.every(
+                  (state) => forcedNow.indexOf(state.slice(1)) >= 0
+                );
               rules.push({
                 id: idForRule(rule),
                 selector: selectorText,
@@ -896,7 +903,13 @@ enum DevToolsAgent {
                 order: position,
                 declarations: declarations,
                 pseudo: parsed.pseudo || '',
-                states: parsed.states,
+                // A state rule whose every state is currently simulated on
+                // this element is applying in every way that matters — its
+                // rewritten copy is live — so it is reported with states
+                // emptied and flagged, and the whole pipeline (cascade,
+                // strikethrough, sections) treats it as active for free.
+                states: allForced ? [] : parsed.states,
+                forced: allForced,
                 inline: false,
                 distance: d,
                 from: d > 0 ? describe(target) : '',
@@ -956,10 +969,17 @@ enum DevToolsAgent {
           }
         }
 
+        const forcedNow = (node.getAttribute
+          && (node.getAttribute('data-surf-force') || '').split(' ').filter(Boolean)) || [];
+
         const sheets = document.styleSheets || [];
         for (let s = 0; s < sheets.length; s++) {
           const sheet = sheets[s];
           if (sheet.disabled) { continue; }
+          // The force sheet is plumbing, not authorship. Its copies do the
+          // visual work; showing them would double every forced rule in the
+          // pane, so the originals are presented as forced instead.
+          if (isForceSheet(sheet)) { continue; }
           let list = null;
           try {
             list = sheet.cssRules;
@@ -1406,6 +1426,137 @@ enum DevToolsAgent {
         }
         return node.sheet;
       }
+
+      // ---- Forced element state ------------------------------------------
+      //
+      // WebKit gives page script no way to set an element's :hover bit — that
+      // hook lives in the C++ inspector, behind the private XPC we can't use.
+      // What CSS itself offers instead: a selector has the same specificity
+      // whether it says `:hover` or `[data-surf-force~="hover"]` — both are
+      // (0,1,0) — so a copy of every hover rule with the pseudo rewritten to
+      // that attribute, plus the attribute stamped on one element, reproduces
+      // the styling with the cascade weights intact. Not the engine's own
+      // state (no scrollbar repaint, no :hover on ancestors it would imply),
+      // which is why the UI says "simulated" rather than pretending.
+      let forcedElement = null;
+
+      function forceSheetNode() {
+        let node = document.querySelector('style[data-surf-force-sheet]');
+        if (!node) {
+          node = document.createElement('style');
+          node.dataset.surfForceSheet = '1';
+          (document.head || document.documentElement).appendChild(node);
+        }
+        return node;
+      }
+
+      function stateToken(state) {
+        return new RegExp(':' + state + '(?![a-zA-Z-])', 'g');
+      }
+
+      function forceRuleTexts(states) {
+        const texts = [];
+        const tokens = states.map(stateToken);
+
+        function rewrite(selector) {
+          let out = selector;
+          for (let i = 0; i < states.length; i++) {
+            out = out.replace(tokens[i], '[data-surf-force~="' + states[i] + '"]');
+          }
+          return out;
+        }
+
+        function wrapText(prefixes, body) {
+          let out = body;
+          for (let i = prefixes.length - 1; i >= 0; i--) {
+            out = prefixes[i] + ' { ' + out + ' }';
+          }
+          return out;
+        }
+
+        function walk(rules, prefixes) {
+          for (let i = 0; i < rules.length; i++) {
+            const rule = rules[i];
+            if (rule.selectorText !== undefined && rule.style) {
+              const mentions = tokens.some(
+                (token) => { token.lastIndex = 0; return token.test(rule.selectorText); }
+              );
+              if (mentions) {
+                texts.push(wrapText(
+                  prefixes,
+                  rewrite(rule.selectorText) + ' { ' + rule.style.cssText + ' }'
+                ));
+              }
+              continue;
+            }
+            if (!rule.cssRules) { continue; }
+            const name = rule.constructor && rule.constructor.name;
+            let prefix = null;
+            if (name === 'CSSLayerBlockRule') {
+              prefix = '@layer ' + (rule.name || 'surf-anonymous');
+            } else if (rule.media && rule.media.mediaText) {
+              prefix = '@media ' + rule.media.mediaText;
+            } else if (name === 'CSSContainerRule') {
+              prefix = '@container ' + (rule.containerQuery || rule.conditionText || '');
+            } else if (rule.conditionText !== undefined) {
+              prefix = '@supports ' + rule.conditionText;
+            }
+            walk(rule.cssRules, prefix ? prefixes.concat(prefix) : prefixes);
+          }
+        }
+
+        const sheets = document.styleSheets || [];
+        for (let s = 0; s < sheets.length; s++) {
+          const sheet = sheets[s];
+          if (sheet.disabled) { continue; }
+          if (isForceSheet(sheet)) { continue; }
+          let list = null;
+          try { list = sheet.cssRules; } catch (e) {
+            // Cross-origin: unforceable for the same reason it's unreadable.
+            // The recovered-sheets machinery could feed this later.
+            const recovered = sheet.href && recoveredSheets.get(sheet.href);
+            if (recovered) { walk(recovered.cssRules, []); }
+            continue;
+          }
+          if (list) { walk(list, []); }
+        }
+        return texts;
+      }
+
+      function isForceSheet(sheet) {
+        return !!(sheet && sheet.ownerNode && sheet.ownerNode.dataset
+          && sheet.ownerNode.dataset.surfForceSheet === '1');
+      }
+
+      runtime.define('CSS.forceState', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || !node.setAttribute) { return ({ error: 'no element' }); }
+        const states = (params && params.states || []).filter(
+          (state) => STATE_PSEUDOS.indexOf(state) >= 0
+        );
+
+        // One forced element at a time: the stamp moves rather than spreads,
+        // so there is never a page wearing three forgotten hovers.
+        if (forcedElement && forcedElement !== node) {
+          forcedElement.removeAttribute('data-surf-force');
+        }
+
+        const sheetNode = forceSheetNode();
+        if (!states.length) {
+          node.removeAttribute('data-surf-force');
+          sheetNode.textContent = '';
+          forcedElement = null;
+          return ({ states: [] });
+        }
+
+        node.setAttribute('data-surf-force', states.join(' '));
+        forcedElement = node;
+        // Rebuilt wholesale each time: the rule set is a function of the
+        // forced states, and diffing it would be complexity with no payoff.
+        sheetNode.textContent = forceRuleTexts(states).join('\\n');
+        return ({ states: states, rules: sheetNode.sheet
+          ? sheetNode.sheet.cssRules.length : 0 });
+      });
 
       runtime.define('DOM.setClass', (params) => {
         const node = nodeFor(params && params.nodeId);

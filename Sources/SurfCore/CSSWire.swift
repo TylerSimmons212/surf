@@ -73,7 +73,8 @@ public enum CSSWire {
             inheritDistance: max(0, dict["distance"] as? Int ?? 0),
             inheritedLabel: (dict["from"] as? String).flatMap { $0.isEmpty ? nil : $0 },
             isRecovered: dict["recovered"] as? Bool ?? false,
-            isInspectorRule: dict["inspector"] as? Bool ?? false
+            isInspectorRule: dict["inspector"] as? Bool ?? false,
+            isForced: dict["forced"] as? Bool ?? false
         )
     }
 

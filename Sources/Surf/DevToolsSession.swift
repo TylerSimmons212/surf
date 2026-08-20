@@ -636,6 +636,39 @@ final class DevToolsSession: Identifiable {
     /// sessions never pay for it.
     private(set) var cssPropertyNames: [String] = []
 
+    /// The states being simulated, and on which element. One element at a
+    /// time, matching the agent's stamp — and kept even when the selection
+    /// moves, because the workflow is "force hover on the menu, then inspect
+    /// the submenu it revealed".
+    private(set) var forcedStates: Set<String> = []
+    private(set) var forcedNode: DOMNodeID?
+
+    /// The states the strip offers. `target` and `visited` are parsed but not
+    /// offered: target requires a matching fragment to be honest, and visited
+    /// styling is privacy-restricted to the point that forcing it shows
+    /// nothing getComputedStyle will admit to.
+    static let forcibleStates = ["hover", "active", "focus", "focus-visible", "focus-within"]
+
+    func setForcedState(_ state: String, enabled: Bool) async {
+        guard let selectedNode else { return }
+        // Forcing on a new element implicitly releases the old one — the
+        // agent moves the stamp — so the local set starts over too.
+        var states = selectedNode == forcedNode ? forcedStates : []
+        if enabled { states.insert(state) } else { states.remove(state) }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(
+            .cssForceState, ["nodeId": selectedNode, "states": Array(states)]
+        ), issued == generation else { return }
+        if let failure = reply["error"] as? String {
+            debugLog("force state failed: \(failure)")
+            return
+        }
+        forcedStates = states
+        forcedNode = states.isEmpty ? nil : selectedNode
+        loadStyles()
+    }
+
     /// Classes toggled off through the strip, per node — kept so a chip
     /// stays on screen unchecked after its class is removed from the element.
     /// Without this the class would vanish from the attribute, therefore from
@@ -1876,6 +1909,8 @@ final class DevToolsSession: Identifiable {
         tree = DOMTree()
         visibleRows = []
         removedClasses = [:]
+        forcedStates = []
+        forcedNode = nil
         selectedNode = nil
         selectedBox = nil
         hoveredNode = nil

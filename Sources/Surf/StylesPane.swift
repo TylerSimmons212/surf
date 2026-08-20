@@ -33,6 +33,7 @@ struct StylesPane: View {
 
     @State private var mode: Mode = .rules
     @State private var showsClasses = false
+    @State private var showsStates = false
     @State private var newClass = ""
     @State private var filter = ""
     /// Only what someone actually wrote, rather than all three-hundred-odd
@@ -47,6 +48,10 @@ struct StylesPane: View {
             if showsClasses, mode == .rules {
                 Divider()
                 classStrip
+            }
+            if showsStates, mode == .rules {
+                Divider()
+                stateStrip
             }
             Divider()
             content
@@ -122,6 +127,16 @@ struct StylesPane: View {
             .controlSize(.small)
             .disabled(mode != .rules)
             .help(showsClasses ? "Hide the element's classes" : "Show and toggle the element's classes")
+
+            Toggle(isOn: $showsStates) {
+                Text(":hov")
+                    .font(DevToolsTheme.caption.monospaced())
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.accessoryBar)
+            .controlSize(.small)
+            .disabled(mode != .rules)
+            .help(showsStates ? "Hide element states" : "Simulate :hover, :focus and :active")
 
             Picker("Mode", selection: $mode) {
                 ForEach(Mode.allCases) { option in
@@ -244,6 +259,54 @@ struct StylesPane: View {
                     newClass = ""
                     Task { @MainActor in await session.setClass(name, enabled: true) }
                 }
+        }
+        .padding(.horizontal, DevToolsTheme.barInset)
+        .padding(.vertical, 5)
+    }
+
+    // MARK: - States
+
+    /// The five forcible states as native toggles, and the word "simulated"
+    /// said plainly.
+    ///
+    /// Chrome and Safari force state through an engine hook this browser
+    /// cannot reach — page script has no way to set the real :hover bit. What
+    /// runs instead is a copy of each state rule with the pseudo-class
+    /// rewritten to an attribute of identical specificity, stamped onto this
+    /// one element. Same cascade weights, same visible result, but not the
+    /// engine's own state — so the strip says so instead of letting the
+    /// difference be discovered as a bug.
+    private var stateStrip: some View {
+        HStack(spacing: 4) {
+            ForEach(DevToolsSession.forcibleStates, id: \.self) { state in
+                Toggle(isOn: Binding(
+                    get: {
+                        session.forcedNode == session.selectedNode
+                            && session.forcedStates.contains(state)
+                    },
+                    set: { on in
+                        Task { @MainActor in await session.setForcedState(state, enabled: on) }
+                    }
+                )) {
+                    Text(":\(state)")
+                        .font(DevToolsTheme.caption.monospaced())
+                }
+                .toggleStyle(.button)
+                .buttonStyle(.accessoryBar)
+                .controlSize(.small)
+            }
+
+            Spacer(minLength: 8)
+
+            Text("simulated")
+                .font(DevToolsTheme.caption)
+                .foregroundStyle(.tertiary)
+                .help(
+                    "Surf copies each state rule with the pseudo-class rewritten "
+                    + "to an attribute of equal specificity — the engine's own "
+                    + "element state can't be set from here. Styling matches; "
+                    + "engine side effects don't."
+                )
         }
         .padding(.horizontal, DevToolsTheme.barInset)
         .padding(.vertical, 5)

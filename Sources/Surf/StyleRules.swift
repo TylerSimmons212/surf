@@ -195,6 +195,18 @@ struct RuleCard: View {
                 }
             }
 
+            // Applying, but only because the strip says so — worth a badge,
+            // or the pane would claim the page always looks like this.
+            if rule.isForced {
+                Text("forced")
+                    .font(DevToolsTheme.badge)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background { Capsule().fill(Color.orange.opacity(0.12)) }
+                    .help("Applying because its state is simulated in the :hov strip")
+            }
+
             Spacer(minLength: 6)
 
             if !rule.isStyleAttribute {
