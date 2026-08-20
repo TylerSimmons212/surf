@@ -26,6 +26,13 @@ public enum PageProtocol {
         case themeDismissPreflight = "theme.dismissPreflight"
         case pageTopColor = "page.topColor"
         case pageFavicons = "page.favicons"
+        // The focus domain observes the document and never needs the site's
+        // globals, so it lives with the theme in the isolated world. The two
+        // extract methods are registered lazily — see `FocusBridge` — but
+        // answer through the same agent once they are.
+        case focusSignals = "focus.signals"
+        case focusExtract = "focus.extract"
+        case focusReveal = "focus.reveal"
 
         // Page world — where the site's own `navigator` and media elements
         // are. An isolated world has its own `navigator`, with nothing in it.
@@ -35,6 +42,8 @@ public enum PageProtocol {
         case mediaFrame = "media.frame"
         case mediaLockScroll = "media.lockScroll"
         case mediaUnlockScroll = "media.unlockScroll"
+        case mediaStage = "media.stage"
+        case mediaUnstage = "media.unstage"
         case findCount = "find.count"
         case findClearSelection = "find.clearSelection"
 
@@ -44,10 +53,12 @@ public enum PageProtocol {
         public var world: World {
             switch self {
             case .themeCollect, .themeApply, .themeRevert,
-                 .themeDismissPreflight, .pageTopColor, .pageFavicons:
+                 .themeDismissPreflight, .pageTopColor, .pageFavicons,
+                 .focusSignals, .focusExtract, .focusReveal:
                 return .isolated
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,
+                 .mediaStage, .mediaUnstage,
                  .findCount, .findClearSelection:
                 return .page
             }

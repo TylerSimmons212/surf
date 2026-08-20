@@ -156,6 +156,17 @@ struct SurfApp: App {
 
             Divider()
 
+            // Enabled on any page, not just detected ones: the classifier is
+            // advice for the pill, and extraction itself is the better judge —
+            // its failure mode is a message, not a mangled page.
+            Button(session.selectedTab.isFocusActive ? "Leave Focus" : "Enter Focus") {
+                session.selectedTab.toggleFocus()
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(session.selectedTab.mode != .browsing)
+
+            Divider()
+
             // Zoom is per-tab, so these read against whatever is on screen.
             Button("Zoom In") { session.selectedTab.zoomIn() }
                 .keyboardShortcut("+", modifiers: .command)

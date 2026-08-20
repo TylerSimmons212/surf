@@ -298,8 +298,41 @@ enum MediaBridge {
           });
         }
 
+        // Theater mode's cross-frame half. A video inside an iframe can pin
+        // itself fullscreen only within that iframe; the iframe element
+        // lives in the parent, so the child asks upward and each parent
+        // pins its own child frame — the same recognise-by-contentWindow
+        // trick the frame-offset protocol above stands on. The chain
+        // recurses naturally: a parent that isn't the top asks *its* parent.
+        function stageFrameOf(source, wanted) {
+          for (const f of document.querySelectorAll('iframe, frame')) {
+            if (f.contentWindow !== source) { continue; }
+            if (wanted) {
+              if (f.__surfStagedStyle === undefined) {
+                f.__surfStagedStyle = f.getAttribute('style');
+              }
+              f.style.cssText += ';' + STAGE_CSS;
+              if (window !== window.top) {
+                try { parent.postMessage({ __surf: 'stageMe' }, '*'); } catch (err) {}
+              }
+            } else if (f.__surfStagedStyle !== undefined) {
+              if (f.__surfStagedStyle === null) { f.removeAttribute('style'); }
+              else { f.setAttribute('style', f.__surfStagedStyle); }
+              delete f.__surfStagedStyle;
+              if (window !== window.top) {
+                try { parent.postMessage({ __surf: 'unstageMe' }, '*'); } catch (err) {}
+              }
+            }
+            return;
+          }
+        }
+
         window.addEventListener('message', (e) => {
           const d = e.data;
+          if (d && (d.__surf === 'stageMe' || d.__surf === 'unstageMe') && e.source) {
+            stageFrameOf(e.source, d.__surf === 'stageMe');
+            return;
+          }
           if (!d || d.__surf !== 'whereAmI' || !e.source) { return; }
           let rect = null;
           for (const f of document.querySelectorAll('iframe, frame')) {
@@ -313,6 +346,56 @@ enum MediaBridge {
             try { e.source.postMessage({ __surf: 'frameAt', token: d.token, offset: offset }, '*'); }
             catch (err) { /* the child went away mid-question */ }
           });
+        });
+
+        // What pins a video (or the iframe carrying one) over everything the
+        // page draws. `!important` throughout: the element's own player CSS
+        // is exactly what's being overruled.
+        const STAGE_CSS =
+          'position:fixed !important; inset:0 !important;' +
+          'width:100vw !important; height:100vh !important;' +
+          'max-width:none !important; max-height:none !important;' +
+          'min-width:0 !important; min-height:0 !important;' +
+          'margin:0 !important; padding:0 !important; border:0 !important;' +
+          'transform:none !important; z-index:2147483646 !important;' +
+          'background:#000 !important; object-fit:contain !important;';
+
+        // Theater mode: the page's own element becomes the stage. Rehosting
+        // the source in a fresh element is the obvious spelling and doesn't
+        // work — most video is a blob: URL that exists only in this document
+        // — so the element is promoted where it stands and restored on the
+        // way out, byte-for-byte, from its saved inline style.
+        runtime.define('media.stage', ({ id }) => {
+          const el = mediaById(id);
+          if (!el) { return null; }
+          if (!runtime.state.staged) { runtime.state.staged = new Map(); }
+          if (!runtime.state.staged.has(el)) {
+            runtime.state.staged.set(el, {
+              style: el.getAttribute('style'),
+              controls: el.controls
+            });
+          }
+          // The transport is Surf's; two sets of controls fight.
+          el.controls = false;
+          el.style.cssText += ';' + STAGE_CSS;
+          if (!isTop) {
+            try { parent.postMessage({ __surf: 'stageMe' }, '*'); } catch (err) {}
+          }
+          return true;
+        });
+
+        runtime.define('media.unstage', ({ id }) => {
+          const el = mediaById(id);
+          const saved = el && runtime.state.staged && runtime.state.staged.get(el);
+          if (!el || !saved) { return null; }
+          if (saved.style === null) { el.removeAttribute('style'); }
+          else { el.setAttribute('style', saved.style); }
+          el.controls = saved.controls;
+          runtime.state.staged.delete(el);
+          if (!isTop) {
+            try { parent.postMessage({ __surf: 'unstageMe' }, '*'); } catch (err) {}
+          }
+          return true;
         });
 
         runtime.define('media.toggle', ({ id }) => {
@@ -350,7 +433,7 @@ enum MediaBridge {
           return { x: r.x + offset.x, y: r.y + offset.y, width: r.width, height: r.height };
         });
 
-        runtime.define('media.lockScroll', ({ id }) => {
+        runtime.define('media.lockScroll', ({ id, keepInteraction }) => {
           if (!document.getElementById('__surf_lens')) {
             const s = document.createElement('style');
             s.id = '__surf_lens';
@@ -359,10 +442,17 @@ enum MediaBridge {
             // work here. This is what actually keeps the pointer off the page:
             // covering a view with another one doesn't stop it, because tracking
             // areas fire on geometry and know nothing about what's drawn on top.
-            s.textContent = 'html, body { overflow: hidden !important; }' +
-              'html, html * { pointer-events: none !important; }';
+            //
+            // Unless the caller wants the page playable: the video stage
+            // locks scroll but leaves the player — and its own controls —
+            // alive under the cutout, so only the overflow rule goes in.
+            s.textContent = keepInteraction
+              ? 'html, body { overflow: hidden !important; }'
+              : 'html, body { overflow: hidden !important; }' +
+                'html, html * { pointer-events: none !important; }';
             document.documentElement.appendChild(s);
           }
+          if (keepInteraction) { return true; }
           // Native controls don't auto-hide reliably when the pointer never arrives,
           // so switch them off outright. Custom players hide themselves once the
           // page stops seeing hover at all.

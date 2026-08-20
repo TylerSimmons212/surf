@@ -41,6 +41,74 @@ only unless you turn on "Remember browsing history". Tabs, window size, and wind
 all restore on relaunch — including each tab's back/forward history and scroll
 position.
 
+### Focus
+
+`⌘⇧F` replaces an article with a native reader — SwiftUI over the live page,
+not re-styled HTML, so the typography, the dark mode, and the chrome are ours
+and the page's junk simply isn't drawn. The web view stays mounted underneath:
+leaving Focus is a fade, and it lands the page on the passage you were reading
+rather than wherever its scroll position happened to be.
+
+A tiny resident script counts what's on the page (words, paragraphs, declared
+types) and Swift classifies it; when it's confident there's an article, a quiet
+pill offers Focus in the corner. The extractor — a compact Readability that
+scores containers by the paragraph text they hold and walks the winner into
+headings, paragraphs, quotes, code, lists, and figures — is *not* resident: it
+is injected only when Focus is entered, so only pages you focus pay for it.
+The menu item works on any page and lets extraction be the judge; when a page
+has no article to give, Focus says so instead of rendering the attempt.
+
+A recipe page gets its own lens. Recipe SEO guarantees the page carries
+`schema.org/Recipe` JSON-LD, and the lens renders what that data says the
+recipe *is* — not the essay above it. Ingredients check off as you gather
+them and scale together (½× to 3×, quantities re-written as cook's
+fractions, the yield chip scaling with them); steps keep their section names
+("For the broth"); and Cook Mode sets the steps large, dims all but the one
+you're on, and keeps the screen awake while your hands are wet. The
+checkboxes double as a pantry check: "Add to Groceries" sends the *unchecked*
+ingredients — at the current scale — to a Groceries list in Reminders (found
+or created), each item carrying the recipe's name and address so an item in
+the aisle can say why it's there. Reminders access needs the real bundle
+(`./scripts/bundle.sh`); a bare `swift run` has no Info.plist to ask with.
+Both lenses carry the native share menu, sharing the page's address. The parser
+lives in `SurfCore` behind tests, because real recipe JSON-LD is filthy —
+`@graph` wrappers, entity-encoded apostrophes, instructions nested two
+sections deep, and five spellings of every field. The page's prose stays one
+toggle away as the article lens. Video pages are recognised too, for the
+lens they'll get later.
+
+The reader can also read aloud. Listen starts a narration with lyric mode:
+the sentence being spoken carries a faint wash, the word being spoken is lit
+inside it, the passage keeps itself in the upper third of the view, and
+tapping any paragraph or heading seeks the voice there. The sentence is the
+unit of everything — seeking, skipping, pause position — which is why the
+script is split by a real sentence tokenizer rather than on full stops.
+Starting a narration pauses a page that is already playing media — two voices
+in one room — and the reading survives switching tabs, because it belongs to
+the tab rather than to the view. Headings and quotes are read as written;
+lists are read item by item; code is skipped, because code read aloud is
+noise.
+
+Two voices sit behind one small engine protocol. Out of the box, narration
+uses the best voice installed on this Mac (the premium and enhanced system
+voices people download rank first) — the system synthesiser is also the only
+engine whose word boundaries come free, which is what makes word-level lyric
+sync possible at all. Settings › Reader offers the enhanced voice: Kokoro, a
+neural model run locally through sherpa-onnx, downloaded on request
+(~344 MB, pinned versions, SHA-256 verified, quarantine handled) into
+Application Support. The runtime is `dlopen`'d — Surf links none of it — and
+its C struct layouts are compiled in from a pinned header (`SherpaTTSABI`),
+so the dylib the offsets are checked against is the dylib that ships. A
+neural voice reports no word timings, so its lyric is the moving sentence;
+the next sentence is synthesised while the current one plays, so the joins
+don't wait for the model. Nothing that is read leaves the machine.
+
+`SURF_FOCUS=1` alongside `SURF_URL` enters Focus automatically once the page
+loads, which is how the extractor gets exercised from the command line;
+`SURF_FOCUS=2` also starts the narration, and `SURF_SILENT=1` mutes it so the
+whole speech pipeline — callbacks, highlights, advancement — runs without the
+room hearing it.
+
 ### Appearance
 
 Settings (`⌘,`) and the View menu carry one three-way choice: System, Light,
@@ -417,6 +485,7 @@ feature — and never an unverified download.
 | `⌘L` | Open the floating address bar |
 | `⌘[` / `⌘]` | Back / forward |
 | `⌘R` | Reload |
+| `⌘⇧F` | Enter / leave Focus |
 | `⌘S` | Pin / unpin the sidebar |
 | `⌘,` | Settings |
 

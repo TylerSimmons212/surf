@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>The Long Memory of Tides — Sea Journal</title>
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="The Long Memory of Tides">
+  <meta property="og:site_name" content="Sea Journal">
+  <meta name="author" content="A. Mariner">
+  <script type="application/ld+json">
+  { "@context": "https://schema.org", "@graph": [
+      { "@type": "NewsArticle", "headline": "The Long Memory of Tides" },
+      { "@type": "Organization", "name": "Sea Journal" }
+  ]}
+  </script>
+  <style>
+    body { font-family: Georgia, serif; margin: 0; }
+    header.site { background: #123; color: #fff; padding: 14px 24px; }
+    nav a { color: #9cf; margin-right: 14px; }
+    .layout { display: flex; gap: 24px; max-width: 1100px; margin: 0 auto; padding: 24px; }
+    article { flex: 1; line-height: 1.6; }
+    aside.sidebar { width: 260px; background: #f4f4f4; padding: 16px; }
+    .share-row a { margin-right: 10px; }
+    blockquote { border-left: 3px solid #789; margin-left: 0; padding-left: 14px; color: #456; }
+    pre { background: #eef; padding: 12px; overflow-x: auto; }
+    figure { margin: 20px 0; }
+    figcaption { font-size: 13px; color: #667; }
+  </style>
+</head>
+<body>
+  <header class="site">
+    <nav>
+      <a href="#">Home</a><a href="#">Oceans</a><a href="#">Rivers</a>
+      <a href="#">Weather</a><a href="#">Subscribe</a>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <article>
+      <h1>The Long Memory of Tides</h1>
+      <p class="byline">By A. Mariner</p>
+      <div class="share-row">
+        <a href="#">Share</a><a href="#">Tweet</a><a href="#">Email</a>
+      </div>
+
+      <p>Twice a day, on nearly every shore on Earth, the sea remembers the
+      moon. The water rises without hurry, holds for a moment as if listening,
+      and withdraws again along the same wet path it came by. People have set
+      their clocks, their harvests, and their wars by this rhythm for as long
+      as there have been people near the water to watch it happen.</p>
+
+      <p>The mechanism is old news — Newton had the essentials by 1687 — but
+      the consequences still surprise. The tide is not a wave that travels so
+      much as a bulge the planet rotates beneath, and the friction of that
+      endless dragging is slowing the Earth itself. Days are getting longer by
+      about two milliseconds a century, paid for out of the moon's orbit.</p>
+
+      <h2>What the estuaries know</h2>
+
+      <p>In an estuary the arithmetic becomes negotiation. River water stacks
+      against the incoming sea, and the tide arrives not as a line on a chart
+      but as a personality: early here, late there, doubled in one channel and
+      cancelled in the next. Pilots on the Severn or the Qiantang will tell
+      you the schedule is only advice.</p>
+
+      <blockquote>The sea refuses no river, the old line goes — but it names
+      its price at every mouth.</blockquote>
+
+      <p>The extreme case is the tidal bore, where the leading edge of the
+      flood steepens into a single travelling wall of water. The Qiantang bore
+      can stand nine metres tall and moves fast enough that spectators are
+      warned off the banks hours in advance.</p>
+
+      <h2>Counting on it</h2>
+
+      <p>Because tides are astronomical at heart, they are predictable in a
+      way almost nothing else in nature is. The standard method reduces a
+      station's tide to a sum of harmonic constituents:</p>
+
+      <pre><code>h(t) = Z0 + Σ Ai · cos(ωi · t + φi)   // per constituent i</code></pre>
+
+      <p>Nineteenth-century engineers built brass machines — Kelvin's tide
+      predictors — that summed those cosines with pulleys and wire, printing a
+      year of tables in a day. The same arithmetic, in software, still anchors
+      every published tide table.</p>
+
+      <figure>
+        <img src="tide.png" alt="A tide gauge on a weathered pier" width="640" height="360">
+        <figcaption>A gauge records the harbour's version of the story.</figcaption>
+      </figure>
+
+      <h2>Living by the clock of it</h2>
+
+      <p>Whole ecologies are timed to the cycle. Intertidal creatures carry
+      circatidal clocks that keep ticking in a lab aquarium far from any
+      coast, opening and closing on schedule for the sea they can no longer
+      feel. Some shorebirds feed by the tide and rest by the sun, running both
+      clocks at once.</p>
+
+      <ul>
+        <li>Spring tides follow the full and new moon, when sun and moon pull together.</li>
+        <li>Neap tides follow the quarters, when they pull at right angles.</li>
+        <li>The highest springs of all arrive when the moon is also at perigee.</li>
+      </ul>
+
+      <p>None of this is mysterious anymore, and all of it is still worth
+      standing on a harbour wall for. The tide is the rare natural force that
+      is both entirely explained and entirely undiminished by the
+      explanation — a clockwork that reads as breathing.</p>
+    </article>
+
+    <aside class="sidebar">
+      <h3>Related</h3>
+      <ul>
+        <li><a href="#">Why the Bay of Fundy wins</a></li>
+        <li><a href="#">Reading a tide table</a></li>
+        <li><a href="#">The moon is leaving, slowly</a></li>
+      </ul>
+      <h3>Newsletter</h3>
+      <p>Get Sea Journal weekly. No spray, all signal.</p>
+    </aside>
+  </div>
+</body>
+</html>

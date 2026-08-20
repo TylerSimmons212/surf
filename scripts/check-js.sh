@@ -45,7 +45,8 @@ function context() {
   const window = {
     document: {
       readyState: 'complete', addEventListener: noop, getElementById: () => null,
-      querySelectorAll: () => [], createElement: () => el, documentElement: el,
+      querySelectorAll: () => [], querySelector: () => null,
+      createElement: () => el, documentElement: el,
       body: el, elementFromPoint: () => null, title: '',
     },
     setInterval: noop, clearInterval: noop, setTimeout: noop, navigator: {},
@@ -66,7 +67,10 @@ function context() {
 }
 
 const worlds = {
-  isolated: ['runtime-isolated.js', 'theme.js', 'page.js'],
+  // focus-extract.js is not resident — Tab.enterFocus() evaluates it on
+  // demand — but it registers focus.extract and focus.reveal against the
+  // same agent, so it installs here like everything else.
+  isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'focus.js', 'focus-extract.js'],
   page: ['runtime-page.js', 'media.js', 'find.js'],
 };
 

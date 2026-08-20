@@ -97,6 +97,14 @@ enum PageScripts {
             to: controller, world: .page, mainFrameOnly: false
         )
 
+        // Focus reads the document the user is reading; an iframe's word
+        // count would be an advert's. Only the cheap detector is resident —
+        // the extractor is evaluated on demand by `Tab.enterFocus()`.
+        add(
+            FocusBridge.domainScript,
+            to: controller, world: .isolated, mainFrameOnly: true
+        )
+
         // The scripts that predate the agent and still speak for themselves.
         // They belong in this list for one reason: `removeAllUserScripts()`
         // above takes them with it, so anything installed anywhere else is
@@ -195,6 +203,11 @@ extension PageScripts {
             "page.js": PageDomain.domainScript,
             "media.js": MediaBridge.domainScript,
             "find.js": FindBridge.domainScript,
+            "focus.js": FocusBridge.domainScript,
+            // Not resident — evaluated on demand — but it registers half the
+            // focus methods, and the checker has to see those registrations
+            // or `focus.extract` reads as declared-but-never-registered.
+            "focus-extract.js": FocusBridge.extractorScript,
             "preflight.js": ThemeBridge.preflightScript(for: .dark),
             // Not agent domains, but `install` owns them too — and a dump that
             // showed only half of what goes into a page would be worse than none.

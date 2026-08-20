@@ -199,6 +199,13 @@ final class Tab: NSObject, Identifiable {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.blockingRulesChanged() }
         }
+
+        // Narration and a playing video are two voices in one room. The page
+        // is paused, not muted: pausing is what its own play button undoes.
+        narrator.onWillBeginAudio = { [weak self] in
+            guard let self, media?.isPlaying == true else { return }
+            toggleMediaPlayback()
+        }
     }
 
     /// Builds the web view and everything that hangs off it.
@@ -647,12 +654,21 @@ final class Tab: NSObject, Identifiable {
     /// element's own native controls live in the iframe, and switching those
     /// off has to happen where the element is. Both halves are idempotent, so
     /// the usual case of one frame simply runs the same thing twice.
-    func setPageScrollLocked(_ locked: Bool) {
+    /// - Parameter keepingInteraction: theater mode locks scroll but leaves
+    ///   the promoted player alive under the pointer; the pop-out lens wants
+    ///   the page inert entirely.
+    func setPageScrollLocked(_ locked: Bool, keepingInteraction: Bool = false) {
         let method: PageProtocol.Method = locked ? .mediaLockScroll : .mediaUnlockScroll
         Task { @MainActor in
-            pageAgent.send(method, ["id": mediaElementID ?? ""])
+            pageAgent.send(method, [
+                "id": mediaElementID ?? "",
+                "keepInteraction": keepingInteraction,
+            ])
             if mediaFrame != nil {
-                _ = await runInMediaFrame(method, as: PageProtocol.Empty.self)
+                _ = await runInMediaFrame(
+                    method, ["keepInteraction": keepingInteraction],
+                    as: PageProtocol.Empty.self
+                )
             }
         }
     }
@@ -741,6 +757,7 @@ final class Tab: NSObject, Identifiable {
         media = nil
         clearMediaFrames()
         blockLog = BlockLog()
+        resetFocus()
 
         Task { @MainActor in
             // Pause first for an immediate stop, then navigate away to tear the
@@ -1276,6 +1293,14 @@ final class Tab: NSObject, Identifiable {
                     // The old page's media is gone the moment we navigate.
                     self.media = nil
                     self.clearMediaFrames()
+                    // Covers SPA route changes, which never fire didCommit:
+                    // the content is new even though the document isn't, so
+                    // the old verdict is stale and the new page gets read.
+                    // The reader itself is left alone — a route change under
+                    // an open reader is handled by didCommit when it's a real
+                    // navigation, and a fragment scroll shouldn't close it.
+                    self.focusDetection = nil
+                    self.scheduleFocusDetection()
                     // A popup tab starts in .home but is loaded by WebKit
                     // directly, so the mode has to follow the URL. Not during
                     // a dive, though: there the load starting is precisely the
@@ -1398,6 +1423,206 @@ final class Tab: NSObject, Identifiable {
     func goBack() { webView.goBack() }
     func goForward() { webView.goForward() }
 
+    // MARK: - Focus
+
+    /// Where Focus is on this tab's current page.
+    ///
+    /// `failed` carries its message because the overlay is already up when
+    /// extraction disappoints, and "back to the page" needs a reason beside it.
+    enum FocusPhase: Equatable {
+        case inactive
+        case extracting
+        case active
+        case failed(String)
+    }
+
+    private(set) var focusPhase: FocusPhase = .inactive
+    private(set) var focusArticle: FocusArticle?
+
+    /// Parsed from the page's JSON-LD when it holds a real recipe. Non-nil
+    /// makes the recipe lens the default face of Focus for this page.
+    private(set) var focusRecipe: FocusRecipe?
+
+    /// Theater mode: the page's own video promoted over everything it drew.
+    /// True makes the overlay a transparent transport instead of a reader.
+    private(set) var focusVideoStage = false
+    /// The user's lens choice on a recipe page — a recipe page still has
+    /// prose, and the toggle lets them read it as an article.
+    var focusPrefersArticle = false
+
+    /// This tab's reading voice. On the tab rather than in the lens view, so
+    /// switching tabs doesn't stop a reading in progress. Cheap until used —
+    /// the synthesiser inside is built on first play.
+    @ObservationIgnored let narrator = Narrator()
+
+    /// What the classifier thinks this page is, when it thinks anything.
+    /// Advice, not a gate: the menu item works on any page and lets
+    /// extraction be the judge.
+    private(set) var focusDetection: FocusDetection?
+
+    @ObservationIgnored private var focusDetectionTask: Task<Void, Never>?
+
+    var isFocusActive: Bool { focusPhase != .inactive }
+
+    /// Whether the quiet affordance should show. Only lenses that exist:
+    /// the classifier also reports videos, but advertising a lens that
+    /// can't render yet would be a button that lies.
+    var canOfferFocus: Bool {
+        guard focusPhase == .inactive, let detection = focusDetection else { return false }
+        guard detection.confidence >= FocusClassification.offerThreshold else { return false }
+        switch detection.kind {
+        case .article, .recipe:
+            return true
+        case .video:
+            // The stage promotes an element the media bridge can address,
+            // and the bridge tracks elements from their first play — so the
+            // offer waits for one.
+            return media?.hasVideo == true
+        }
+    }
+
+    func toggleFocus() {
+        focusPhase == .inactive ? enterFocus() : exitFocus()
+    }
+
+    /// Extracts the page and raises the reader.
+    ///
+    /// The extractor is installed here — not as a user script — so only pages
+    /// the user actually focuses pay for the content walk. Installation is
+    /// idempotent (the script guards on the agent's state), which makes
+    /// re-entering Focus on the same document a no-op install plus a fresh
+    /// extraction.
+    func enterFocus() {
+        guard mode == .browsing, focusPhase == .inactive else { return }
+
+        // A video page gets the stage, not the reader: no extraction — the
+        // page's own element is the content, promoted in place.
+        if focusDetection?.kind == .video {
+            guard media?.hasVideo == true else {
+                focusPhase = .failed("Start the video, then enter Focus.")
+                return
+            }
+            focusVideoStage = true
+            focusPhase = .active
+            Task { @MainActor in
+                _ = await runInMediaFrame(.mediaStage, as: PageProtocol.Empty.self)
+                setPageScrollLocked(true, keepingInteraction: true)
+            }
+            debugLog("focus: video staged")
+            return
+        }
+
+        focusPhase = .extracting
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                FocusBridge.extractorScript, arguments: [:],
+                in: nil, contentWorld: .defaultClient
+            )
+            // The user may have left Focus, or the page, while that ran.
+            guard focusPhase == .extracting else { return }
+            guard let article = await isolatedAgent.value(.focusExtract, as: FocusArticle.self)
+            else {
+                focusPhase = .failed("This page couldn't be read.")
+                return
+            }
+            guard focusPhase == .extracting else { return }
+            // A recipe stands on its structured data, not on prose volume —
+            // plenty of real recipe pages are thin on paragraphs and rich in
+            // JSON-LD, and `parse` already refuses the hollow ones.
+            let recipe = FocusRecipe.parse(fromJSONLD: article.jsonLD)
+            // A title over sixty words of boilerplate is a failure wearing a
+            // heading — better to say so than to render it with confidence.
+            guard article.isSubstantial || recipe != nil else {
+                focusPhase = .failed("There isn't an article to focus on here.")
+                debugLog("focus: declined — \(article.wordCount) words extracted")
+                return
+            }
+            focusArticle = article
+            focusRecipe = recipe
+            focusPrefersArticle = false
+            focusPhase = .active
+            if let recipe {
+                debugLog("""
+                    focus: recipe — \(recipe.ingredients.count) ingredients, \
+                    \(recipe.steps.count) steps — \"\(recipe.title)\"
+                    """)
+            }
+            // Listen is one tap away now; pay the voice's model load while
+            // the user is still reading the first paragraph.
+            narrator.warmUp()
+            debugLog("""
+                focus: extracted \(article.blocks.count) blocks, \
+                \(article.wordCount) words from \(article.rootPath) — \
+                \"\(article.title)\"
+                """)
+        }
+    }
+
+    /// - Parameter blockIndex: the block at the top of the reader, so leaving
+    ///   Focus lands the page on the passage being read rather than wherever
+    ///   its scroll position happened to be.
+    func exitFocus(revealingBlock blockIndex: Int? = nil) {
+        guard focusPhase != .inactive else { return }
+        narrator.stop()
+        if focusVideoStage {
+            // Back exactly as the page drew it, from the saved inline style.
+            Task { @MainActor in
+                _ = await runInMediaFrame(.mediaUnstage, as: PageProtocol.Empty.self)
+                setPageScrollLocked(false)
+            }
+        }
+        focusVideoStage = false
+        focusPhase = .inactive
+        focusArticle = nil
+        focusRecipe = nil
+        focusPrefersArticle = false
+        if let blockIndex {
+            isolatedAgent.send(.focusReveal, ["index": blockIndex])
+        }
+    }
+
+    /// Asks the page what it looks like, on the same short ladder as top-colour
+    /// sampling: articles hydrate late, and the first reading routinely lands
+    /// before the prose does. Each rung re-classifies, so the verdict improves
+    /// rather than freezes.
+    private func scheduleFocusDetection() {
+        focusDetectionTask?.cancel()
+        focusDetectionTask = Task { @MainActor in
+            for delay in [700, 2400] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled else { return }
+                guard let signals = await isolatedAgent.value(
+                    .focusSignals, as: FocusSignals.self
+                ) else { continue }
+                let verdict = FocusClassification.classify(signals)
+                if verdict != focusDetection, let verdict {
+                    debugLog("""
+                        focus: \(verdict.kind.rawValue) \(verdict.confidence) — \
+                        \(signals.wordCount) words in \(signals.paragraphCount) paragraphs
+                        """)
+                }
+                focusDetection = verdict
+            }
+        }
+    }
+
+    /// The page under the reader is gone or changing; nothing about the old
+    /// one may survive onto the new.
+    private func resetFocus() {
+        narrator.stop()
+        focusDetectionTask?.cancel()
+        focusDetection = nil
+        // Not exitFocus(): there is no page position worth revealing, and the
+        // agent may already be unreachable.
+        focusPhase = .inactive
+        focusArticle = nil
+        focusRecipe = nil
+        focusPrefersArticle = false
+        // A staged element died with its document; there is nothing to
+        // unstage, and the flag must not survive onto the next page.
+        focusVideoStage = false
+    }
+
     /// Returns to the search screen without tearing down the web view, so the
     /// page and its history are still there if the user navigates again.
     func goHome() {
@@ -1433,6 +1658,9 @@ extension Tab: WKNavigationDelegate {
         hasCommittedDocument = true
         emptyPopupWatchdog?.cancel()
         if !blockLog.isEmpty { blockLog = BlockLog() }
+        // A new document: the reader would otherwise sit over a page it no
+        // longer describes.
+        resetFocus()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1448,6 +1676,7 @@ extension Tab: WKNavigationDelegate {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }
         scheduleAINaming()
+        scheduleFocusDetection()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 

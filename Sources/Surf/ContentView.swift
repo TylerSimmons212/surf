@@ -306,12 +306,45 @@ struct ContentView: View {
         guard let start = ProcessInfo.processInfo.environment["SURF_URL"], !start.isEmpty
         else { return }
         let targets = start.split(separator: ",").map(String.init)
+        // The tab the first URL loads into. Not `tabs.first`: with a restored
+        // session that's whatever survived from last time, and both the
+        // selection below and the affordances after it were acting on a page
+        // nobody asked for.
+        let primary = session.selectedTab
         for (offset, target) in targets.enumerated() {
-            let tab = offset == 0 ? session.selectedTab : session.addTab()
+            let tab = offset == 0 ? primary : session.addTab()
             tab.submit(target)
         }
-        if let first = session.tabs.first { session.select(first) }
-        openDevToolsIfAsked()
+        session.select(primary)
+        openDevToolsIfAsked(on: primary)
+        enterFocusIfAsked(on: primary)
+    }
+
+    /// Dev affordance: `SURF_FOCUS=1` alongside `SURF_URL` enters Focus on
+    /// that page once it has loaded — the extractor is otherwise only
+    /// reachable by hand, and it is the largest thing Focus runs in a page.
+    /// `SURF_FOCUS=2` also starts narration (`SURF_SILENT=1` mutes it), which
+    /// is how the whole speech pipeline gets exercised from the command line.
+    private func enterFocusIfAsked(on tab: Tab) {
+        let want = ProcessInfo.processInfo.environment["SURF_FOCUS"]
+        guard want == "1" || want == "2" else { return }
+        Task { @MainActor in
+            // After the load settles, not on a stopwatch: extracting a page
+            // that is still streaming in reads only the part that arrived.
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if tab.mode == .browsing, !tab.isLoading { break }
+            }
+            try? await Task.sleep(for: .seconds(1))
+            tab.enterFocus()
+            guard want == "2" else { return }
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if case .active = tab.focusPhase { break }
+            }
+            guard let article = tab.focusArticle else { return }
+            tab.narrator.toggle(reading: article)
+        }
     }
 
     /// Dev affordance: `SURF_DEVTOOLS=console` alongside `SURF_URL` opens the
@@ -320,10 +353,9 @@ struct ContentView: View {
     /// The injected half of dev tools only exists while a panel is attached,
     /// so without this there is no way to exercise it except by hand — and the
     /// scripts it installs are the largest thing Surf puts into a page.
-    private func openDevToolsIfAsked() {
+    private func openDevToolsIfAsked(on tab: Tab) {
         guard let want = ProcessInfo.processInfo.environment["SURF_DEVTOOLS"],
-              !want.isEmpty,
-              let tab = session.tabs.first
+              !want.isEmpty
         else { return }
         let pane = DevToolsSession.Pane(rawValue: want) ?? .console
         Task { @MainActor in
@@ -575,7 +607,30 @@ private struct TabContent: View {
                     if let error = tab.lastError {
                         ErrorOverlay(message: error) { tab.reload() }
                     }
+
+                    // The reader, over the live page. The web view stays
+                    // mounted underneath so leaving Focus is a fade, not a
+                    // reload — same reasoning as the dev tools highlight.
+                    if tab.focusPhase != .inactive {
+                        FocusOverlay(tab: tab)
+                            .transition(.opacity)
+                            .zIndex(2)
+                    } else if tab.canOfferFocus {
+                        // Bottom-trailing: out of the find bar's corner and
+                        // clear of every site's own top chrome.
+                        FocusPill(tab: tab)
+                            .padding(.bottom, 16)
+                            .padding(.trailing, 16)
+                            .frame(
+                                maxWidth: .infinity, maxHeight: .infinity,
+                                alignment: .bottomTrailing
+                            )
+                            .transition(.opacity)
+                            .zIndex(2)
+                    }
                 }
+                .animation(.easeInOut(duration: 0.22), value: tab.focusPhase)
+                .animation(.easeInOut(duration: 0.22), value: tab.canOfferFocus)
             }
         }
         // What makes the dive's reveal a crossfade: the mode flip swaps the
