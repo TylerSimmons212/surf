@@ -11,6 +11,19 @@ import WebKit
 @Observable
 @MainActor
 final class Tab: NSObject, Identifiable {
+    /// The page's colour scheme, emulated per tab — the dev-tools "what does
+    /// this look like in dark mode" switch, not the browser's own theme.
+    ///
+    /// WebKit exposes no colour-scheme API; what it reads is the web view's
+    /// `effectiveAppearance`, mapped straight onto `prefers-color-scheme`
+    /// and restyled live. Overriding the view's `appearance` therefore flips
+    /// the page and only the page: the panel, the chrome and every other tab
+    /// keep following the app. Deliberately not persisted — an emulation is
+    /// a question being asked, not a setting.
+    var emulatedAppearance: AppearanceMode = .system {
+        didSet { webView.appearance = emulatedAppearance.nsAppearance }
+    }
+
 
     /// Home = the centered search field; browsing = chrome + page. This is
     /// per-tab, so a new tab opens on the search screen while others keep pages.
@@ -241,6 +254,9 @@ final class Tab: NSObject, Identifiable {
         // Set outside the `configuration == nil` block deliberately: popup and
         // `target="_blank"` tabs skip that branch, and they need this too.
         created.isInspectable = true
+        // Hibernation rebuilds the web view; the emulation must survive that
+        // or waking a tab silently un-darks it.
+        created.appearance = emulatedAppearance.nsAppearance
 
         // Rebuilt with the view, not with the tab: hibernation releases the web
         // view and builds another, and an agent still pointed at the released

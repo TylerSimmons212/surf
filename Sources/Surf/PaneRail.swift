@@ -28,6 +28,14 @@ struct PaneRail: View {
                 }
             }
             Spacer(minLength: 0)
+
+            // Page-wide testing conditions live at the foot of the rail —
+            // they belong to no pane, and the rail is the one piece of
+            // chrome every pane shares. First resident: the colour-scheme
+            // emulation.
+            if let tab = session.tab {
+                AppearanceEmulationMenu(tab: tab)
+            }
         }
         .padding(.vertical, DevToolsTheme.unit * 2)
         .frame(width: DevToolsTheme.railWidth)
@@ -98,5 +106,60 @@ private struct PaneRailItem: View {
     private var fill: Color {
         if isSelected { return DevToolsTheme.selectedFill }
         return isHovering ? DevToolsTheme.hoverFill : .clear
+    }
+}
+
+/// The "what does this page look like in dark mode" switch: a native menu
+/// with the three schemes, wearing the current one as its icon.
+///
+/// A menu rather than a cycle-on-click button because a cycling control
+/// shows its state only after you've changed it — and the wrong answer to
+/// "is this page being emulated right now" costs a confused bug hunt on a
+/// page that looks dark for no visible reason. Amber when overriding, so an
+/// active emulation is one glance from anywhere.
+private struct AppearanceEmulationMenu: View {
+    @Bindable var tab: Tab
+
+    var body: some View {
+        Menu {
+            Picker("Appearance", selection: $tab.emulatedAppearance) {
+                Text("System").tag(AppearanceMode.system)
+                Text("Light").tag(AppearanceMode.light)
+                Text("Dark").tag(AppearanceMode.dark)
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 13))
+                .foregroundStyle(
+                    tab.emulatedAppearance == .system ? Color.secondary : Color.orange
+                )
+                .frame(
+                    width: DevToolsTheme.railItemWidth,
+                    height: DevToolsTheme.railItemHeight
+                )
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
+    }
+
+    private var symbol: String {
+        switch tab.emulatedAppearance {
+        case .system: "circle.lefthalf.filled"
+        case .light: "sun.max.fill"
+        case .dark: "moon.fill"
+        }
+    }
+
+    private var help: String {
+        switch tab.emulatedAppearance {
+        case .system: "Emulate light or dark mode for this page"
+        case .light: "This page is emulating light mode"
+        case .dark: "This page is emulating dark mode"
+        }
     }
 }

@@ -83,3 +83,15 @@
   document.querySelector('.flexrow > div').classList.add('sleepy-item');
   document.querySelector('.grid > div').classList.add('sleepy-griditem');
 </script>
+<style>
+  /* Appearance emulation: the page announces which scheme it's rendering. */
+  .scheme-report::after { content: "light"; font-weight: bold; color: #B26B1D; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181D; color: #E8E9EC; }
+    .scheme-report::after { content: "dark"; font-weight: bold; color: #7FA5E0; }
+    .grid > div { background: #253147; }
+    .flexrow > div { background: #1D2B23; }
+  }
+</style>
+<h2 style="margin-top: 40px">Appearance emulation</h2>
+<p class="scheme-report">This page is currently rendering prefers-color-scheme: </p>
