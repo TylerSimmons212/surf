@@ -380,15 +380,18 @@ current or the number means nothing.
 against the publisher's own checksums, installed atomically into
 `~/Library/Application Support/Surf/Components`, never prompting and never
 reporting. A failed update leaves the previous copy alone and tries again next
-week. Resolution runs newest-first — managed copy, then the copy bundled in the
-app, then `PATH`, so `swift run` works without a bundle.
+week. Resolution runs newest-first — managed copy, then `PATH`, so `swift run`
+works without a bundle. Neither binary ships inside `Surf.app`: yt-dlp was
+dropped from the bundle to keep the app small (it was 37&nbsp;MB of a
+54&nbsp;MB app), so stream downloads start working after the first update
+check, or immediately with a copy on `PATH`.
 
 The two are handled differently, and the difference is licensing:
 
 | | yt-dlp | ffmpeg |
 |---|---|---|
 | Licence | Unlicense | GPLv3 — every prebuilt static macOS build |
-| Bundled in `Surf.app` | Yes, pinned + checksummed by `bundle.sh` | **No** |
+| Bundled in `Surf.app` | **No** — fetched by `UpdateManager` | **No** |
 | Source | GitHub releases + `SHA2-256SUMS` | [ffmpeg.martin-riedl.de](https://ffmpeg.martin-riedl.de) + `.sha256` sidecar |
 | Extra verification | — | Developer ID team pin (`KU3N25YGLU`) |
 

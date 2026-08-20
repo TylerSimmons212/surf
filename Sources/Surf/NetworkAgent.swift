@@ -19,8 +19,16 @@ import WebKit
 ///
 /// Installed at document-start and always running, like console capture, for
 /// the same reason: the request you want to look at is usually the one that
-/// already failed. It costs nothing until a panel attaches — the ring buffer
-/// fills and `postMessage` is called zero times.
+/// already failed. It costs almost nothing until a panel attaches — the ring
+/// buffer fills with small records (url, method, status, timing), header
+/// copies and body capture are skipped entirely, and `postMessage` is called
+/// zero times. The one fidelity trade: a request from before attach drains
+/// without header detail.
+///
+/// This wrap is also the *only* wrap. The content blocker's page-side
+/// accounting used to install a second fetch/XHR/sendBeacon wrapper and a
+/// second resource observer of its own; it now registers a tap
+/// (`runtime.state.blockTap`) that this file's single wrap feeds.
 enum NetworkAgent {
 
     static let eventHandlerName = "surfNetworkEvents"
@@ -209,6 +217,19 @@ enum NetworkAgent {
         return out;
       }
 
+      // ---- The block bridge's tap -----------------------------------------
+
+      // The content blocker's accounting used to wrap fetch, XHR and
+      // sendBeacon a *second* time and run a second resource observer of its
+      // own. Now it registers one callback here — `(url, kind, loaded)` —
+      // and this file's single wrap and single observer feed it. Nothing is
+      // reported until the block bridge installs the tap, so pages with
+      // blocking off pay only a null check.
+      function blockTap(url, kind, loaded) {
+        const tap = runtime.state.blockTap;
+        if (tap) { try { tap(url, kind, loaded); } catch (e) {} }
+      }
+
       // ---- fetch ----------------------------------------------------------
 
       const nativeFetch = window.fetch;
@@ -216,42 +237,60 @@ enum NetworkAgent {
         window.fetch = function (input, init) {
           let url = '';
           let method = 'GET';
-          let requestHeaders = {};
+          // Headers are copied only while a panel is attached: unattached,
+          // the copy would be built per call and thrown away with the record
+          // 400 requests later, unseen. The trade: a request from before
+          // attach drains without header detail.
+          let requestHeaders;
           try {
             if (typeof input === 'string') { url = input; }
             else if (input && input.url) {
               url = input.url;
               method = input.method || method;
-              requestHeaders = headerObject(input.headers);
+              if (live) { requestHeaders = headerObject(input.headers); }
             } else { url = String(input); }
             if (init) {
               if (init.method) { method = init.method; }
-              if (init.headers) { requestHeaders = headerObject(init.headers); }
+              if (live && init.headers) { requestHeaders = headerObject(init.headers); }
             }
           } catch (e) { /* fall through with whatever was read */ }
 
           const started = performance.now();
           const record = {
             id: 'f' + (nextId++), url: absolute(url), method: String(method).toUpperCase(),
-            initiator: 'fetch', startedAt: started, detailed: true,
-            requestHeaders: requestHeaders
+            initiator: 'fetch', startedAt: started, detailed: true
           };
+          if (requestHeaders) { record.requestHeaders = requestHeaders; }
           try {
             const sent = (init && init.body) || (input && input.body) || null;
             if (live && sent) {
               setBody(record, 'requestBody', describeRequestBody(sent),
-                      requestHeaders['content-type'] || requestHeaders['Content-Type'] || '');
+                      (requestHeaders
+                        && (requestHeaders['content-type'] || requestHeaders['Content-Type'])) || '');
             } else if (sent) {
               record.requestBodyOmission = 'notCaptured';
             }
           } catch (e) { /* a body we can't read is not worth failing the fetch */ }
           note(record);
 
-          return nativeFetch.apply(this, arguments).then(function (response) {
+          let result;
+          try {
+            result = nativeFetch.apply(this, arguments);
+          } catch (error) {
+            // A synchronous throw — bad arguments, usually — never went
+            // anywhere, which is what the block accounting counts.
+            blockTap(url, 'fetch', false);
+            record.failure = String((error && error.message) || error);
+            record.duration = performance.now() - started;
+            note(record);
+            throw error;
+          }
+
+          return result.then(function (response) {
             record.status = response.status;
             record.statusText = response.statusText || '';
             record.duration = performance.now() - started;
-            record.responseHeaders = headerObject(response.headers);
+            if (live) { record.responseHeaders = headerObject(response.headers); }
             // An opaque response is one we are not allowed to see into at all;
             // its status reads as 0, which is not a status.
             record.isOpaque = response.type === 'opaque' || response.type === 'opaqueredirect';
@@ -283,6 +322,11 @@ enum NetworkAgent {
             }
             return response;
           }, function (error) {
+            // A rejected fetch is a request that never arrived. An HTTP error
+            // is not — it resolves, and the server answered. The raw URL, not
+            // the absolutized one, goes to the tap: that is what the block
+            // bridge's own wrap saw before it delegated here.
+            blockTap(url, 'fetch', false);
             record.failure = String((error && error.message) || error);
             record.duration = performance.now() - started;
             note(record);
@@ -306,6 +350,15 @@ enum NetworkAgent {
             method: String(method || 'GET').toUpperCase(),
             url: absolute(url), headers: {}
           };
+          if (runtime.state.blockTap) {
+            // Specifically the `error` event, not `loadend` with status 0:
+            // an abort or a timeout is not a blocked request, and counting it
+            // as one would inflate the block panel.
+            const raw = String(url);
+            try {
+              this.addEventListener('error', function () { blockTap(raw, 'xhr', false); });
+            } catch (e) { /* a subclass with a sealed prototype */ }
+          }
           return nativeOpen.apply(this, arguments);
         };
 
@@ -341,8 +394,10 @@ enum NetworkAgent {
               if (request.status > 0) {
                 record.status = request.status;
                 record.statusText = request.statusText || '';
-                record.responseHeaders = parseRawHeaders(request.getAllResponseHeaders());
                 if (live) {
+                  // Only while attached: reading and parsing the raw header
+                  // block per XHR is pure waste on a page nobody is inspecting.
+                  record.responseHeaders = parseRawHeaders(request.getAllResponseHeaders());
                   const type = request.getResponseHeader('content-type') || '';
                   // `responseText` throws for a binary responseType, so it is
                   // asked for only where it can legitimately answer.
@@ -380,7 +435,12 @@ enum NetworkAgent {
               initiator: 'beacon', startedAt: performance.now(), duration: 0,
               detailed: true
             });
-            return nativeBeacon.apply(navigator, arguments);
+            const queued = nativeBeacon.apply(navigator, arguments);
+            // sendBeacon is how trackers report on their way out of a page,
+            // and it returns false when the request was refused rather than
+            // queued.
+            if (!queued) { blockTap(String(url), 'beacon', false); }
+            return queued;
           };
         }
       } catch (e) { /* not fatal */ }
@@ -427,6 +487,9 @@ enum NetworkAgent {
         const observer = new PerformanceObserver(function (list) {
           const entries = list.getEntries();
           for (let i = 0; i < entries.length; i++) {
+            // The loaded half of the block panel's accounting rides the same
+            // observer rather than a second one of its own.
+            blockTap(entries[i].name, entries[i].initiatorType || 'other', true);
             post_timing(fromTiming(entries[i]));
           }
         });
