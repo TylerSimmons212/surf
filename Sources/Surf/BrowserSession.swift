@@ -154,7 +154,10 @@ final class BrowserSession {
         // Deletions a previous run couldn't finish, retried now — before any
         // island has built a web view, which is the one moment nothing is
         // holding a store.
-        Task { @MainActor in await IslandStores.shared.collectTombstones() }
+        // Spared: every store an island actually names. A tombstone says what
+        // some earlier run intended, and this says what is true now.
+        let claimed = Set(built.compactMap(\.dataStoreID))
+        Task { @MainActor in await IslandStores.shared.collectTombstones(sparing: claimed) }
 
         startReclaimTimer()
 
@@ -216,14 +219,23 @@ final class BrowserSession {
 
         // Every island, not just the one on screen: a background island's
         // tabs are no less the user's for not being visible right now.
+        //
+        // Except one still being made. It is in the list so the sheet naming it
+        // can preview it and switch to it, and it is the *current* island while
+        // that sheet is up — but the user hasn't agreed to it, so a save
+        // triggered in that window must not be what decides they have. The
+        // selection falls back with it, or a crash mid-creation would reopen on
+        // an island that was never written.
+        let settled = islands.filter { !$0.isProvisional }
+        let selected = currentIsland.isProvisional ? islandBeforeProvisional : currentIsland
         let snapshot = PersistedSession(
-            islands: islands.map { island in
+            islands: settled.map { island in
                 island.snapshot(
                     refreshingState: blocking,
                     selected: island === currentIsland ? selectedTabID : nil
                 )
             },
-            selectedIslandIndex: islands.firstIndex { $0 === currentIsland } ?? 0
+            selectedIslandIndex: settled.firstIndex { $0 === selected } ?? 0
         )
         // Strips each tab's back/forward blob when history is off.
         let redacted = PrivacyPolicy.redact(snapshot, for: settings)
@@ -414,11 +426,28 @@ final class BrowserSession {
     /// work login into a personal island by not reading a sheet.
     @discardableResult
     func createIslandAndEdit() -> Island {
+        let previous = currentIsland
         let island = createIsland()
+        // Both halves of "this isn't real yet", set before anything can go
+        // wrong rather than cleaned up afterwards — a crash is precisely the
+        // event that skips the cleanup. The island stays out of the session
+        // file, and its store is marked for collection at the next launch
+        // unless the sheet claims it first.
+        island.isProvisional = true
+        if let store = island.dataStoreID { IslandStores.shared.tombstone(store) }
+        islandBeforeProvisional = previous
         select(island: island)
         beginEditing(island, isNew: true, broughtFrom: homeIsland)
         return island
     }
+
+    /// Where to put the user back if the island being made never happens.
+    ///
+    /// The provisional island is the current one while its sheet is up, and the
+    /// current island is what a save records as selected. Without this, dying
+    /// mid-creation would reopen on an island that no longer exists, and the
+    /// fallback — the first one — is not where they were.
+    private var islandBeforeProvisional: Island?
 
     /// The island the browser started life as.
     ///
@@ -564,9 +593,18 @@ final class BrowserSession {
     /// safely attribute to anything, and this is the one moment it is certainly
     /// unused and certainly unwanted.
     func finishCreatingIsland(_ island: Island) {
-        defer { islandEditorSource = nil }
-        guard let own = island.ownStoreID, own != island.dataStoreID else { return }
-        Task { @MainActor in await IslandStores.shared.removeData(for: own) }
+        islandEditorSource = nil
+        islandBeforeProvisional = nil
+        island.isProvisional = false
+
+        // Claimed first, written second. See `IslandStores.claim` — the reverse
+        // order fails by erasing the logins of an island the user can see.
+        if let store = island.dataStoreID { IslandStores.shared.claim(store) }
+        saveNow()
+
+        if let own = island.ownStoreID, own != island.dataStoreID {
+            Task { @MainActor in await IslandStores.shared.removeData(for: own) }
+        }
     }
 
     /// What deleting this island actually costs, said in the menu item itself.
@@ -699,6 +737,8 @@ final class BrowserSession {
     func deleteIsland(_ island: Island) {
         guard !island.isHome, islands.count > 1 else { return }
         guard let index = islands.firstIndex(where: { $0 === island }) else { return }
+
+        if island.isProvisional { islandBeforeProvisional = nil }
 
         if island === currentIsland {
             let fallback = IslandLayout.indexAfterDeleting(

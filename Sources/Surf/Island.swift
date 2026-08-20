@@ -97,6 +97,18 @@ final class Island: Identifiable {
     nonisolated let isHome: Bool
 
 
+    /// Whether this island is still being made — created so the sheet naming
+    /// it has something to preview and switch to, but not yet agreed to.
+    ///
+    /// Nothing provisional is written to disk. An island exists from the moment
+    /// the sheet opens because that is what makes the preview live, and the
+    /// cost of that is a window in which something the user never confirmed is
+    /// sitting in the island list. Saving it would turn a crash, a force quit,
+    /// or a Mac running out of power during that window into an island they
+    /// have to notice and delete — named after a place they never chose, with a
+    /// cookie jar of its own.
+    @ObservationIgnored var isProvisional = false
+
     /// Whether this island failed to get persistent storage this run, so the
     /// UI can say so rather than quietly forgetting the user on every quit.
     var isDegraded: Bool { IslandStores.shared.isDegraded(dataStoreID) }

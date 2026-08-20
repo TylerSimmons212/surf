@@ -379,16 +379,21 @@ struct IslandEditorSheet: View {
 
     private func close() {
         committed = true
-        // Only ever true for the sheet that made this island, which is the only
-        // one that can leave an unused jar behind.
-        if isNew { session.finishCreatingIsland(island) }
         // Everything lands here, at once, or not at all.
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         // An island with no name is a chip you can't tell from the next one.
         if !trimmed.isEmpty { island.name = trimmed }
         island.symbol = IslandSymbols.firstSymbol(in: symbolText) ?? island.symbol
         island.tint = IslandTint(tint)
-        session.saveNow()
+
+        // Last, and only now: this is the moment a new island stops being a
+        // preview and becomes the user's, so it is also the first moment it is
+        // worth writing down. Named before it is saved, rather than saved twice.
+        if isNew {
+            session.finishCreatingIsland(island)
+        } else {
+            session.saveNow()
+        }
         dismiss()
     }
 }
