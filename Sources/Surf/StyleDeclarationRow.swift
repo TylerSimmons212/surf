@@ -13,6 +13,8 @@ struct DeclarationRow: View {
     @State private var isTracing = false
     @State private var isEditing = false
     @State private var draft = ""
+    /// The in-flight live write, kept so the next keystroke can cancel it.
+    @State private var liveWrite: Task<Void, Never>?
     @FocusState private var isFocused: Bool
 
     private var status: DeclarationStatus {
@@ -145,6 +147,15 @@ struct DeclarationRow: View {
                 .textFieldStyle(.plain)
                 .font(DevToolsTheme.mono)
                 .focused($isFocused)
+                // Up and down nudge the number, the way every other inspector
+                // does. A single-line field has nothing useful to do with
+                // these keys otherwise — they only jump the caret to the ends
+                // — so intercepting them costs nothing.
+                .onKeyPress(keys: [.upArrow, .downArrow], phases: .down) { nudge($0) }
+                // The page follows the field. Editing a style you cannot see
+                // the effect of is a text box with extra steps, and the live
+                // path already exists — it is what dragging a number uses.
+                .onChange(of: draft) { _, new in liveApply(new) }
                 .onSubmit { commit() }
                 .onExitCommand { cancel() }
                 .padding(.horizontal, 3)
@@ -278,7 +289,47 @@ struct DeclarationRow: View {
         isFocused = true
     }
 
+    /// Steps the first number in the draft.
+    ///
+    /// The first, not the one under the caret, because SwiftUI's `TextField`
+    /// exposes no selection — so `margin: 8px 12px` nudges the 8. Dragging a
+    /// number still addresses each one exactly, which is the affordance to
+    /// reach for on a multi-value property.
+    private func nudge(_ press: KeyPress) -> KeyPress.Result {
+        guard let number = CSSValueScrub.numbers(in: draft).first else { return .ignored }
+        let step = CSSValueScrub.step(
+            for: number.unit,
+            coarse: press.modifiers.contains(.shift),
+            fine: press.modifiers.contains(.option)
+        )
+        let direction: Double = press.key == .upArrow ? 1 : -1
+        draft = CSSValueScrub.replacing(
+            draft,
+            number: number,
+            with: CSSValueScrub.adjusted(number, by: direction, unit: step)
+        )
+        // `onChange(of: draft)` writes it to the page.
+        return .handled
+    }
+
+    /// Writes the draft to the page without rebuilding the pane.
+    ///
+    /// Cancel-and-replace rather than one task per keystroke, because separate
+    /// tasks have no ordering: type fast enough and an earlier value can land
+    /// after a later one, leaving the page showing something you already
+    /// typed past. Only the newest survives, and the short delay keeps a held
+    /// arrow key from queueing a write per repeat.
+    private func liveApply(_ value: String) {
+        liveWrite?.cancel()
+        liveWrite = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            guard !Task.isCancelled else { return }
+            await session.setValue(value, of: declaration, in: rule, live: true)
+        }
+    }
+
     private func commit() {
+        liveWrite?.cancel()
         let value = draft
         isEditing = false
         isFocused = false
@@ -286,9 +337,24 @@ struct DeclarationRow: View {
         Task { @MainActor in await session.setValue(value, of: declaration, in: rule) }
     }
 
+    /// Escape has to put the page back, not just shut the field.
+    ///
+    /// It used to be enough to stop editing, because nothing had been written
+    /// until you pressed return. Now that the page follows every keystroke,
+    /// closing the field without reverting would leave the element wearing an
+    /// edit you explicitly cancelled. The changeset drops the entry on its own
+    /// — a change recorded back to its original value is a no-op and gets
+    /// removed rather than left in the Changes list.
     private func cancel() {
+        liveWrite?.cancel()
+        let original = declaration.value
+        let touched = draft != original
         isEditing = false
         isFocused = false
+        guard touched else { return }
+        Task { @MainActor in
+            await session.setValue(original, of: declaration, in: rule)
+        }
     }
 
     private func toggleTrace() {

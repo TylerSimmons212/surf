@@ -57,6 +57,10 @@ final class DevToolsSession: Identifiable {
         ///
         /// Separate from `allCases`, which stays in declaration order because
         /// `SURF_DEVTOOLS` parses a raw value and tests index it.
+        /// Panes whose whole content is about the selected element — so a
+        /// pick can land here rather than being redirected.
+        var showsSelectedElement: Bool { self == .elements || self == .styles }
+
         static let groups: [[Pane]] = [
             [.elements, .styles],
             [.network, .console],
@@ -471,10 +475,15 @@ final class DevToolsSession: Identifiable {
         )
     }
 
-    func setValue(_ value: String, of declaration: CSSDeclaration, in rule: MatchedRule) async {
+    func setValue(
+        _ value: String,
+        of declaration: CSSDeclaration,
+        in rule: MatchedRule,
+        live: Bool = false
+    ) async {
         var edited = declaration
         edited.value = value.trimmingCharacters(in: .whitespaces)
-        await apply(edited, replacing: declaration, in: rule)
+        await apply(edited, replacing: declaration, in: rule, live: live)
     }
 
     /// Puts the collected edits back after a reload.
@@ -682,10 +691,32 @@ final class DevToolsSession: Identifiable {
         // A value the engine can't parse is dropped without complaint. Catching
         // it here is the difference between "that isn't a colour" and an edit
         // that appears to have worked and didn't.
-        let applied = Set(reply["applied"] as? [String] ?? [])
-        if enabled, !applied.isEmpty,
-           !edited.longhands.contains(where: { applied.contains($0) }) {
+        // The agent could not find what it was asked to change: a stale rule
+        // id, a frame that navigated under us, a stylesheet that went away.
+        //
+        // This used to read as success. `applied` comes back absent, so the
+        // emptiness check below passes, the edit is recorded into the
+        // changeset and drawn as though it landed — while the page never
+        // moved. An edit that silently does nothing is the worst failure this
+        // pane can have, because you go and look for the bug somewhere else.
+        if let failure = reply["error"] as? String {
+            debugLog("style edit failed: \(failure) — \(original.name) on rule \(rule.id)")
             rejectedEdit = ref
+            return
+        }
+
+        let applied = Set(reply["applied"] as? [String] ?? [])
+        debugLog(
+            "style edit: \(original.name)=\(edited.value) rule=\(rule.id) "
+                + "live=\(live) applied=\(applied.count) props"
+        )
+        let rejected = enabled && !applied.isEmpty
+            && !edited.longhands.contains(where: { applied.contains($0) })
+        if rejected {
+            // Only complain once the edit is finished. Typing "1p" on the way
+            // to "12px" is not a mistake, and flashing "not a value color
+            // accepts" at every keystroke would make live editing unusable.
+            if !live { rejectedEdit = ref }
         } else {
             changeset.record(StyleChange(
                 ruleId: rule.id,
@@ -1811,7 +1842,15 @@ final class DevToolsSession: Identifiable {
             isPicking = false
             hoveredNode = nil
             hoveredBox = nil
-            pane = .elements
+            // Answer in the pane that asked.
+            //
+            // This used to switch to Elements unconditionally, which made the
+            // picker useless from Styles: arm it, click a heading, and land in
+            // the DOM tree having to navigate back to the pane you were
+            // reading. Both panes are about the selected element, so either is
+            // a valid place to land — only a pane that has nothing to do with
+            // the selection needs redirecting.
+            if !pane.showsSelectedElement { pane = .elements }
             revealAndSelect(nodeId)
             // The result is in the panel, so the panel comes forward. The page
             // was fronted to receive the click; that job is done.
