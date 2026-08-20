@@ -11,9 +11,17 @@ let package = Package(
             name: "SurfCore",
             path: "Sources/SurfCore"
         ),
+        // Struct layouts for the downloaded TTS runtime, pinned to its
+        // version. Nothing links against it — the dylib is dlopen'd — but the
+        // compiler checking these offsets is what stands between the enhanced
+        // voice and garbage audio with no error attached.
+        .target(
+            name: "SherpaTTSABI",
+            path: "Sources/SherpaTTSABI"
+        ),
         .executableTarget(
             name: "Surf",
-            dependencies: ["SurfCore"],
+            dependencies: ["SurfCore", "SherpaTTSABI"],
             path: "Sources/Surf"
         ),
         .testTarget(

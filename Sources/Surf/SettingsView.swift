@@ -11,10 +11,66 @@ struct SettingsView: View {
         TabView {
             GeneralSettingsView()
                 .tabItem { Label("General", systemImage: "gearshape") }
+            ReaderSettingsView()
+                .tabItem { Label("Reader", systemImage: "text.page") }
             AISettingsView()
                 .tabItem { Label("AI", systemImage: "sparkles") }
         }
         .frame(width: 460)
+    }
+}
+
+/// Focus's settings: today, the reading voice.
+struct ReaderSettingsView: View {
+    @State private var installer = VoiceInstaller.shared
+    @AppStorage(PreferenceKeys.focusEnhancedVoice) private var useEnhancedVoice = true
+
+    var body: some View {
+        Form {
+            Section {
+                switch installer.phase {
+                case .absent, .failed:
+                    Button("Download Enhanced Voice (\(VoiceComponent.totalMegabytes) MB)") {
+                        installer.install()
+                    }
+                    if case .failed(let message) = installer.phase {
+                        Text(message)
+                            .font(Typeface.figtree(size: 11))
+                            .foregroundStyle(.orange)
+                    }
+
+                case .downloading(let progress):
+                    ProgressView(value: progress) {
+                        Text("Downloading… \(Int(progress * 100))%")
+                    }
+
+                case .installing:
+                    ProgressView {
+                        Text("Installing…")
+                    }
+
+                case .installed:
+                    Toggle("Read with the enhanced voice", isOn: $useEnhancedVoice)
+                    Button("Remove Enhanced Voice") {
+                        installer.remove()
+                    }
+                }
+            } header: {
+                Text("Reading Voice")
+            } footer: {
+                Text("""
+                    Focus can read articles aloud. Out of the box it uses \
+                    the best voice installed on this Mac. The enhanced voice \
+                    is a neural model (Kokoro, via sherpa-onnx) that runs \
+                    entirely on this machine — nothing that is read leaves \
+                    it. Applies from the next reading. English only, for now.
+                    """)
+                    .font(Typeface.figtree(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .environment(\.font, Typeface.figtree(size: 13))
     }
 }
 

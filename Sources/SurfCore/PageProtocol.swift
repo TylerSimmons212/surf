@@ -26,6 +26,13 @@ public enum PageProtocol {
         case themeDismissPreflight = "theme.dismissPreflight"
         case pageTopColor = "page.topColor"
         case pageFavicons = "page.favicons"
+        // The focus domain observes the document and never needs the site's
+        // globals, so it lives with the theme in the isolated world. The two
+        // extract methods are registered lazily — see `FocusBridge` — but
+        // answer through the same agent once they are.
+        case focusSignals = "focus.signals"
+        case focusExtract = "focus.extract"
+        case focusReveal = "focus.reveal"
         /// The document's full scrollable extent — what a full-page
         /// screenshot needs to know before it can be one.
         case pageMetrics = "page.metrics"
@@ -43,6 +50,8 @@ public enum PageProtocol {
         case mediaFrame = "media.frame"
         case mediaLockScroll = "media.lockScroll"
         case mediaUnlockScroll = "media.unlockScroll"
+        case mediaStage = "media.stage"
+        case mediaUnstage = "media.unstage"
         case findCount = "find.count"
         case findClearSelection = "find.clearSelection"
 
@@ -53,10 +62,12 @@ public enum PageProtocol {
             switch self {
             case .themeCollect, .themeApply, .themeRevert,
                  .themeDismissPreflight, .pageTopColor, .pageFavicons, .pageMetrics,
+                 .focusSignals, .focusExtract, .focusReveal,
                  .captureBegin, .captureEnd, .captureRect:
                 return .isolated
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,
+                 .mediaStage, .mediaUnstage,
                  .findCount, .findClearSelection:
                 return .page
             }

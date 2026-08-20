@@ -298,8 +298,36 @@ enum MediaBridge {
           });
         }
 
+        // Theater mode's cross-frame half. A video inside an iframe can pin
+        // itself fullscreen only within that iframe; the iframe element
+        // lives in the parent, so the child asks upward and each parent
+        // pins its own child frame — the same recognise-by-contentWindow
+        // trick the frame-offset protocol above stands on. The chain
+        // recurses naturally: a parent that isn't the top asks *its* parent.
+        function stageFrameOf(source, wanted) {
+          for (const f of document.querySelectorAll('iframe, frame')) {
+            if (f.contentWindow !== source) { continue; }
+            if (wanted) {
+              stageElement(f);
+              if (window !== window.top) {
+                try { parent.postMessage({ __surf: 'stageMe' }, '*'); } catch (err) {}
+              }
+            } else {
+              unstageAll();
+              if (window !== window.top) {
+                try { parent.postMessage({ __surf: 'unstageMe' }, '*'); } catch (err) {}
+              }
+            }
+            return;
+          }
+        }
+
         window.addEventListener('message', (e) => {
           const d = e.data;
+          if (d && (d.__surf === 'stageMe' || d.__surf === 'unstageMe') && e.source) {
+            stageFrameOf(e.source, d.__surf === 'stageMe');
+            return;
+          }
           if (!d || d.__surf !== 'whereAmI' || !e.source) { return; }
           let rect = null;
           for (const f of document.querySelectorAll('iframe, frame')) {
@@ -313,6 +341,103 @@ enum MediaBridge {
             try { e.source.postMessage({ __surf: 'frameAt', token: d.token, offset: offset }, '*'); }
             catch (err) { /* the child went away mid-question */ }
           });
+        });
+
+        // Theater mode: the page's own element becomes the stage — most
+        // video is a blob: URL that exists only in this document, so there
+        // is nothing to rehost. Promoted by attribute + stylesheet, not
+        // inline style: YouTube rewrites the element's inline style every
+        // resize tick, and inline stage styles held for exactly one frame.
+        // The ancestor rule is the other half — a transform, filter, or
+        // contain on any ancestor makes it the containing block and caps
+        // z-index under the site's chrome, so every ancestor is neutralised;
+        // the wreckage is invisible behind the stage and untagged on exit.
+        // Three rules: pin the video; dissolve every ancestor's containing
+        // block and stacking context (transform, contain, isolation and kin
+        // — any of them re-anchors "fixed" to a div and caps z-index under
+        // the site's chrome); and lights-out — everything off the path to
+        // the video goes visibility:hidden, so there is no z-order war with
+        // mastheads to win and no suggestion tile left to autoplay a
+        // preview over the show. visibility, not display: layout holds, and
+        // players keep measuring the world they expect.
+        function ensureStageSheet() {
+          if (document.getElementById('__surf_stage')) { return; }
+          const s = document.createElement('style');
+          s.id = '__surf_stage';
+          s.textContent =
+            // visibility:visible is load-bearing: players (YouTube) re-parent
+            // their video between containers, and until the next re-tag its
+            // new branch is one lights-out would hide — hiding inherits, and
+            // this is the override that keeps the show on through the move.
+            '[data-surf-stage]{visibility:visible!important;' +
+            'position:fixed!important;inset:0!important;' +
+            'width:100vw!important;height:100vh!important;' +
+            'max-width:none!important;max-height:none!important;' +
+            'min-width:0!important;min-height:0!important;' +
+            'margin:0!important;padding:0!important;border:0!important;' +
+            'transform:none!important;z-index:2147483646!important;' +
+            'background:#000!important;object-fit:contain!important}' +
+            '[data-surf-stage-ancestor]{transform:none!important;' +
+            'translate:none!important;rotate:none!important;' +
+            'scale:none!important;filter:none!important;' +
+            'backdrop-filter:none!important;perspective:none!important;' +
+            'clip-path:none!important;mask:none!important;' +
+            'isolation:auto!important;mix-blend-mode:normal!important;' +
+            'opacity:1!important;contain:none!important;' +
+            'content-visibility:visible!important;' +
+            'will-change:auto!important;z-index:auto!important}' +
+            '[data-surf-stage-ancestor]>' +
+            ':not([data-surf-stage-ancestor]):not([data-surf-stage])' +
+            '{visibility:hidden!important}';
+          document.documentElement.appendChild(s);
+        }
+
+        function stageElement(el) {
+          ensureStageSheet();
+          el.setAttribute('data-surf-stage', '');
+          let a = el.parentElement;
+          while (a && a !== document.documentElement) {
+            a.setAttribute('data-surf-stage-ancestor', '');
+            a = a.parentElement;
+          }
+        }
+
+        function unstageAll() {
+          for (const marked of document.querySelectorAll(
+            '[data-surf-stage], [data-surf-stage-ancestor]'
+          )) {
+            marked.removeAttribute('data-surf-stage');
+            marked.removeAttribute('data-surf-stage-ancestor');
+          }
+          document.getElementById('__surf_stage')?.remove();
+        }
+
+        runtime.define('media.stage', ({ id }) => {
+          const el = mediaById(id);
+          if (!el) { return null; }
+          // The transport is Surf's; two sets of controls fight.
+          if (el.dataset.surfStageControls === undefined) {
+            el.dataset.surfStageControls = el.controls ? '1' : '0';
+          }
+          el.controls = false;
+          stageElement(el);
+          if (!isTop) {
+            try { parent.postMessage({ __surf: 'stageMe' }, '*'); } catch (err) {}
+          }
+          return true;
+        });
+
+        runtime.define('media.unstage', ({ id }) => {
+          const el = mediaById(id);
+          if (el && el.dataset.surfStageControls !== undefined) {
+            el.controls = el.dataset.surfStageControls === '1';
+            delete el.dataset.surfStageControls;
+          }
+          unstageAll();
+          if (!isTop) {
+            try { parent.postMessage({ __surf: 'unstageMe' }, '*'); } catch (err) {}
+          }
+          return true;
         });
 
         runtime.define('media.toggle', ({ id }) => {
@@ -350,7 +475,7 @@ enum MediaBridge {
           return { x: r.x + offset.x, y: r.y + offset.y, width: r.width, height: r.height };
         });
 
-        runtime.define('media.lockScroll', ({ id }) => {
+        runtime.define('media.lockScroll', ({ id, keepInteraction }) => {
           if (!document.getElementById('__surf_lens')) {
             const s = document.createElement('style');
             s.id = '__surf_lens';
@@ -359,10 +484,17 @@ enum MediaBridge {
             // work here. This is what actually keeps the pointer off the page:
             // covering a view with another one doesn't stop it, because tracking
             // areas fire on geometry and know nothing about what's drawn on top.
-            s.textContent = 'html, body { overflow: hidden !important; }' +
-              'html, html * { pointer-events: none !important; }';
+            //
+            // Unless the caller wants the page playable: the video stage
+            // locks scroll but leaves the player — and its own controls —
+            // alive under the cutout, so only the overflow rule goes in.
+            s.textContent = keepInteraction
+              ? 'html, body { overflow: hidden !important; }'
+              : 'html, body { overflow: hidden !important; }' +
+                'html, html * { pointer-events: none !important; }';
             document.documentElement.appendChild(s);
           }
+          if (keepInteraction) { return true; }
           // Native controls don't auto-hide reliably when the pointer never arrives,
           // so switch them off outright. Custom players hide themselves once the
           // page stops seeing hover at all.

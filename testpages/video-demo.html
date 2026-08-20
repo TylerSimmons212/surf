@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Tide Cam — Live from the Harbour Wall</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; margin: 0; background: #dfe7ea; }
+    header { background: #123; color: #fff; padding: 12px 20px; }
+    .layout { max-width: 900px; margin: 20px auto; padding: 0 16px; }
+    video { width: 640px; height: 360px; background: #000; display: block; }
+    aside { background: #fff; padding: 12px; margin-top: 14px; }
+  </style>
+</head>
+<body>
+  <header><strong>Harbour TV</strong> — the tide, live, forever</header>
+  <div class="layout">
+    <!-- Fed from a canvas stream: a real playing video element with real
+         dimensions, and no video file to carry in the repository. -->
+    <video id="cam" autoplay muted playsinline></video>
+    <aside>
+      <h3>About this stream</h3>
+      <div>A wall. Water. The occasional gull. Broadcasting since the last ice age.</div>
+    </aside>
+  </div>
+  <script>
+    const canvas = document.createElement('canvas');
+    canvas.width = 640; canvas.height = 360;
+    const ctx = canvas.getContext('2d');
+    let t = 0;
+    function frame() {
+      t += 0.03;
+      ctx.fillStyle = '#0b2a3a';
+      ctx.fillRect(0, 0, 640, 360);
+      ctx.fillStyle = '#1d5a76';
+      ctx.beginPath();
+      ctx.moveTo(0, 360);
+      for (let x = 0; x <= 640; x += 8) {
+        ctx.lineTo(x, 200 + Math.sin(x / 60 + t) * 18 + Math.sin(t / 2) * 30);
+      }
+      ctx.lineTo(640, 360);
+      ctx.fill();
+      requestAnimationFrame(frame);
+    }
+    frame();
+    const video = document.getElementById('cam');
+    video.srcObject = canvas.captureStream(30);
+    video.play().catch(() => {});
+  </script>
+</body>
+</html>

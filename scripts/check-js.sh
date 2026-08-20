@@ -45,7 +45,8 @@ function context() {
   const window = {
     document: {
       readyState: 'complete', addEventListener: noop, getElementById: () => null,
-      querySelectorAll: () => [], createElement: () => el, documentElement: el,
+      querySelectorAll: () => [], querySelector: () => null,
+      createElement: () => el, documentElement: el,
       body: el, elementFromPoint: () => null, title: '',
     },
     setInterval: noop, clearInterval: noop, setTimeout: noop, navigator: {},
@@ -66,7 +67,12 @@ function context() {
 }
 
 const worlds = {
-  isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'capture.js'],
+  // focus-extract.js is not resident — Tab.enterFocus() evaluates it on
+  // demand — but it registers focus.extract and focus.reveal against the
+  // same agent, so it installs here like everything else, beside capture.js,
+  // main's lazy domain with the same arrangement.
+  isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'capture.js',
+             'focus.js', 'focus-extract.js'],
   page: ['runtime-page.js', 'media.js', 'find.js'],
 };
 
@@ -292,7 +298,11 @@ check_size() {
 # Injected into every frame of every page.
 check_size theme.js              34000
 check_size block.js              14000
-check_size media.js              12000
+# Raised from 12000 when theater mode landed, and again to 16000 when it
+# learned to survive hostile players (14451 at the time): stylesheet-based
+# staging, ancestor neutralisation, and lights-out all have to run where the
+# element lives, which is here.
+check_size media.js              16000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000
@@ -304,6 +314,10 @@ check_size find.js                2000
 check_size console.js            40000
 check_size network.js            33000
 check_size preflight.js           2000
+check_size focus.js               3000
+# Not resident at all — evaluated once, on the pages the user focuses — so
+# like devtools.js this budgets feature growth rather than per-page cost.
+check_size focus-extract.js      16000
 # Only while dev tools are attached — never on ordinary pages, so this one
 # budgets feature growth rather than per-page cost. Raised from 70000 when
 # the elements-pane work landed (74683 bytes at the time).

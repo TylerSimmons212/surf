@@ -114,6 +114,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>ATSApplicationFontsPath</key><string>Fonts</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>Surf adds a recipe's remaining ingredients to your grocery list when you ask it to.</string>
 </dict>
 </plist>
 PLIST

@@ -20,6 +20,15 @@ enum PreferenceKeys {
     /// derived on `AIFeature` — they're per feature and per provider, and a
     /// hand-maintained list here would drift.
     static let aiProvider = "aiProvider"
+    /// The reader's body size, in points. Per-user rather than per-tab:
+    /// comfortable type is a property of the eyes, not of the page.
+    static let focusFontSize = "focusFontSize"
+    /// Narration speed as a multiplier of normal; same reasoning — a
+    /// comfortable listening pace belongs to the listener.
+    static let focusSpeechRate = "focusSpeechRate"
+    /// Whether narration speaks through the downloaded voice when it's
+    /// installed. On by default: downloading it *is* the opt-in.
+    static let focusEnhancedVoice = "focusEnhancedVoice"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"
@@ -52,6 +61,9 @@ extension PrivacySettings {
             // Empty: whichever CLI is found first. A fresh machine has
             // neither, and the AI tab explains itself either way.
             PreferenceKeys.aiProvider: "",
+            // Downloading the enhanced voice is the opt-in; a switch that
+            // then defaulted off would make the download do nothing.
+            PreferenceKeys.focusEnhancedVoice: true,
         ])
     }
 
