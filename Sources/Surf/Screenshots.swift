@@ -66,13 +66,25 @@ extension Tab {
     // MARK: - Element-pick capture
 
     /// Arms the pick: veil up, agent listening, next click captures.
+    ///
+    /// The capture methods install here, not at page load — they are the one
+    /// agent domain that is lazy, because a per-page parse cost for a
+    /// few-times-a-day feature is exactly what the injected-script budget
+    /// exists to refuse. The install is idempotent per document.
     func beginAreaCapture() {
         guard mode == .browsing, captureOverlay == nil else { return }
         let overlay = CaptureOverlayView(frame: webView.bounds)
         overlay.autoresizingMask = [.width, .height]
         webView.addSubview(overlay)
         captureOverlay = overlay
-        isolatedAgent.send(.captureBegin)
+        Task { @MainActor in
+            _ = try? await webView.callAsyncJavaScript(
+                CaptureDomain.installScript,
+                arguments: [:],
+                contentWorld: PageProtocol.World.isolated.contentWorld
+            )
+            isolatedAgent.send(.captureBegin)
+        }
     }
 
     func cancelAreaCapture() {
