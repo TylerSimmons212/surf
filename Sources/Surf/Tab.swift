@@ -288,10 +288,43 @@ final class Tab: NSObject, Identifiable {
     /// the sidebar, so asking a sleeping tab for its title would wake the whole
     /// session the moment the list drew.
     var displayTitle: String {
+        if let aiTitle, !aiTitle.isEmpty { return aiTitle }
         if !pageTitle.isEmpty { return pageTitle }
         if mode == .home { return "New Tab" }
         if let host = currentURL.flatMap(URL.init(string:))?.host { return host }
         return "Loading…"
+    }
+
+    // MARK: - AI naming
+
+    /// A model-written name for the current page, when the feature is on and
+    /// one arrived. Never persisted: the session file keeps the page's real
+    /// title, and a restored tab re-earns its AI name (from the session cache,
+    /// usually) the next time its page loads.
+    private(set) var aiTitle: String?
+
+    @ObservationIgnored private var aiNamingTask: Task<Void, Never>?
+
+    /// Kicks off naming for the page that just finished loading.
+    ///
+    /// Waits a beat first: titles routinely land *after* `didFinish`, and the
+    /// name should be made from the title the user actually sees. The result
+    /// is applied only if the tab is still on the same page — a name for the
+    /// last page must never land on this one.
+    private func scheduleAINaming() {
+        aiNamingTask?.cancel()
+        guard AIPreferences.isEnabled(.tabRenaming) else { return }
+        aiNamingTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            guard let url = self.webView.url?.absoluteString else { return }
+            let title = self.pageTitle
+            guard let name = await AITabNamer.shared.name(forURL: url, pageTitle: title) else {
+                return
+            }
+            guard !Task.isCancelled, self.webView.url?.absoluteString == url else { return }
+            self.aiTitle = name
+        }
     }
 
     // MARK: - Restore
@@ -310,6 +343,14 @@ final class Tab: NSObject, Identifiable {
     /// then, is the run of consecutive tabs naming it — see `TabGrouping`.
     var groupID: UUID?
 
+    /// The sticker this tab belongs to, if any.
+    ///
+    /// Set once, when a sticker opens its page, and never cleared: a sticker's
+    /// tab is its tab for as long as it lives. The sidebar leaves these out of
+    /// its list — the sticker is already on screen, and a row for it as well
+    /// would be one tab claiming two places in the same sidebar.
+    var stickerID: UUID?
+
     /// Set once the user (or code) navigates deliberately. A pending restore
     /// must never overwrite that — restoring a tab you've already typed into
     /// would silently throw the new page away.
@@ -320,6 +361,7 @@ final class Tab: NSObject, Identifiable {
     func prepareRestore(from persisted: PersistedTab) {
         pendingRestore = persisted
         groupID = persisted.groupID
+        stickerID = persisted.stickerID
         pageTitle = persisted.title
         addressText = persisted.url ?? ""
         if persisted.isRestorable { mode = .browsing }
@@ -1156,6 +1198,7 @@ final class Tab: NSObject, Identifiable {
         func filed(_ tab: PersistedTab) -> PersistedTab {
             var tab = tab
             tab.groupID = groupID
+            tab.stickerID = stickerID
             return tab
         }
 
@@ -1383,6 +1426,9 @@ extension Tab: WKNavigationDelegate {
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DevToolsController.shared.documentDidCommit(for: self)
+        // A new document: whatever the model named the old one is wrong now.
+        aiNamingTask?.cancel()
+        aiTitle = nil
         // Something arrived, so this is a window with a page in it.
         hasCommittedDocument = true
         emptyPopupWatchdog?.cancel()
@@ -1401,6 +1447,7 @@ extension Tab: WKNavigationDelegate {
         if let url = webView.url {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }
+        scheduleAINaming()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 

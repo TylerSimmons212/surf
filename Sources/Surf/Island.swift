@@ -156,17 +156,23 @@ final class Island: Identifiable {
         stickers = Sticker.removing(id, from: stickers)
     }
 
-    /// Replaces the shelf wholesale — the "bring over pinned tabs" switch, and
-    /// the same switch turned back off.
-    ///
-    /// Each copy gets a fresh id. A sticker's id is what its lean and the shine
-    /// across it are derived from, so two shelves sharing ids would sit at
-    /// identical angles and read as one printed sheet rather than two — and
-    /// peeling one off is by id, which must only ever reach one shelf.
+    /// Puts the shelf back exactly as it was — for a cancelled drag, which has
+    /// already reordered it live.
     func replaceStickers(with replacement: [Sticker]) {
-        stickers = replacement.map {
-            Sticker(url: $0.url, title: $0.title, host: $0.host)
-        }
+        stickers = replacement
+    }
+
+    /// Copies another island's shelf onto this one — the "bring the pinned
+    /// sites" switch, and the same switch turned back off.
+    ///
+    /// Copies, with fresh ids, rather than the same records twice. A sticker
+    /// owns the tab opened from it, and that tab is filed under this island in
+    /// this island's cookie jar, so two shelves sharing an id would have one id
+    /// naming two tabs in two jars — and peeling a sticker off is by id, which
+    /// must only ever reach one shelf. The lean each sticker sits at is derived
+    /// from its id too, so the copies also look placed rather than printed.
+    func adoptStickers(copiedFrom source: [Sticker]) {
+        stickers = source.map { Sticker(url: $0.url, title: $0.title, host: $0.host) }
     }
 
     // MARK: - Tabs

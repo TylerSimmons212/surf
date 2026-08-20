@@ -58,6 +58,61 @@ struct StickerTests {
         #expect(Sticker.removing(b.id, from: [a, b, c]) == [a, c])
     }
 
+    // MARK: - Reordering
+
+    private var shelf: [Sticker] {
+        ["https://a.com", "https://b.com", "https://c.com", "https://d.com"]
+            .map { Sticker(url: $0, title: "")! }
+    }
+
+    private func hosts(_ list: [Sticker]?) -> [String]? {
+        list?.map { $0.host }
+    }
+
+    @Test("Dragging left lands before the sticker dropped on")
+    func moveLeft() {
+        let list = shelf
+        let moved = Sticker.moving(list[3].id, before: list[1].id, in: list)
+        #expect(hosts(moved) == ["a.com", "d.com", "b.com", "c.com"])
+    }
+
+    @Test("Dragging right lands after the sticker dropped on")
+    func moveRight() {
+        // Remove-then-insert: taking index 1 out shifts the target left, so the
+        // moved sticker settles past it. Both directions read as "it takes that
+        // slot", which is what the pointer is on.
+        let list = shelf
+        let moved = Sticker.moving(list[1].id, before: list[2].id, in: list)
+        #expect(hosts(moved) == ["a.com", "c.com", "b.com", "d.com"])
+    }
+
+    @Test("Moving to the end is reachable, and a no-op once there")
+    func moveToEnd() {
+        let list = shelf
+        #expect(hosts(Sticker.movingToEnd(list[0].id, in: list))
+            == ["b.com", "c.com", "d.com", "a.com"])
+        #expect(Sticker.movingToEnd(list[3].id, in: list) == nil)
+    }
+
+    @Test("A move that changes nothing reports that it changed nothing")
+    func noOpMoves() {
+        // The drag asks "did anything move" on every row it crosses, so this is
+        // the answer it leans on rather than comparing whole arrays.
+        let list = shelf
+        #expect(Sticker.moving(list[0].id, before: list[0].id, in: list) == nil)
+        #expect(Sticker.moving(UUID(), before: list[0].id, in: list) == nil)
+        #expect(Sticker.moving(list[0].id, before: UUID(), in: list) == nil)
+        #expect(Sticker.movingToEnd(UUID(), in: list) == nil)
+    }
+
+    @Test("Reordering keeps every sticker exactly once")
+    func reorderPreservesTheShelf() {
+        let list = shelf
+        let moved = Sticker.moving(list[2].id, before: list[0].id, in: list)
+        #expect(Set(moved?.map(\.id) ?? []) == Set(list.map(\.id)))
+        #expect(moved?.count == list.count)
+    }
+
     // MARK: - Appearance
 
     @Test("Tilt is deterministic, never zero, and stays small")
@@ -69,25 +124,10 @@ struct StickerTests {
         #expect(abs(tilt) <= 4.0)
     }
 
-    @Test("Shine angle is deterministic and stays near the diagonal")
-    func shineAngle() {
-        let sticker = Sticker(url: "https://example.com", title: "")!
-        #expect(sticker.shineAngleDegrees == sticker.shineAngleDegrees)
-        #expect((14.0...38.0).contains(sticker.shineAngleDegrees))
-        #expect((0.0...1.0).contains(sticker.shineOffset))
-    }
-
-    @Test("Tilt and shine vary independently across a shelf")
+    @Test("Tilt varies across a shelf")
     func appearanceVaries() {
-        // Salted separately, so neither is a function of the other — a shelf
-        // where they moved together would read as one printed sheet.
         let shelf = (0..<40).map { Sticker(url: "https://example.com/\($0)", title: "")! }
-        #expect(Set(shelf.map(\.shineAngleDegrees)).count > 8)
         #expect(Set(shelf.map(\.tiltDegrees)).count > 8)
-
-        let byTilt = shelf.sorted { $0.tiltDegrees < $1.tiltDegrees }
-        let byShine = shelf.sorted { $0.shineAngleDegrees < $1.shineAngleDegrees }
-        #expect(byTilt.map(\.id) != byShine.map(\.id))
     }
 
     @Test("Fallback hue is stable per host and within range")
@@ -125,6 +165,46 @@ struct StickerTests {
         let data = try JSONEncoder().encode(island)
         let decoded = try JSONDecoder().decode(PersistedIsland.self, from: data)
         #expect(decoded.stickers == [sticker])
+    }
+
+    @Test("A tab remembers the sticker it belongs to across a save")
+    func tabRemembersItsSticker() throws {
+        let stickerID = UUID()
+        let tab = PersistedTab(url: "https://example.com", title: "Example", stickerID: stickerID)
+        let decoded = try JSONDecoder().decode(
+            PersistedTab.self, from: JSONEncoder().encode(tab)
+        )
+        #expect(decoded.stickerID == stickerID)
+    }
+
+    @Test("A tab written before stickers owned tabs decodes as an ordinary one")
+    func legacyTabHasNoSticker() throws {
+        let json = #"{"url":"https://example.com","title":"Example"}"#
+        let tab = try JSONDecoder().decode(PersistedTab.self, from: Data(json.utf8))
+        #expect(tab.stickerID == nil)
+    }
+
+    @Test("A tab whose sticker is gone is handed back to the list")
+    func orphanedStickerTabIsFreed() {
+        // Otherwise it is an open tab with no row and no sticker to click:
+        // invisible in every surface, and still holding a web content process.
+        var island = PersistedIsland.home()
+        island.stickers = []
+        island.tabs = [
+            PersistedTab(url: "https://example.com", title: "Example", stickerID: UUID())
+        ]
+        #expect(island.sanitized().tabs.first?.stickerID == nil)
+    }
+
+    @Test("A tab whose sticker is still pinned keeps its place off the list")
+    func liveStickerTabKeepsItsOwner() {
+        let sticker = Sticker(url: "https://example.com", title: "Example")!
+        var island = PersistedIsland.home()
+        island.stickers = [sticker]
+        island.tabs = [
+            PersistedTab(url: sticker.url, title: sticker.title, stickerID: sticker.id)
+        ]
+        #expect(island.sanitized().tabs.first?.stickerID == sticker.id)
     }
 
     @Test("A lone home island with stickers but no tabs survives sanitizing")

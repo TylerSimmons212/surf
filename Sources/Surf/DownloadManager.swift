@@ -338,6 +338,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             item.state = .finished(destination)
             tagProvenance(of: destination, for: item)
             releaseTabBinding(for: item, after: .seconds(4))
+            // Cosmetic and strictly after the file is whole and tagged.
+            AIDownloadRenamer.renameIfEnabled(item)
         }
     }
 
@@ -416,6 +418,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.progressObservation = nil
         tagProvenance(of: location, for: item)
         releaseTabBinding(for: item, after: .seconds(4))
+        // Cosmetic and strictly after the file is whole and tagged.
+        AIDownloadRenamer.renameIfEnabled(item)
     }
 
     func download(

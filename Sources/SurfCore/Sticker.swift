@@ -2,10 +2,15 @@ import Foundation
 
 /// One pinned site: a saved URL rendered as a die-cut sticker in the sidebar.
 ///
-/// A sticker is a *launcher*, not a tab. It holds no web view, never sleeps or
-/// wakes, and survives every tab in its island closing — which is the whole
-/// point: the sites you return to daily shouldn't depend on a tab you might
-/// tidy away.
+/// A sticker *is* a tab — it just isn't a row. Clicking one opens the site in a
+/// tab the sticker owns and keeps, and the sidebar leaves that tab out of its
+/// list, because the sticker on the shelf is already standing in for it. A row
+/// as well would be one tab in two places.
+///
+/// Costs nothing until it is clicked: this record is all a sticker is until
+/// then, and closing its tab returns it to exactly that, still pinned. Which is
+/// the point — the sites you return to daily shouldn't depend on a tab you
+/// might tidy away.
 ///
 /// Per-island, like everything else with an identity. A work sticker in a
 /// personal island would open the site in the wrong cookie jar — the same
@@ -58,28 +63,8 @@ public struct Sticker: Codable, Equatable, Sendable, Identifiable {
         return (hash / 26) % 2 == 0 ? magnitude : -magnitude
     }
 
-    /// The lean of the gloss streak laying across the sticker.
-    ///
-    /// Varied per sticker, and salted separately from the tilt so the two don't
-    /// move together — a shelf where the shallowest tilt always carried the
-    /// shallowest shine would read as one printed sheet rather than a handful
-    /// of stickers that arrived from different places.
-    ///
-    /// Kept in a narrow band around the diagonal: the streak is a reflection of
-    /// the same room every sticker is sitting in, so wildly different angles
-    /// would read as a lighting error rather than variety.
-    public var shineAngleDegrees: Double {
-        14 + Double(hash(salt: 7919) % 25) // 14...38
-    }
-
-    /// Where along the sticker the streak falls, 0...1. A little variety in
-    /// placement as well as angle, so two stickers side by side don't line up.
-    public var shineOffset: Double {
-        Double(hash(salt: 104_729) % 21) / 20 // 0...1
-    }
-
-    /// djb2 over the id's bytes, seeded so each visual property can vary
-    /// independently of the others.
+    /// djb2 over the id's bytes, salted so each visual property that wants
+    /// its own variation can take one without correlating with the others.
     private func hash(salt: UInt64) -> UInt64 {
         var hash = salt
         withUnsafeBytes(of: id.uuid) { bytes in
@@ -116,5 +101,38 @@ public struct Sticker: Codable, Equatable, Sendable, Identifiable {
 
     public static func removing(_ id: UUID, from list: [Sticker]) -> [Sticker] {
         list.filter { $0.id != id }
+    }
+
+    /// The shelf with `id` moved into `targetID`'s place, or nil when nothing
+    /// would change.
+    ///
+    /// Remove-then-insert at the target's index, the same as `Island.move`, so
+    /// a sticker dragged rightwards lands *after* the one it was dropped on and
+    /// leftwards lands before it. Both read as "it takes that slot", which is
+    /// what the pointer is pointing at.
+    ///
+    /// Nil rather than an unchanged copy, because the caller's question is "did
+    /// this drag move anything", and answering it by comparing arrays would
+    /// make every crossing of a row a full equality check.
+    public static func moving(
+        _ id: UUID, before targetID: UUID, in list: [Sticker]
+    ) -> [Sticker]? {
+        guard let from = list.firstIndex(where: { $0.id == id }),
+              let to = list.firstIndex(where: { $0.id == targetID }),
+              from != to
+        else { return nil }
+        var moved = list
+        moved.insert(moved.remove(at: from), at: to)
+        return moved
+    }
+
+    /// The shelf with `id` moved to the end, or nil when it is already there.
+    public static func movingToEnd(_ id: UUID, in list: [Sticker]) -> [Sticker]? {
+        guard let from = list.firstIndex(where: { $0.id == id }),
+              from != list.count - 1
+        else { return nil }
+        var moved = list
+        moved.append(moved.remove(at: from))
+        return moved
     }
 }

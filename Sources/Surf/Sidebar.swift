@@ -38,8 +38,8 @@ struct Sidebar: View {
     /// Wide enough that the roomier rows don't buy their height back out of
     /// the title: taller rows with the same width would just truncate sooner.
     static let width: CGFloat = 264
-    /// Two 21pt controls and the gap between them.
-    static let actionsWidth: CGFloat = 44
+    /// One 21pt control.
+    static let actionsWidth: CGFloat = 21
 
     /// How far the floating panel is held off the top of the window.
     static let floatingTopPadding: CGFloat = 4
@@ -1086,8 +1086,16 @@ final class TabDragContext {
     }
 }
 
-/// An item provider that reports its own release — the only reliable signal
-/// that a drag session is over, completed or cancelled.
+/// An item provider that reports its own release, as a signal that a drag
+/// session is over.
+///
+/// Not a reliable one, and worth knowing before leaning on it elsewhere: on a
+/// drag cancelled with Esc, this was measured never being released at all, so
+/// nothing downstream of it runs. Enough for the tab list, whose reorder is
+/// already applied by then and whose ending only has to persist it. Not enough
+/// for anything that has to *undo* something when a drag comes to nothing —
+/// see `StickerDragContext`, which proposes an order instead of applying one
+/// so that it never needs to be told.
 private final class SentinelItemProvider: NSItemProvider {
     var onDeinit: (@Sendable () -> Void)?
     deinit { onDeinit?() }
@@ -1223,6 +1231,8 @@ private struct SidebarNavigationBar: View {
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
 
+            CopyLinkButton(tab: tab)
+
             BlockButton(session: session, hold: hold)
 
             DownloadsButton(session: session, hold: hold)
@@ -1247,6 +1257,47 @@ private struct SidebarNavigationBar: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
+    }
+}
+
+/// Copies the address of the page on screen.
+///
+/// Its own struct for the same reason `ReloadControl` is: the momentary
+/// "copied" tick is local state, and held on the navigation bar every press
+/// would re-evaluate the whole row of controls twice — once to show the
+/// checkmark and once to put it away.
+private struct CopyLinkButton: View {
+    let tab: Tab
+
+    @State private var didCopy = false
+
+    var body: some View {
+        // Momentary checkmark: copying is invisible otherwise, and a silent
+        // copy leaves you unsure it worked.
+        IconButton(
+            systemName: didCopy ? "checkmark" : "link",
+            tint: didCopy ? .green : nil,
+            isEnabled: tab.mode == .browsing,
+            drawsIn: true,
+            help: "Copy Link"
+        ) {
+            copyURL()
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: didCopy)
+    }
+
+    private func copyURL() {
+        let url = tab.currentURL ?? tab.addressText
+        guard !url.isEmpty else { return }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+
+        didCopy = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.4))
+            didCopy = false
+        }
     }
 }
 
@@ -1313,9 +1364,8 @@ private struct TabRow: View {
     let onClose: () -> Void
 
     @State private var isHovered = false
-    @State private var didCopy = false
 
-    private var showsActions: Bool { isHovered || didCopy }
+    private var showsActions: Bool { isHovered }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -1339,9 +1389,9 @@ private struct TabRow: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         // Overlaid rather than laid out, so the title gets the full width of
-        // the row until the controls are actually wanted. Reserving their space
-        // permanently made every tab name truncate early for the sake of two
-        // buttons that are hidden most of the time.
+        // the row until the control is actually wanted. Reserving its space
+        // permanently made every tab name truncate early for the sake of a
+        // button that is hidden most of the time.
         .overlay(alignment: .trailing) { actions }
         .padding(.horizontal, 9)
         .padding(.vertical, 9)
@@ -1355,35 +1405,24 @@ private struct TabRow: View {
         .help(tab.displayTitle)
     }
 
+    /// The close button, and only that.
+    ///
+    /// Copying belongs to the navigation bar, where it acts on the page you are
+    /// looking at. A copy button on every row sounds more capable and is mostly
+    /// in the way: the link you want is nearly always the one on screen, and a
+    /// second control here costs every tab name the width of it. The row still
+    /// offers it by right-click, for the tab that isn't the one in front of you.
     private var actions: some View {
-        HStack(spacing: 2) {
-            // Momentary checkmark: copying is invisible otherwise, and a
-            // silent copy leaves you unsure it worked.
-            IconButton(
-                systemName: didCopy ? "checkmark" : "link",
-                size: 10,
-                weight: .bold,
-                width: 21,
-                height: 21,
-                cornerRadius: 6,
-                tint: didCopy ? .green : nil,
-                help: "Copy Link"
-            ) {
-                copyURL()
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: didCopy)
-
-            IconButton(
-                systemName: "xmark",
-                size: 10,
-                weight: .bold,
-                width: 21,
-                height: 21,
-                cornerRadius: 6,
-                help: "Close Tab (⌘W)"
-            ) {
-                onClose()
-            }
+        IconButton(
+            systemName: "xmark",
+            size: 10,
+            weight: .bold,
+            width: 21,
+            height: 21,
+            cornerRadius: 6,
+            help: "Close Tab (⌘W)"
+        ) {
+            onClose()
         }
         .opacity(showsActions ? 1 : 0)
         .scaleEffect(showsActions ? 1 : 0.7, anchor: .trailing)
@@ -1411,19 +1450,6 @@ private struct TabRow: View {
         .animation(.easeOut(duration: 0.2), value: showsActions)
     }
 
-    private func copyURL() {
-        let url = tab.currentURL ?? tab.addressText
-        guard !url.isEmpty else { return }
-
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url, forType: .string)
-
-        didCopy = true
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.4))
-            didCopy = false
-        }
-    }
 }
 
 /// Loading spinner > real favicon > generic placeholder. The spinner wins so
