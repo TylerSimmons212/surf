@@ -106,6 +106,10 @@ struct ElementDetail: View {
                             .frame(maxWidth: .infinity)
                     }
 
+                    if let fonts = session.elementFonts {
+                        FontsCard(report: fonts)
+                    }
+
                     ForEach(node.attributes) { attribute in
                         AttributeRow(
                             attribute: attribute,

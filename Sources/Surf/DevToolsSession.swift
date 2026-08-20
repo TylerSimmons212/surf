@@ -275,6 +275,18 @@ final class DevToolsSession: Identifiable {
         bridge.send(.domWatch, ["nodeId": id])
         loadStyles()
         await refreshBox()
+        await refreshFonts()
+    }
+
+    private(set) var elementFonts: FontReport?
+
+    private func refreshFonts() async {
+        guard let selectedNode else { elementFonts = nil; return }
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssFontsForNode, ["nodeId": selectedNode]),
+              issued == generation
+        else { return }
+        elementFonts = reply["error"] == nil ? FontReport.decode(reply) : nil
     }
 
     /// Writes one box-model measurement — `margin-top: 12px` — as an inline
@@ -2003,6 +2015,7 @@ final class DevToolsSession: Identifiable {
         forcedNode = nil
         selectedNode = nil
         selectedBox = nil
+        elementFonts = nil
         hoveredNode = nil
         hoveredBox = nil
         styleTask?.cancel()

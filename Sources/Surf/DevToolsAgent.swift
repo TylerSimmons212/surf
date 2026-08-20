@@ -1745,6 +1745,98 @@ enum DevToolsAgent {
         }
       });
 
+      runtime.define('CSS.fontsForNode', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || node.nodeType !== 1) { return ({ error: 'no element' }); }
+        const cs = getComputedStyle(node);
+
+        // Split the family list respecting quotes — "Helvetica Neue", Arial.
+        function splitFamilies(value) {
+          const out = [];
+          let buffer = '';
+          let quote = null;
+          for (let i = 0; i < value.length; i++) {
+            const ch = value[i];
+            if (quote) {
+              if (ch === quote) { quote = null; } else { buffer += ch; }
+            } else if (ch === '"' || ch === "'") {
+              quote = ch;
+            } else if (ch === ',') {
+              if (buffer.trim()) { out.push(buffer.trim()); }
+              buffer = '';
+            } else {
+              buffer += ch;
+            }
+          }
+          if (buffer.trim()) { out.push(buffer.trim()); }
+          return out;
+        }
+
+        // Whether a family can render here, measured rather than assumed:
+        // the same string at the same size in "Family, monospace" and in
+        // bare monospace. Different width — the family took over. Checked
+        // against two baselines because one coincidental width match is
+        // possible; two is not, in practice.
+        const measureContext = colorContext();
+        function available(family) {
+          if (!measureContext) { return false; }
+          const sample = 'mmmMMMwwwlli019';
+          let differs = false;
+          const baselines = ['monospace', 'serif'];
+          for (let i = 0; i < baselines.length && !differs; i++) {
+            measureContext.font = '32px ' + baselines[i];
+            const base = measureContext.measureText(sample).width;
+            measureContext.font = '32px "' + family + '", ' + baselines[i];
+            if (Math.abs(measureContext.measureText(sample).width - base) > 0.5) {
+              differs = true;
+            }
+          }
+          if (differs) { return true; }
+          // A webfont metrically identical to both baselines would fool the
+          // probe; the FontFaceSet knows its own.
+          try {
+            return document.fonts.check('12px "' + family + '"');
+          } catch (e) { return false; }
+        }
+
+        const GENERICS = ['serif', 'sans-serif', 'monospace', 'cursive',
+          'fantasy', 'system-ui', 'ui-serif', 'ui-sans-serif', 'ui-monospace',
+          'ui-rounded', 'math'];
+        const stack = splitFamilies(cs.fontFamily || '').map((family) => {
+          const generic = GENERICS.indexOf(family.toLowerCase()) >= 0;
+          return {
+            family: family,
+            generic: generic,
+            available: generic || available(family)
+          };
+        });
+        const winner = stack.find((entry) => entry.available);
+
+        const webfonts = [];
+        const seen = {};
+        try {
+          document.fonts.forEach((face) => {
+            const key = face.family + '|' + face.weight + '|' + face.style;
+            if (seen[key]) { return; }
+            seen[key] = true;
+            webfonts.push({
+              family: face.family.replace(/^["']|["']$/g, ''),
+              weight: face.weight, style: face.style, status: face.status
+            });
+          });
+        } catch (e) { /* FontFaceSet unavailable; the stack still answers */ }
+
+        return ({
+          used: winner ? winner.family : '',
+          stack: stack,
+          size: cs.fontSize || '',
+          weight: cs.fontWeight || '',
+          style: cs.fontStyle || '',
+          lineHeight: cs.lineHeight || '',
+          webfonts: webfonts
+        });
+      });
+
       runtime.define('CSS.propertyNames', () => {
         // One computed style enumerates every property this WebKit knows,
         // including prefixed ones — the engine's list, not a shipped copy.
