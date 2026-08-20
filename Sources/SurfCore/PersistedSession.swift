@@ -10,11 +10,31 @@ public struct PersistedTab: Codable, Equatable, Sendable {
     public var url: String?
     public var title: String
     public var interactionState: Data?
+    /// The group this tab is filed under, if any. Optional so the synthesized
+    /// decoder reaches for `decodeIfPresent` and a session written before
+    /// groups existed still reads.
+    public var groupID: UUID?
+    /// The sticker this tab belongs to, if any.
+    ///
+    /// A sticker's tab is a tab in every respect except one: it is not listed,
+    /// because the sticker on the shelf *is* its row. Carrying that as a field
+    /// on the tab — exactly as `groupID` is — means selection, hibernation,
+    /// media and persistence all keep working on it unchanged, and only the
+    /// sidebar's list has to know to leave it out.
+    public var stickerID: UUID?
 
-    public init(url: String?, title: String, interactionState: Data? = nil) {
+    public init(
+        url: String?,
+        title: String,
+        interactionState: Data? = nil,
+        groupID: UUID? = nil,
+        stickerID: UUID? = nil
+    ) {
         self.url = url
         self.title = title
         self.interactionState = interactionState
+        self.groupID = groupID
+        self.stickerID = stickerID
     }
 
     /// A tab sitting on the home screen has nothing worth restoring.
@@ -25,12 +45,63 @@ public struct PersistedTab: Codable, Equatable, Sendable {
 }
 
 public struct PersistedSession: Codable, Equatable, Sendable {
+    /// The pre-Islands shape: one flat tab list and one selection.
+    ///
+    /// Still written, and still holding the *home* island's tabs, for one
+    /// release. The duplication costs a second copy of one tab array in a JSON
+    /// file; what it buys is that downgrading the app — or a crash-loop that
+    /// rolls back to the previous build — shows the user their real tabs with
+    /// their real logins instead of an empty browser.
     public var tabs: [PersistedTab]
     public var selectedIndex: Int
 
-    public init(tabs: [PersistedTab], selectedIndex: Int) {
+    /// nil means this file was written before islands existed. Optional so the
+    /// synthesized decoder uses `decodeIfPresent` and an old `session.json`
+    /// decodes without a custom initializer.
+    public var islands: [PersistedIsland]?
+    public var selectedIslandIndex: Int?
+    public var schemaVersion: Int?
+
+    /// Bumped when the *meaning* of a field changes, not when one is added —
+    /// additions are handled by optionality.
+    public static let currentSchemaVersion = 2
+
+    public init(
+        tabs: [PersistedTab],
+        selectedIndex: Int,
+        islands: [PersistedIsland]? = nil,
+        selectedIslandIndex: Int? = nil,
+        schemaVersion: Int? = nil
+    ) {
         self.tabs = tabs
         self.selectedIndex = selectedIndex
+        self.islands = islands
+        self.selectedIslandIndex = selectedIslandIndex
+        self.schemaVersion = schemaVersion
+    }
+
+    /// Builds a session from islands, filling in the legacy mirror from the
+    /// home island so an older build can still read it.
+    public init(islands: [PersistedIsland], selectedIslandIndex: Int) {
+        let home = islands.first(where: \.isHome)
+        self.tabs = home?.tabs ?? []
+        self.selectedIndex = home?.selectedIndex ?? 0
+        self.islands = islands
+        self.selectedIslandIndex = selectedIslandIndex
+        self.schemaVersion = Self.currentSchemaVersion
+    }
+
+    /// The islands to actually open, whatever shape the file was in.
+    ///
+    /// A file with no `islands` key becomes one home island carrying the legacy
+    /// tabs. Nobody is signed out by that migration, because the home island is
+    /// *defined* as the one using the default store — the same jar those
+    /// cookies were already in.
+    public var resolvedIslands: (islands: [PersistedIsland], selected: Int) {
+        guard let islands else {
+            return ([.home(tabs: tabs, selectedIndex: selectedIndex)], 0)
+        }
+        return IslandLayout.normalize(islands, selected: selectedIslandIndex ?? 0)
     }
 
     /// Drops unrestorable tabs and repairs the selection, returning nil when
@@ -48,9 +119,32 @@ public struct PersistedSession: Codable, Equatable, Sendable {
             kept.append(tab)
         }
 
-        guard !kept.isEmpty else { return nil }
-        // If the selected tab was itself dropped, fall back to the first tab.
-        return PersistedSession(tabs: kept, selectedIndex: newSelection ?? 0)
+        guard let islands else {
+            guard !kept.isEmpty else { return nil }
+            // If the selected tab was itself dropped, fall back to the first.
+            return PersistedSession(tabs: kept, selectedIndex: newSelection ?? 0)
+        }
+
+        let (normalized, selectedIsland) = IslandLayout.normalize(
+            islands, selected: selectedIslandIndex ?? 0
+        )
+        let cleaned = normalized.map { $0.sanitized() }
+
+        // The one case that still sanitizes away to nothing is the one that
+        // existed before islands did: a lone home island with nothing open. Any
+        // island the user actually made is kept even when empty, because the
+        // island *is* the cookie jar — throwing it away here would orphan a
+        // store full of logins on the first quit with everything closed.
+        //
+        // Stickers count as something open: they're the user's pins, and a
+        // shelf of them with every tab closed is a perfectly normal way to
+        // quit. Sanitizing that to nil would peel every sticker off at launch.
+        if cleaned.count == 1, cleaned[0].isHome, cleaned[0].tabs.isEmpty,
+           cleaned[0].stickers?.isEmpty ?? true {
+            return nil
+        }
+
+        return PersistedSession(islands: cleaned, selectedIslandIndex: selectedIsland)
     }
 }
 

@@ -7,14 +7,14 @@ struct FilterConverterTests {
 
     private func rule(_ filter: String) -> String? {
         switch FilterConverter.parse(filter) {
-        case .block(let rule, _): rule
-        case .exception(let rule): rule
+        case .block(let rule, _, _): rule
+        case .exception(let rule, _): rule
         case .ignored, .unsupported: nil
         }
     }
 
     private func domain(_ filter: String) -> String? {
-        guard case let .block(_, domain) = FilterConverter.parse(filter) else { return nil }
+        guard case let .block(_, _, domain) = FilterConverter.parse(filter) else { return nil }
         return domain
     }
 
@@ -109,13 +109,78 @@ struct FilterConverterTests {
         #expect(try #require(rule("||ads.example^$document")).contains(#""document""#))
     }
 
-    @Test("A rule that blocks nested documents is dropped, not widened")
-    func nestedDocumentBlocksAreDropped() {
-        // WebKit has no type for an iframe, and its near-neighbour `document`
-        // also covers the page the user typed the address of. Translating a
-        // block rule that way would hand an ad list the power to refuse a
-        // top-level navigation.
-        #expect(isUnsupported("||ads.example^$subdocument"))
+    /// These rules used to be dropped outright, because `document` is the only
+    /// near-neighbour WebKit has for an iframe and it also covers the page the
+    /// user typed the address of — so converting them handed an ad list the
+    /// power to refuse a top-level navigation. `load-context` is what makes it
+    /// safe, and it is verifiable against a real web view: with the context
+    /// pinned to a child frame, the iframe is blocked and a top-level load of
+    /// the very same URL still goes through.
+    @Test("A rule that blocks nested documents becomes a child-frame rule")
+    func nestedDocumentBlocksBecomeFrameRules() throws {
+        let result = FilterConverter.convert("||ads.example^$subdocument")
+        #expect(result.rules.count == 1)
+        #expect(result.frameRules == 1)
+
+        let rule = try #require(result.rules.first)
+        #expect(rule.contains(#""load-context":["child-frame"]"#))
+        #expect(rule.contains(#""resource-type":["document"]"#))
+        #expect(rule.contains(#""type":"block""#))
+    }
+
+    /// The filter named frames and nothing else, so it must not quietly start
+    /// blocking scripts and images as well — which is what falling through to
+    /// the default resource types would do.
+    @Test("A frames-only filter produces only the frame rule")
+    func framesOnlyStaysFramesOnly() {
+        let result = FilterConverter.convert("||ads.example^$subdocument")
+        #expect(result.rules.allSatisfy { $0.contains(#""load-context""#) })
+        #expect(!result.rules.contains { $0.contains(#""script""#) })
+    }
+
+    /// Adblock Plus's default is every type, nested documents included. This is
+    /// the case that matters most in practice: it is most of a list, and it is
+    /// why an ad iframe used to load even when its host was blocked outright.
+    @Test("A plain rule blocks the host's frames as well as its subresources")
+    func plainRulesReachFrames() throws {
+        let result = FilterConverter.convert("||ads.example^")
+        #expect(result.rules.count == 2)
+        #expect(result.frameRules == 1)
+
+        let subresource = try #require(result.rules.first)
+        #expect(subresource.contains(#""script""#))
+        #expect(!subresource.contains(#""load-context""#))
+
+        let frame = try #require(result.rules.last)
+        #expect(frame.contains(#""load-context":["child-frame"]"#))
+        #expect(!frame.contains(#""script""#))
+    }
+
+    /// `load-context` narrows the whole trigger, so the frame rule has to be a
+    /// rule of its own. Folding `document` into the subresource trigger and
+    /// pinning that to child frames would stop it blocking scripts in the top
+    /// frame — verified against a real web view, where exactly that happened.
+    @Test("The frame rule is separate, so subresource blocking keeps its reach")
+    func frameRuleIsSeparate() {
+        let result = FilterConverter.convert("||ads.example^")
+        let contexts = result.rules.filter { $0.contains(#""load-context""#) }
+        #expect(contexts.count == 1)
+        #expect(result.rules.count == 2)
+    }
+
+    /// A rule that named its types said what it meant. Adding frames to it
+    /// would block something the filter never asked to block.
+    @Test("A rule that names its types is not widened to frames")
+    func namedTypesAreNotWidened() {
+        let result = FilterConverter.convert("||ads.example^$script")
+        #expect(result.frameRules == 0)
+        #expect(result.rules.count == 1)
+    }
+
+    @Test("A negated subdocument option keeps frames out of it")
+    func negatedSubdocument() {
+        let result = FilterConverter.convert("||ads.example^$~subdocument")
+        #expect(result.frameRules == 0)
     }
 
     @Test("An exception for nested documents is kept, and widened")
@@ -167,9 +232,59 @@ struct FilterConverterTests {
         @@||example.com^$document
         ||ads.example^
         """)
+        // Three now, not two: the plain block rule brings a child-frame
+        // companion with it. What matters is unchanged — every block, however
+        // many, comes before the exception that cancels it.
+        #expect(result.rules.count == 3)
+        let blocks = result.rules.prefix(2)
+        #expect(blocks.allSatisfy { $0.contains(#""type":"block""#) })
+        #expect(result.rules[2].contains(#""type":"ignore-previous-rules""#))
+    }
+
+    /// A plain allowlist entry has to keep protecting a site's frames now that
+    /// blocks reach them, or turning frame blocking on would quietly punch a
+    /// hole in every exception in the list.
+    @Test("A plain exception gets a frame companion too")
+    func plainExceptionsReachFrames() {
+        let result = FilterConverter.convert("@@||good.example^")
         #expect(result.rules.count == 2)
-        #expect(result.rules[0].contains(#""type":"block""#))
-        #expect(result.rules[1].contains(#""type":"ignore-previous-rules""#))
+        #expect(result.frameRules == 1)
+        #expect(result.rules.allSatisfy { $0.contains(#""ignore-previous-rules""#) })
+        #expect(result.rules.contains { $0.contains(#""load-context":["child-frame"]"#) })
+    }
+
+    /// The budget exists because WebKit refuses an over-sized list outright:
+    /// the failure mode is not "fewer rules", it is "no blocking at all". An
+    /// over-budget list has to degrade to what it blocked before frame rules
+    /// existed, not to something arbitrary.
+    @Test("Frame rules are what gets dropped when the list runs out of room")
+    func budgetDropsFrameRulesFirst() {
+        let list = """
+        ||one.example^
+        ||two.example^
+        ||three.example^
+        """
+        let full = FilterConverter.convert(list)
+        #expect(full.rules.count == 6)
+        #expect(full.frameRules == 3)
+        #expect(full.droppedFrameRules == 0)
+
+        // Room for the three block rules and one companion.
+        let squeezed = FilterConverter.convert(list, limit: 4)
+        #expect(squeezed.rules.count == 4)
+        #expect(squeezed.frameRules == 1)
+        #expect(squeezed.droppedFrameRules == 2)
+        // The subresource blocking is intact — it is the companions that went.
+        #expect(squeezed.rules.filter { !$0.contains(#""load-context""#) }.count == 3)
+    }
+
+    @Test("With no room at all the list is exactly what it was before")
+    func budgetOfZeroFrameRules() {
+        let result = FilterConverter.convert("||ads.example^", limit: 1)
+        #expect(result.rules.count == 1)
+        #expect(result.frameRules == 0)
+        #expect(result.droppedFrameRules == 1)
+        #expect(!result.rules[0].contains(#""load-context""#))
     }
 
     // MARK: - What is refused, and in which direction
@@ -243,7 +358,12 @@ struct FilterConverterTests {
         ||broken.example^$csp=none
 
         """)
-        #expect(result.converted == 4)
+        // Six, not four: `||ads.example^` and `||tracker.example^$third-party`
+        // each bring a child-frame companion. The cosmetic rule and the
+        // `$document` exception do not — one hides an element, the other
+        // already covers nested documents.
+        #expect(result.converted == 6)
+        #expect(result.frameRules == 2)
         #expect(result.skipped == 1)
         #expect(result.blockedDomains == ["ads.example"])
     }

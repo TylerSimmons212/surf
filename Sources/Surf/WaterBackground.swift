@@ -1,0 +1,276 @@
+import AppKit
+import SwiftUI
+
+/// The bottom of the home screen, as water for the board to sit on.
+///
+/// A port of the "Simple CSS Waves" pen, kept faithful to its geometry because
+/// the geometry is the reason it works. Four copies of one curve, offset
+/// slightly in depth and each drifting at its own speed — the layers slide past
+/// one another and the combination never lines up the same way twice, which is
+/// what reads as water. Summed sine waves were the first attempt here and read
+/// as a moving squiggle: one period, plainly visible, doing the same thing
+/// forever.
+///
+/// The original's units are kept rather than converted to points. It is drawn
+/// in a 150 x 28 box stretched to fill, so the wave is always the same shape
+/// relative to the window instead of getting choppy on a wide one.
+struct WaterBackground: View {
+
+    /// Depth offset, seconds for one pass, start offset, and how solid.
+    ///
+    /// The four periods share no common factor worth the name, so the layers
+    /// take about seven minutes to return to the same arrangement.
+    private static let layers: [(depth: CGFloat, period: Double, delay: Double, opacity: Double)] = [
+        (0, 7, -2, 0.70),
+        (3, 10, -3, 0.50),
+        (5, 13, -4, 0.30),
+        (7, 20, -5, 1.00),
+    ]
+
+    /// One wavelength, in the original's units — and the distance each layer
+    /// travels per pass is 175 of them. Not a coincidence and not quite equal:
+    /// a pass that covers one wavelength lands on a curve identical to the one
+    /// it started on, so the jump back is invisible.
+    private static let wavelength: CGFloat = 176
+    private static let travel: CGFloat = 175
+    private static let start: CGFloat = -90
+
+    /// Where the surface sits, as a fraction of the height.
+    var surface: Double = 0.5
+
+    /// Whether the window this sea lives in is actually on screen.
+    ///
+    /// Occlusion, not focus: a minimised window, one covered by another app, or
+    /// one on a Space you've left is drawing for nobody, and without this the
+    /// timeline goes on waking the process thirty times a second to paint it.
+    /// The schedule's own `paused` flag is the off switch; the clock is
+    /// absolute, so on resume the sea is simply where it would have been.
+    @State private var windowIsVisible = true
+
+    /// When set, the sea rises: over `riseDuration` the surface climbs from
+    /// `surface` to above the top edge and the water deepens toward opaque.
+    /// Everything is computed from this date in the canvas, so there is no
+    /// animation state to keep in step — a frame is a pure function of the
+    /// clock.
+    var diveStartedAt: Date?
+
+    private static let riseDuration: TimeInterval = 1.5
+    /// Above 0 so the crests clear the top edge and nothing peeks back down.
+    private static let risenSurface: Double = -0.30
+
+    /// The water's own colour at the surface, fading out below.
+    var tint = Color(red: 0.44, green: 0.78, blue: 0.98)
+
+    /// Something drawn behind the water that the water should *hide*, not tint.
+    ///
+    /// The layers are translucent, so simply drawing behind them means showing
+    /// through them as a ghost. Instead the mark is drawn in this canvas and
+    /// then erased with the waves' own silhouettes at full opacity — the shapes
+    /// as cookie cutters rather than as paint. Whatever survives is above every
+    /// crest, and its bottom edge is the moving crest line itself.
+    var mark: ((CGSize) -> Path)?
+    var markShading: GraphicsContext.Shading = .color(.primary.opacity(0.16))
+
+    var body: some View {
+        // 30fps rather than the display's rate: this is a backdrop running
+        // behind whatever the browser is actually doing.
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !windowIsVisible)) { timeline in
+            Canvas(rendersAsynchronously: true) { context, size in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                let band = min(max(size.height * 0.17, 90), 155)
+
+                // Smoothstepped rise progress: 0 at rest, 1 once the water owns
+                // the screen. Eased here rather than by SwiftUI because the
+                // canvas redraws every frame anyway — the clock is the animator.
+                let dive: Double
+                if let start = diveStartedAt {
+                    let raw = min(max(t - start.timeIntervalSinceReferenceDate, 0)
+                                  / Self.riseDuration, 1)
+                    dive = raw * raw * (3 - 2 * raw)
+                } else {
+                    dive = 0
+                }
+                let surface = self.surface + (Self.risenSurface - self.surface) * dive
+
+                if let mark {
+                    // The erase pass composites through an offscreen layer, and
+                    // an unclipped one is allocated at the full canvas every
+                    // frame. The mark's own bounds are the only part that can
+                    // survive the erasing, so the layer is confined to them.
+                    let markPath = mark(size)
+                    var scoped = context
+                    scoped.clip(to: Path(markPath.boundingRect))
+                    scoped.drawLayer { layer in
+                        layer.fill(markPath, with: markShading)
+                        // The same wave paths the water is about to draw, but
+                        // as erasers: destinationOut with opaque black removes
+                        // everything under them regardless of how transparent
+                        // the painted water is.
+                        layer.blendMode = .destinationOut
+                        for l in Self.layers {
+                            let progress = ((t - l.delay) / l.period)
+                                .truncatingRemainder(dividingBy: 1)
+                            let shift = Self.start + Self.travel
+                                * CGFloat(progress < 0 ? progress + 1 : progress)
+                            layer.fill(
+                                Self.wave(size: size, surface: surface, band: band,
+                                          depth: l.depth, shift: shift),
+                                with: .color(.black)
+                            )
+                        }
+                    }
+                }
+
+                // Body under the waves. Without it the layers fade out around
+                // two thirds down and the bottom of the window is just page
+                // again — waves floating in the dark rather than the surface of
+                // something. Starts below the lowest trough, so it never shows
+                // as an edge above the water.
+                let bodyTop = size.height * surface
+                context.fill(
+                    Path(CGRect(x: 0, y: bodyTop, width: size.width,
+                                height: size.height - bodyTop)),
+                    with: .linearGradient(
+                        // Ramped in rather than starting solid: a flat top on
+                        // this rectangle draws a hard line straight across the
+                        // window wherever the waves above it have gone
+                        // transparent.
+                        Gradient(stops: [
+                            .init(color: tint.opacity(0), location: 0),
+                            .init(color: tint.opacity(0.16), location: 0.10),
+                            .init(color: .clear, location: 0.45),
+                        ]),
+                        startPoint: CGPoint(x: 0, y: bodyTop),
+                        endPoint: CGPoint(x: 0, y: size.height)
+                    )
+                )
+
+                // The deep, arriving with the dive: under every crest, nearly
+                // opaque at full rise, darker toward the bottom the way water
+                // is. Kept below the lowest crest so it never draws its own
+                // edge above one.
+                if dive > 0 {
+                    let veil = Self.wave(size: size, surface: surface, band: band,
+                                         depth: 9, shift: 40)
+                    context.fill(
+                        veil,
+                        with: .linearGradient(
+                            Gradient(colors: [
+                                tint.opacity(0.90 * dive),
+                                Color(red: 0.16, green: 0.42, blue: 0.72).opacity(0.96 * dive),
+                            ]),
+                            startPoint: CGPoint(x: 0, y: max(size.height * surface, 0)),
+                            endPoint: CGPoint(x: 0, y: size.height)
+                        )
+                    )
+                }
+
+                for layer in Self.layers {
+                    let progress = ((t - layer.delay) / layer.period).truncatingRemainder(dividingBy: 1)
+                    let shift = Self.start + Self.travel * CGFloat(progress < 0 ? progress + 1 : progress)
+                    context.fill(
+                        Self.wave(size: size, surface: surface, band: band,
+                                  depth: layer.depth, shift: shift),
+                        with: .linearGradient(
+                            Gradient(stops: [
+                                .init(color: tint.opacity(0.46 * layer.opacity), location: 0),
+                                .init(color: tint.opacity(0.30 * layer.opacity), location: 0.45),
+                                .init(color: .clear, location: 1),
+                            ]),
+                            startPoint: CGPoint(x: 0, y: size.height * surface),
+                            endPoint: CGPoint(x: 0, y: size.height)
+                        )
+                    )
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .background(WindowVisibility { windowIsVisible = $0 })
+    }
+
+    /// One layer's surface, closed down to the bottom edge so it can be filled.
+    ///
+    /// The curve is the pen's: a half-period is 88 units wide and 18 deep, with
+    /// its handles at 30 and 58 across. Alternating the sign of the depth is
+    /// what the original's chain of smooth curves works out to, and stating it
+    /// directly means every segment is the same four numbers.
+    static func wave(
+        size: CGSize, surface: Double, band: CGFloat, depth: CGFloat, shift: CGFloat
+    ) -> Path {
+        let xScale = size.width / 150
+        let yScale = band / 28
+        // The curve crests at 26 and troughs at 44, so its mean is 35 — and it
+        // is the mean that has to land on the waterline. Hanging the box's top
+        // edge there instead put the whole sea about a hundred points low, and
+        // the board rode above it with a gap you could see.
+        let top = size.height * surface - 11 * yScale
+        func px(_ ux: CGFloat) -> CGFloat { (ux + shift) * xScale }
+        func py(_ uy: CGFloat) -> CGFloat { top + (uy + depth - 24) * yScale }
+
+        // Wide enough that the drift never pulls an end into view.
+        let first: CGFloat = -352, last: CGFloat = 528
+        var path = Path()
+        var x = first
+        var y: CGFloat = 44
+        var rising = true
+        path.move(to: CGPoint(x: px(x), y: py(y)))
+        while x < last {
+            let dy: CGFloat = rising ? -18 : 18
+            path.addCurve(
+                to: CGPoint(x: px(x + 88), y: py(y + dy)),
+                control1: CGPoint(x: px(x + 30), y: py(y)),
+                control2: CGPoint(x: px(x + 58), y: py(y + dy))
+            )
+            x += 88
+            y += dy
+            rising.toggle()
+        }
+        path.addLine(to: CGPoint(x: px(last), y: size.height))
+        path.addLine(to: CGPoint(x: px(first), y: size.height))
+        path.closeSubpath()
+        return path
+    }
+}
+
+/// Reports whether the window this view sits in is visible on screen.
+///
+/// AppKit is the only party that actually knows — SwiftUI has no occlusion
+/// concept — so a zero-sized NSView rides along, watches its window's
+/// occlusion state, and phones the answer back.
+private struct WindowVisibility: NSViewRepresentable {
+    var onChange: (Bool) -> Void
+
+    func makeNSView(context: Context) -> Probe { Probe(onChange: onChange) }
+    func updateNSView(_ probe: Probe, context: Context) { probe.onChange = onChange }
+
+    final class Probe: NSView {
+        var onChange: (Bool) -> Void
+        private var observer: NSObjectProtocol?
+
+        init(onChange: @escaping (Bool) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        // Also the teardown: leaving the hierarchy arrives here with a nil
+        // window, which drops the observation. No deinit — a main-actor view's
+        // nonisolated deinit can't touch this state, and by the time one runs
+        // the view has already left its window.
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            observer = nil
+            guard let window else { return }
+            observer = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification,
+                object: window, queue: .main
+            ) { [weak self, weak window] _ in
+                guard let self, let window else { return }
+                self.onChange(window.occlusionState.contains(.visible))
+            }
+            onChange(window.occlusionState.contains(.visible))
+        }
+    }
+}

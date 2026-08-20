@@ -20,6 +20,12 @@ final class Tab: NSObject, Identifiable {
 
     private(set) var mode: Mode = .home
 
+    /// The home screen's exit. Submitting from home starts the load at once,
+    /// but the mode holds at `.home` while the water rises over the screen —
+    /// the page is revealed by `completeDive()`, not by the load starting.
+    private(set) var isDiving = false
+    private(set) var diveStartedAt: Date?
+
     /// What the address field shows. Held separately from the page's real URL so
     /// mid-edit typing isn't overwritten by an unrelated navigation.
     var addressText: String = ""
@@ -159,9 +165,25 @@ final class Tab: NSObject, Identifiable {
         return livePageAgent!
     }
 
+    /// The island's storage — cookies, local storage, IndexedDB — held for the
+    /// tab's whole life.
+    ///
+    /// On the tab rather than on the configuration, and that is the difference
+    /// between this working and appearing to work. `providedConfiguration` is
+    /// consumed on first build, so a hibernated tab rebuilds from a *fresh*
+    /// configuration — and a store read only off the configuration would revert
+    /// to `.default()` there, silently folding the tab's cookies back into the
+    /// user's main identity at some arbitrary moment an hour later.
+    @ObservationIgnored let dataStore: WKWebsiteDataStore
+
     /// `configuration` is non-nil only when WebKit hands us one for a popup or
     /// `target="_blank"` link — those must use the configuration WebKit supplies.
-    init(configuration: WKWebViewConfiguration? = nil) {
+    init(dataStore: WKWebsiteDataStore, configuration: WKWebViewConfiguration? = nil) {
+        // WebKit's configuration for a popup already carries the opener's
+        // store, by construction. Adopt that rather than the island's, so that
+        // waking this tab later reproduces exactly what WebKit linked it to
+        // rather than something merely equivalent.
+        self.dataStore = configuration?.websiteDataStore ?? dataStore
         providedConfiguration = configuration
 
         super.init()
@@ -188,8 +210,13 @@ final class Tab: NSObject, Identifiable {
     private func buildWebView() -> WKWebView {
         let config = providedConfiguration ?? WKWebViewConfiguration()
         if providedConfiguration == nil {
-            // Shared by default, so cookies and logins carry across tabs.
-            config.websiteDataStore = .default()
+            // The island's store, re-read on every build rather than captured
+            // once: this is the line hibernation would otherwise undo.
+            //
+            // Assigned *before* the web view is constructed, because the
+            // configuration is copied at construction — assigning afterwards
+            // has no effect at all, silently.
+            config.websiteDataStore = dataStore
             // Left at the default (false): scripted `window.open` without a
             // user gesture is blocked, while real link clicks still open tabs.
             // This is the popup blocker.
@@ -261,10 +288,43 @@ final class Tab: NSObject, Identifiable {
     /// the sidebar, so asking a sleeping tab for its title would wake the whole
     /// session the moment the list drew.
     var displayTitle: String {
+        if let aiTitle, !aiTitle.isEmpty { return aiTitle }
         if !pageTitle.isEmpty { return pageTitle }
         if mode == .home { return "New Tab" }
         if let host = currentURL.flatMap(URL.init(string:))?.host { return host }
         return "Loading…"
+    }
+
+    // MARK: - AI naming
+
+    /// A model-written name for the current page, when the feature is on and
+    /// one arrived. Never persisted: the session file keeps the page's real
+    /// title, and a restored tab re-earns its AI name (from the session cache,
+    /// usually) the next time its page loads.
+    private(set) var aiTitle: String?
+
+    @ObservationIgnored private var aiNamingTask: Task<Void, Never>?
+
+    /// Kicks off naming for the page that just finished loading.
+    ///
+    /// Waits a beat first: titles routinely land *after* `didFinish`, and the
+    /// name should be made from the title the user actually sees. The result
+    /// is applied only if the tab is still on the same page — a name for the
+    /// last page must never land on this one.
+    private func scheduleAINaming() {
+        aiNamingTask?.cancel()
+        guard AIPreferences.isEnabled(.tabRenaming) else { return }
+        aiNamingTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self else { return }
+            guard let url = self.webView.url?.absoluteString else { return }
+            let title = self.pageTitle
+            guard let name = await AITabNamer.shared.name(forURL: url, pageTitle: title) else {
+                return
+            }
+            guard !Task.isCancelled, self.webView.url?.absoluteString == url else { return }
+            self.aiTitle = name
+        }
     }
 
     // MARK: - Restore
@@ -276,6 +336,21 @@ final class Tab: NSObject, Identifiable {
 
     var isAwaitingRestore: Bool { pendingRestore != nil }
 
+    /// The group this tab is filed under, if any.
+    ///
+    /// Membership lives on the tab rather than in a list on the group, so there
+    /// is one copy of it and no way for the two to disagree. What a group *is*,
+    /// then, is the run of consecutive tabs naming it — see `TabGrouping`.
+    var groupID: UUID?
+
+    /// The sticker this tab belongs to, if any.
+    ///
+    /// Set once, when a sticker opens its page, and never cleared: a sticker's
+    /// tab is its tab for as long as it lives. The sidebar leaves these out of
+    /// its list — the sticker is already on screen, and a row for it as well
+    /// would be one tab claiming two places in the same sidebar.
+    var stickerID: UUID?
+
     /// Set once the user (or code) navigates deliberately. A pending restore
     /// must never overwrite that — restoring a tab you've already typed into
     /// would silently throw the new page away.
@@ -285,6 +360,8 @@ final class Tab: NSObject, Identifiable {
     /// the sidebar shows real titles immediately on launch.
     func prepareRestore(from persisted: PersistedTab) {
         pendingRestore = persisted
+        groupID = persisted.groupID
+        stickerID = persisted.stickerID
         pageTitle = persisted.title
         addressText = persisted.url ?? ""
         if persisted.isRestorable { mode = .browsing }
@@ -561,39 +638,6 @@ final class Tab: NSObject, Identifiable {
         mediaFrames.removeAll()
         mediaFrame = nil
         mediaElementID = nil
-    }
-
-    /// Runs one of the media scripts against the frame that owns the chosen
-    /// element, addressing that element by id.
-    ///
-    /// Returns the script's result only when it's a string, which is all any
-    /// caller here wants — the commands are fire-and-forget and only the
-    /// measurement has an answer to give.
-    ///
-    /// Falls back to the main frame when the remembered one has gone away: a
-    /// frame that has navigated or been removed makes WebKit throw, and the
-    /// main frame is a harmless no-op when it doesn't hold the element either.
-    private func runInMediaFrame(
-        _ script: String, arguments: [String: Any] = [:]
-    ) async -> String? {
-        guard let mediaElementID else { return nil }
-        var arguments = arguments
-        arguments["id"] = mediaElementID
-        let view = webView
-
-        if let mediaFrame {
-            do {
-                return try await view.callAsyncJavaScript(
-                    script, arguments: arguments, in: mediaFrame, contentWorld: .page
-                ) as? String
-            } catch {
-                // Don't keep addressing a frame that's no longer answering.
-                self.mediaFrame = nil
-            }
-        }
-        return try? await view.callAsyncJavaScript(
-            script, arguments: arguments, in: nil, contentWorld: .page
-        ) as? String
     }
 
     /// Prevents or restores page scrolling while the lens panel is showing.
@@ -1147,14 +1191,25 @@ final class Tab: NSObject, Identifiable {
         // A tab restored but never opened — or one that has been put back to
         // sleep — has no web view to ask. Hand back what we were holding, so
         // its history survives another quit.
-        if let pendingRestore { return pendingRestore }
+        // Stamped onto whatever this returns rather than into each branch:
+        // a sleeping tab hands back the blob it was restored from, and a tab
+        // refiled while asleep would otherwise be written out still wearing
+        // the group it had at launch.
+        func filed(_ tab: PersistedTab) -> PersistedTab {
+            var tab = tab
+            tab.groupID = groupID
+            tab.stickerID = stickerID
+            return tab
+        }
+
+        if let pendingRestore { return filed(pendingRestore) }
 
         guard let live = liveWebView else {
-            return PersistedTab(
+            return filed(PersistedTab(
                 url: currentURL,
                 title: pageTitle,
                 interactionState: cachedInteractionState
-            )
+            ))
         }
 
         if refreshingState || interactionStateIsStale {
@@ -1162,11 +1217,11 @@ final class Tab: NSObject, Identifiable {
             interactionStateIsStale = false
         }
 
-        return PersistedTab(
+        return filed(PersistedTab(
             url: live.url?.absoluteString ?? (mode == .browsing ? addressText : nil),
             title: pageTitle,
             interactionState: cachedInteractionState
-        )
+        ))
     }
 
     /// KVO is the only route to these — `WKNavigationDelegate` has no callbacks
@@ -1222,8 +1277,10 @@ final class Tab: NSObject, Identifiable {
                     self.media = nil
                     self.clearMediaFrames()
                     // A popup tab starts in .home but is loaded by WebKit
-                    // directly, so the mode has to follow the URL.
-                    if self.mode == .home { self.mode = .browsing }
+                    // directly, so the mode has to follow the URL. Not during
+                    // a dive, though: there the load starting is precisely the
+                    // moment the home screen must stay up.
+                    if self.mode == .home && !self.isDiving { self.mode = .browsing }
                     // Swap the icon as soon as the host changes, so a stale
                     // favicon never sits next to a different site's title.
                     if url.host != self.faviconHost {
@@ -1239,13 +1296,35 @@ final class Tab: NSObject, Identifiable {
 
     // MARK: - Actions
 
-    func submit(_ input: String) {
+    /// - Parameter diving: whether to play the home screen's dive. Asked for by
+    ///   the caller rather than inferred from `mode == .home`, because a great
+    ///   many things start life on a home tab without anyone having looked at
+    ///   one: a tab made by ⌘T is born `.home` and loaded a keystroke later, and
+    ///   so is the first tab when a URL arrives in the launch environment.
+    ///   Inferring it animated the sea for both.
+    func submit(_ input: String, diving: Bool = false) {
         guard let url = URLResolver.resolve(input) else { return }
         hasNavigatedExplicitly = true
         pendingRestore = nil
         lastError = nil
-        mode = .browsing
+        if diving && mode == .home {
+            // The screen stays on the home view while the page loads behind
+            // it: the water rises to cover everything, and the flip to
+            // `.browsing` is the reveal at the end, not this line.
+            isDiving = true
+            diveStartedAt = Date()
+        } else {
+            mode = .browsing
+        }
         webView.load(URLRequest(url: url))
+    }
+
+    /// The reveal: the page is ready and the water has risen, so show it.
+    func completeDive() {
+        guard isDiving else { return }
+        isDiving = false
+        diveStartedAt = nil
+        mode = .browsing
     }
 
     func reload() {
@@ -1322,6 +1401,10 @@ final class Tab: NSObject, Identifiable {
     /// Returns to the search screen without tearing down the web view, so the
     /// page and its history are still there if the user navigates again.
     func goHome() {
+        // A dive abandoned mid-rise would otherwise complete later, on a page
+        // the user has already walked away from.
+        isDiving = false
+        diveStartedAt = nil
         mode = .home
         addressText = ""
         lastError = nil
@@ -1343,6 +1426,9 @@ extension Tab: WKNavigationDelegate {
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DevToolsController.shared.documentDidCommit(for: self)
+        // A new document: whatever the model named the old one is wrong now.
+        aiNamingTask?.cancel()
+        aiTitle = nil
         // Something arrived, so this is a window with a page in it.
         hasCommittedDocument = true
         emptyPopupWatchdog?.cancel()
@@ -1361,6 +1447,7 @@ extension Tab: WKNavigationDelegate {
         if let url = webView.url {
             HistoryStore.shared.record(url: url, title: webView.title ?? "")
         }
+        scheduleAINaming()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 

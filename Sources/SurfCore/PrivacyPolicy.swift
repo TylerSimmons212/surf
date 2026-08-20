@@ -90,9 +90,21 @@ public enum PrivacyPolicy {
         _ session: PersistedSession,
         for settings: PrivacySettings
     ) -> PersistedSession {
+        // Every island, not just the legacy mirror. A back/forward blob that
+        // survives in an island the redaction didn't walk is the whole trail
+        // the user asked not to keep, filed one level deeper.
         PersistedSession(
             tabs: session.tabs.map { redact($0, for: settings) },
-            selectedIndex: session.selectedIndex
+            selectedIndex: session.selectedIndex,
+            islands: session.islands.map { islands in
+                islands.map { island in
+                    var island = island
+                    island.tabs = island.tabs.map { redact($0, for: settings) }
+                    return island
+                }
+            },
+            selectedIslandIndex: session.selectedIslandIndex,
+            schemaVersion: session.schemaVersion
         )
     }
 }

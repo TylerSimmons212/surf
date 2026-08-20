@@ -85,6 +85,7 @@ final class MediaExtractor {
     /// arrives through `onFinish`.
     func start(
         pageURL: URL,
+        cookies: WKHTTPCookieStore,
         onProgress: @escaping @MainActor (YTDLP.Progress) -> Void,
         onFinish: @escaping @MainActor (Result<URL, ExtractionFailure>) -> Void
     ) async -> Extraction? {
@@ -99,7 +100,7 @@ final class MediaExtractor {
             at: workingDirectory, withIntermediateDirectories: true
         )) != nil else { return nil }
 
-        let cookieFile = await writeCookieFile(for: pageURL, in: workingDirectory)
+        let cookieFile = await writeCookieFile(for: pageURL, in: workingDirectory, from: cookies)
 
         let extraction = Extraction(
             executableURL: executableURL,
@@ -130,10 +131,16 @@ final class MediaExtractor {
     /// is filtered to the host being downloaded from, the file lives inside the
     /// run's own temp directory at mode 0600, and it is deleted when the run
     /// ends whatever the outcome.
-    private func writeCookieFile(for pageURL: URL, in directory: URL) async -> URL? {
+    private func writeCookieFile(
+        for pageURL: URL, in directory: URL, from store: WKHTTPCookieStore
+    ) async -> URL? {
         guard let host = pageURL.host else { return nil }
 
-        let all = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+        // The downloading tab's own jar, not the default one. A download
+        // started from an island would otherwise be authenticated as whoever
+        // the *home* island is signed in as — a 403 if you're lucky, and
+        // somebody else's video if you're not.
+        let all = await store.allCookies()
         let relevant = all
             .filter { YTDLP.cookieApplies(domain: $0.domain, to: host) }
             .map {

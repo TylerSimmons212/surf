@@ -148,7 +148,7 @@ enum RequestReplayer {
 
     /// The tab's cookies, including the `HttpOnly` ones no script can read.
     static func jar(for tab: Tab) async -> [ReplayCookie] {
-        let store = tab.webView.configuration.websiteDataStore.httpCookieStore
+        let store = tab.dataStore.httpCookieStore
         let cookies = await store.allCookies()
         return cookies.map {
             ReplayCookie(

@@ -15,6 +15,11 @@ enum PreferenceKeys {
     static let appearanceMode = "appearanceMode"
     static let synthesizeTheme = "synthesizeTheme"
     static let blockAds = "blockAds"
+    /// Which CLI powers AI features: an `AICLIProvider` raw value, or empty
+    /// for "the first one found". Per-feature keys (toggles, model picks) are
+    /// derived on `AIFeature` — they're per feature and per provider, and a
+    /// hand-maintained list here would drift.
+    static let aiProvider = "aiProvider"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"
@@ -44,6 +49,9 @@ extension PrivacySettings {
             // the user never asked to make; restyling redraws a page its
             // authors did draw. Only one of those needs asking first.
             PreferenceKeys.blockAds: true,
+            // Empty: whichever CLI is found first. A fresh machine has
+            // neither, and the AI tab explains itself either way.
+            PreferenceKeys.aiProvider: "",
         ])
     }
 
@@ -55,6 +63,46 @@ extension PrivacySettings {
             restoreTabs: defaults.bool(forKey: PreferenceKeys.restoreTabs),
             clearTracesOnQuit: defaults.bool(forKey: PreferenceKeys.clearTracesOnQuit)
         )
+    }
+}
+
+enum AIPreferences {
+
+    /// The provider AI features run through: the user's pick while it's still
+    /// on the machine, the first installed CLI otherwise. Nil when none is
+    /// installed at all.
+    @MainActor
+    static var selectedProvider: AICLIProvider? {
+        let installed = AICLIProvider.allCases.filter {
+            AICLIDetector.shared.status($0).isInstalled
+        }
+        let stored = UserDefaults.standard.string(forKey: PreferenceKeys.aiProvider)
+        if let stored, let pick = AICLIProvider(rawValue: stored), installed.contains(pick) {
+            return pick
+        }
+        // Unset: prefer a CLI that can actually run over one that's merely
+        // present — an expired Claude session shouldn't shadow a working Codex.
+        return installed.first { AICLIDetector.shared.status($0).isUsable } ?? installed.first
+    }
+
+    static func isEnabled(_ feature: AIFeature) -> Bool {
+        UserDefaults.standard.bool(forKey: feature.enabledKey)
+    }
+
+    /// What a feature should actually run right now, or nil when it can't:
+    /// toggled off, no CLI, or the CLI isn't signed in. Features check this at
+    /// the moment of use — state in Settings is advice, not authority.
+    @MainActor
+    static func resolved(_ feature: AIFeature) -> (provider: AICLIProvider, model: AIModelOption)? {
+        guard isEnabled(feature) else { return nil }
+        guard let provider = selectedProvider,
+              AICLIDetector.shared.status(provider).isUsable else { return nil }
+        let status = AICLIDetector.shared.status(provider)
+        let stored = UserDefaults.standard.string(forKey: feature.modelKey(for: provider))
+        guard let model = provider.validatedModel(
+            stored, options: status.modelOptions, descriptions: status.modelDescriptions
+        ) else { return nil }
+        return (provider, model)
     }
 }
 
@@ -84,20 +132,46 @@ extension BrowsingDataCategory {
 @MainActor
 enum BrowsingDataCleaner {
 
-    /// Erases the given categories for every site.
+    /// Erases the given categories for every site, in every island.
+    ///
+    /// Every island, emphatically. Clearing only the default store would leave
+    /// the promise in Settings true for the browsing you did in the island you
+    /// happened to be in and false for all the rest — and the user would have
+    /// no way to tell, because nothing in the UI distinguishes them.
+    ///
+    /// Concurrently, because this runs on the way out: `applicationShouldTerminate`
+    /// is holding the app open waiting for it, and six islands cleared one
+    /// after another is six round trips the user spends staring at a window
+    /// that won't close.
     static func clear(_ categories: Set<BrowsingDataCategory>) async {
         guard !categories.isEmpty else { return }
         let types = Set(categories.map(\.webKitDataType))
-        await WKWebsiteDataStore.default().removeData(
-            ofTypes: types,
-            modifiedSince: .distantPast
-        )
+        let stores = await IslandStores.shared.allStores()
+
+        // Started together, awaited afterwards. A task group would be the
+        // obvious spelling and doesn't compile here: the isolation checker
+        // can't reason about handing a main-actor store into a group.
+        let clears = stores.map { store in
+            Task { @MainActor in
+                await store.removeData(ofTypes: types, modifiedSince: .distantPast)
+            }
+        }
+        for clear in clears { await clear.value }
     }
 
-    /// How many sites currently have data stored. Used to show that the clear
-    /// actually did something.
+    /// How many sites currently have data stored, across every island. Used to
+    /// show that the clear actually did something.
+    ///
+    /// A sum rather than a distinct count: an origin with data in two islands
+    /// is two piles of data, and reporting it once would make clearing look
+    /// like it had done less than it did.
     static func storedSiteCount() async -> Int {
         let types = Set(BrowsingDataCategory.allCases.map(\.webKitDataType))
-        return await WKWebsiteDataStore.default().dataRecords(ofTypes: types).count
+        let stores = await IslandStores.shared.allStores()
+        var total = 0
+        for store in stores {
+            total += await store.dataRecords(ofTypes: types).count
+        }
+        return total
     }
 }

@@ -74,12 +74,43 @@ final class ContentBlocker {
         directory.appendingPathComponent("\(source.id).txt")
     }
 
+    /// Both artifacts carry the converter's format version, so a build that
+    /// converts differently can't be served last build's answers. Naming rather
+    /// than a side-car marker: an old file is then simply never opened, which
+    /// needs no comparison and can't half-fail.
     private static func rulesURL(_ source: FilterListSource) -> URL {
-        directory.appendingPathComponent("\(source.id).rules.json")
+        directory.appendingPathComponent(
+            "\(source.id).rules.v\(FilterConverter.formatVersion).json")
     }
 
     private static func domainsURL(_ source: FilterListSource) -> URL {
-        directory.appendingPathComponent("\(source.id).domains.txt")
+        directory.appendingPathComponent(
+            "\(source.id).domains.v\(FilterConverter.formatVersion).txt")
+    }
+
+    /// Removes conversions left behind by an older format version.
+    ///
+    /// They are never read once the version moves, so this is only about not
+    /// leaving thirteen megabytes of dead JSON per list on disk for ever.
+    private nonisolated static func discardStaleConversions(in directory: URL) {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) else { return }
+        let current = ".v\(FilterConverter.formatVersion)."
+        for entry in entries {
+            let name = entry.lastPathComponent
+            guard name.contains(".rules.v") || name.contains(".domains.v"),
+                  !name.contains(current)
+            else { continue }
+            try? FileManager.default.removeItem(at: entry)
+        }
+        // The unversioned originals, from before this existed.
+        for source in FilterList.sources {
+            for legacy in ["\(source.id).rules.json", "\(source.id).domains.txt"] {
+                try? FileManager.default.removeItem(
+                    at: directory.appendingPathComponent(legacy))
+            }
+        }
     }
 
     /// The list as published: the copy fetched last, or the one inside the app.
@@ -161,6 +192,13 @@ final class ContentBlocker {
         Task { @MainActor in
             await primeFromCache()
             await compile()
+            // After compiling, not before: `compile` is what rebuilds the
+            // current version's artifacts, and sweeping first would delete the
+            // old ones while the new ones don't exist yet.
+            let folder = Self.directory
+            Task.detached(priority: .background) {
+                Self.discardStaleConversions(in: folder)
+            }
             await updateIfDue()
         }
     }

@@ -23,6 +23,16 @@ import Foundation
 public enum FilterConverter {
 
     /// What a list came out as.
+    /// Bumped whenever conversion starts producing different rules from the
+    /// same filter text.
+    ///
+    /// Converted lists are cached on disk and reused for as long as the
+    /// published list itself is unchanged, which is up to a week. Without a
+    /// stamp the cache has no way to know the *converter* moved, so a change
+    /// like frame blocking would land in the binary and simply not happen —
+    /// silently, and for exactly the people who already had the app.
+    public static let formatVersion = 2
+
     public struct Result: Sendable, Equatable {
         /// Rule objects, already encoded, in the order WebKit must see them.
         public var rules: [String]
@@ -30,6 +40,13 @@ public enum FilterConverter {
         public var blockedDomains: Set<String>
         public var converted: Int
         public var skipped: Int
+        /// How many of `rules` are the child-frame companions described in
+        /// `frameRule(for:)`, and how many had to be left out to stay under
+        /// WebKit's ceiling. Both are reported rather than inferred so the
+        /// panel — and the tests — can tell a list that didn't need them from
+        /// one that couldn't afford them.
+        public var frameRules: Int = 0
+        public var droppedFrameRules: Int = 0
 
         public var isEmpty: Bool { rules.isEmpty }
     }
@@ -65,17 +82,31 @@ public enum FilterConverter {
         "popup": "popup",
     ]
 
-    /// `subdocument` means a nested document — an iframe — and WebKit has no
-    /// type for one. Its only near-neighbour is `document`, which also covers
-    /// the page the user typed the address of, so translating a *block* rule
-    /// that way would hand an ad list the power to refuse a top-level
-    /// navigation. Those rules are dropped, and the cost is an ad iframe
-    /// getting through.
+    /// What a frame-blocking companion rule applies to.
     ///
-    /// An *exception* carrying it is kept and does become `document`, because
-    /// the asymmetry runs the other way there: a broader exception un-blocks
-    /// more than the list asked for, where a dropped one would leave a request
-    /// refused that the list said to allow.
+    /// `subdocument` means a nested document — an iframe — and WebKit has no
+    /// type of its own for one. Its near-neighbour `document` covers the page
+    /// the user typed the address of as well, so for a long time these rules
+    /// were dropped outright rather than risk handing an ad list the power to
+    /// refuse a top-level navigation. That caution was right: a rule carrying
+    /// only `resource-type: ["document"]` does block the address bar, which is
+    /// verifiable in about twenty lines against a real `WKWebView`.
+    ///
+    /// `load-context` is the missing piece. Pinned to `child-frame`, the same
+    /// rule blocks the iframe and leaves a top-level navigation to the very
+    /// same URL alone. WebKit validates the key — an unrecognised value fails
+    /// the compile rather than being ignored — so this is a real guarantee and
+    /// not a hopeful one.
+    ///
+    /// It has to be a *separate* rule rather than another entry in an existing
+    /// trigger's `resource-type`, because `load-context` narrows the whole
+    /// trigger: adding `document` to a script rule and pinning it to child
+    /// frames would stop that rule blocking scripts in the top frame. That is
+    /// what makes frame blocking cost rules rather than characters, and why
+    /// `convert` gives itself a budget.
+    static let frameResourceTypes = ["document"]
+    static let frameLoadContext = ["child-frame"]
+
     static let nestedDocumentOption = "subdocument"
 
     /// Options that change what a rule *does* rather than what it matches, in
@@ -104,9 +135,25 @@ public enum FilterConverter {
 
     // MARK: - Converting
 
-    public static func convert(_ text: String) -> Result {
+    /// Converts a list, keeping frame rules only while there is room for them.
+    ///
+    /// `limit` exists because the child-frame companions roughly double a
+    /// list's rule count, and WebKit refuses a list over its ceiling outright —
+    /// the failure mode is not "fewer rules" but "no blocking at all". EasyList
+    /// fits today with room to spare, and lists only grow, so the budget is
+    /// enforced here rather than discovered later by a compile that fails on
+    /// somebody's machine and not on mine.
+    ///
+    /// Companions are what gets dropped, and they're dropped from the end, so
+    /// an over-budget list degrades to exactly the blocking it had before this
+    /// existed rather than to something arbitrary.
+    public static func convert(
+        _ text: String, limit: Int = FilterList.maximumRuleCount
+    ) -> Result {
         var blocks: [String] = []
+        var frames: [String] = []
         var exceptions: [String] = []
+        var frameExceptions: [String] = []
         var domains: Set<String> = []
         var skipped = 0
 
@@ -117,11 +164,13 @@ public enum FilterConverter {
             }
 
             switch parse(filter) {
-            case .block(let rule, let domain):
-                blocks.append(rule)
+            case .block(let rule, let frame, let domain):
+                if let rule { blocks.append(rule) }
+                if let frame { frames.append(frame) }
                 if let domain { domains.insert(domain) }
-            case .exception(let rule):
-                exceptions.append(rule)
+            case .exception(let rule, let frame):
+                if let rule { exceptions.append(rule) }
+                if let frame { frameExceptions.append(frame) }
             case .ignored:
                 continue
             case .unsupported:
@@ -129,22 +178,49 @@ public enum FilterConverter {
             }
         }
 
+        // An exception has to survive its own block, so the two are budgeted
+        // together: dropping a frame block while keeping the frame exception
+        // that allows it is harmless, but the reverse would leave a site
+        // allowlisted for subresources and blocked for its frames.
+        let fixed = blocks.count + exceptions.count
+        let room = max(0, limit - fixed)
+        let requested = frames.count + frameExceptions.count
+        var dropped = 0
+
+        if requested > room {
+            // Exceptions are kept ahead of blocks: an over-broad allow is the
+            // safe direction, an over-broad block is not.
+            let blockRoom = max(0, room - frameExceptions.count)
+            dropped = frames.count - min(frames.count, blockRoom)
+            frames = Array(frames.prefix(blockRoom))
+            if frameExceptions.count > room {
+                dropped += frameExceptions.count - room
+                frameExceptions = Array(frameExceptions.prefix(room))
+            }
+        }
+
         // Exceptions last, and this is not cosmetic ordering: WebKit applies
         // rules in the order given, and `ignore-previous-rules` cancels only
         // what came *before* it. An exception emitted above the block it exists
         // to override does nothing at all.
+        let rules = blocks + frames + exceptions + frameExceptions
         return Result(
-            rules: blocks + exceptions,
+            rules: rules,
             blockedDomains: domains,
-            converted: blocks.count + exceptions.count,
-            skipped: skipped
+            converted: rules.count,
+            skipped: skipped,
+            frameRules: frames.count + frameExceptions.count,
+            droppedFrameRules: dropped
         )
     }
 
     enum Parsed {
-        /// A rule, and the domain it blocks outright if it blocks one.
-        case block(String, domain: String?)
-        case exception(String)
+        /// A rule, the child-frame companion it needs (if any), and the domain
+        /// it blocks outright if it blocks one. The main rule is nil for a
+        /// filter that named `$subdocument` and nothing else — that rule is
+        /// entirely about frames.
+        case block(String?, frame: String?, domain: String?)
+        case exception(String?, frame: String?)
         /// Deliberately not carried, and not counted against the list.
         case ignored
         case unsupported
@@ -222,19 +298,35 @@ public enum FilterConverter {
         trigger.ifDomain = options.ifDomain
         trigger.unlessDomain = options.unlessDomain
 
-        guard let encoded = encode(
-            trigger: trigger,
-            action: Action(type: isException ? "ignore-previous-rules" : "block")
-        ) else { return .unsupported }
+        let action = Action(type: isException ? "ignore-previous-rules" : "block")
 
-        if isException { return .exception(encoded) }
+        var encoded: String?
+        if !options.isFrameOnly {
+            guard let main = encode(trigger: trigger, action: action) else { return .unsupported }
+            encoded = main
+        }
+
+        var frame: String?
+        if options.reachesFrames || options.isFrameOnly {
+            var frameTrigger = trigger
+            frameTrigger.resourceType = frameResourceTypes
+            frameTrigger.loadContext = frameLoadContext
+            // A rule that produced nothing at all is worse than one that only
+            // covers subresources, so a failed companion is dropped quietly
+            // rather than taking the main rule down with it.
+            frame = encode(trigger: frameTrigger, action: action)
+        }
+
+        guard encoded != nil || frame != nil else { return .unsupported }
+
+        if isException { return .exception(encoded, frame: frame) }
 
         // Only a rule that blocks a whole domain names one. A rule against a
         // path on a shared host names a domain that isn't blocked.
         let blocksWholeDomain = translated.isWholeDomain
             && options.ifDomain == nil
             && options.loadType == nil
-        return .block(encoded, domain: blocksWholeDomain ? translated.host : nil)
+        return .block(encoded, frame: frame, domain: blocksWholeDomain ? translated.host : nil)
     }
 
     // MARK: - Patterns
@@ -340,6 +432,14 @@ public enum FilterConverter {
         var isCaseSensitive = false
         var isCosmeticOnly = false
         var lowercaseFilter = false
+        /// Whether this rule should also reach nested documents, which needs a
+        /// companion rule of its own — see `frameResourceTypes`.
+        var reachesFrames = false
+        /// The rule named `$subdocument` and nothing else, so the companion is
+        /// the *only* rule it should produce. Without this a bare
+        /// `||ads.example^$subdocument` would fall through to the default types
+        /// and start blocking scripts and images the filter never mentioned.
+        var isFrameOnly = false
 
         /// Returns nil when the rule carries an option WebKit has no answer for.
         ///
@@ -349,11 +449,17 @@ public enum FilterConverter {
         init?(_ text: String, isException: Bool = false) {
             guard !text.isEmpty else {
                 resourceTypes = FilterConverter.defaultResourceTypes
+                // Adblock Plus's default is every type, nested documents
+                // included. That default is most of a list, and it's why an ad
+                // iframe used to load even when its host was blocked outright.
+                reachesFrames = true
                 return
             }
 
             var included: [String] = []
             var excluded: Set<String> = []
+            var namedFrames: Bool?
+            var namedOtherTypes = false
             var ifDomains: [String] = []
             var unlessDomains: [String] = []
             var sawTypeOption = false
@@ -397,13 +503,24 @@ public enum FilterConverter {
                         }
                     }
                 case FilterConverter.nestedDocumentOption:
-                    // Convertible only on an exception. See the note there.
-                    guard isException else { return nil }
+                    // Never a resource type of its own: it becomes a separate
+                    // child-frame rule instead. See `frameResourceTypes`.
                     sawTypeOption = true
-                    if isNegated { excluded.insert("document") } else { included.append("document") }
+                    namedFrames = !isNegated
+                    if isException {
+                        // An exception keeps its old, broader translation as
+                        // well. Un-blocking more than asked is the safe
+                        // direction; refusing something a list allowed is not.
+                        if isNegated {
+                            excluded.insert("document")
+                        } else {
+                            included.append("document")
+                        }
+                    }
                 default:
                     guard let type = FilterConverter.resourceTypeNames[name] else { return nil }
                     sawTypeOption = true
+                    namedOtherTypes = true
                     if isNegated { excluded.insert(type) } else { included.append(type) }
                 }
             }
@@ -416,12 +533,26 @@ public enum FilterConverter {
 
             if !sawTypeOption {
                 resourceTypes = FilterConverter.defaultResourceTypes
-            } else if !included.isEmpty {
-                resourceTypes = orderedTypes(included)
+                reachesFrames = true
             } else {
-                let remaining = FilterConverter.defaultResourceTypes.filter { !excluded.contains($0) }
-                guard !remaining.isEmpty else { return nil }
-                resourceTypes = remaining
+                // An exception that named its types has said what it means, and
+                // its `document` translation already covers nested ones. Only a
+                // *plain* exception needs a companion — and it does need one,
+                // or an allowlist entry would stop protecting a site's frames
+                // the moment blocks started reaching them.
+                reachesFrames = isException ? false : (namedFrames ?? false)
+
+                if !included.isEmpty {
+                    resourceTypes = orderedTypes(included)
+                } else if namedFrames == true, !namedOtherTypes, excluded.isEmpty {
+                    resourceTypes = nil
+                    isFrameOnly = true
+                } else {
+                    let remaining = FilterConverter.defaultResourceTypes
+                        .filter { !excluded.contains($0) }
+                    guard !remaining.isEmpty else { return nil }
+                    resourceTypes = remaining
+                }
             }
         }
 
@@ -470,7 +601,9 @@ public enum FilterConverter {
             trigger: trigger,
             action: Action(type: "css-display-none", selector: selector)
         ) else { return .unsupported }
-        return .block(encoded, domain: nil)
+        // No frame companion: element hiding already applies inside whatever
+        // document the rule matched, and a nested one gets its own pass.
+        return .block(encoded, frame: nil, domain: nil)
     }
 
     // MARK: - Encoding
@@ -480,6 +613,7 @@ public enum FilterConverter {
         var urlFilterIsCaseSensitive: Bool?
         var resourceType: [String]?
         var loadType: [String]?
+        var loadContext: [String]?
         var ifDomain: [String]?
         var unlessDomain: [String]?
 
@@ -488,6 +622,7 @@ public enum FilterConverter {
             case urlFilterIsCaseSensitive = "url-filter-is-case-sensitive"
             case resourceType = "resource-type"
             case loadType = "load-type"
+            case loadContext = "load-context"
             case ifDomain = "if-domain"
             case unlessDomain = "unless-domain"
         }

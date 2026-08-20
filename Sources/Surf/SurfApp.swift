@@ -99,6 +99,36 @@ struct SurfApp: App {
 
             Divider()
 
+            // The split is made by dragging a tab onto the page, which is
+            // discoverable but unguessable — so the menu is where it says it
+            // exists, and where you find out how to undo it.
+            Button("Split With Next Tab") { session.splitWithNextTab() }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(session.tabs.count < 2 || session.isSplit)
+
+            Button("Close Split") { session.closeSplit() }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                .disabled(!session.isSplit)
+
+            Button("Swap Split Sides") { session.swapSplitSides() }
+                .keyboardShortcut("d", modifiers: [.command, .option])
+                .disabled(!session.isSplit)
+
+            Divider()
+
+            Button("New Group with Current Tab") {
+                session.createGroup(with: session.selectedTab)
+            }
+            .keyboardShortcut("g", modifiers: [.command, .control])
+
+            Button("Remove Tab from Group") {
+                session.removeFromGroup(session.selectedTab)
+            }
+            .keyboardShortcut("g", modifiers: [.command, .control, .shift])
+            .disabled(session.selectedTab.groupID == nil)
+
+            Divider()
+
             Button("Open Location…") { session.requestAddressFocus() }
                 .keyboardShortcut("l", modifiers: .command)
 
@@ -160,6 +190,53 @@ struct SurfApp: App {
                     .keyboardShortcut(
                         KeyEquivalent(Character("\(index)")),
                         modifiers: .command
+                    )
+            }
+        }
+
+        CommandMenu("Islands") {
+            Button("New Island") {
+                // Straight into the editor: the moment you make an island is
+                // the moment you know what it's for.
+                session.createIslandAndEdit()
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option])
+
+            Button("Edit Island…") {
+                session.beginEditing(session.currentIsland)
+            }
+            .keyboardShortcut("e", modifiers: [.command, .option])
+
+            Divider()
+
+            // ⌥⌘← / ⌥⌘→ rather than anything with ⌘⇧ brackets: those are tabs,
+            // and an island is a bigger move than a tab — the arrows read as
+            // travelling somewhere.
+            Button("Previous Island") { session.cycleIsland(by: -1) }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            Button("Next Island") { session.cycleIsland(by: 1) }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                .disabled(session.islands.count < 2)
+
+            // Named for what it does. "Delete Island" reads like closing a
+            // window; this throws away every login inside it.
+            Button(session.deleteTitle(for: session.currentIsland), role: .destructive) {
+                session.requestDeleteIsland(session.currentIsland)
+            }
+            .disabled(session.currentIsland.isHome)
+
+            Divider()
+
+            // ⌥⌘1–⌥⌘9. ⌘1–⌘9 are spoken for by tabs, and ⌃1–⌃9 — the obvious
+            // second choice — collide with Mission Control's desktop switching,
+            // which is on by default once you have more than one desktop and
+            // takes the key before any app sees it. So Option-Command is the
+            // island modifier throughout, arrows included.
+            ForEach(1...9, id: \.self) { index in
+                Button("Show Island \(index)") { session.selectIsland(atOneBasedIndex: index) }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(index)")),
+                        modifiers: [.command, .option]
                     )
             }
         }
@@ -226,7 +303,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !categories.isEmpty else { return .terminateNow }
 
         Task { @MainActor in
-            await BrowsingDataCleaner.clear(categories)
+            // Bounded, because the work now scales with the number of islands
+            // and every one of them is a round trip to WebKit. An app that
+            // won't quit is a worse failure than one that quits having cleared
+            // most of what it promised — and whatever is missed is cleared on
+            // the next launch's quit, since the setting is still on.
+            let clearing = Task { @MainActor in
+                await BrowsingDataCleaner.clear(categories)
+            }
+            let deadline = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(6))
+                clearing.cancel()
+            }
+            await clearing.value
+            deadline.cancel()
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

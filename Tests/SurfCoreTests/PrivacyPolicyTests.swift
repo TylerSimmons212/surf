@@ -100,4 +100,34 @@ struct PrivacyPolicyTests {
         #expect(PrivacyPolicy.shouldPersistSession(PrivacySettings(restoreTabs: true)))
         #expect(!PrivacyPolicy.shouldPersistSession(PrivacySettings(restoreTabs: false)))
     }
+
+    /// Redaction has to walk every island, not just the legacy mirror. A
+    /// back/forward blob surviving in an island nobody walked is the entire
+    /// trail the user asked not to keep, filed one level deeper — and it would
+    /// be written to disk on the very next save.
+    @Test("Turning history off strips the trail from every island, not just the first")
+    func redactionReachesEveryIsland() throws {
+        let blob = Data([1, 2, 3])
+        let carrying = PersistedTab(url: "a.com", title: "A", interactionState: blob)
+        let session = PersistedSession(
+            islands: [
+                .home(tabs: [carrying]),
+                PersistedIsland(
+                    name: "Work", symbol: "\u{1F30A}", tint: .kelp, dataStoreID: UUID(),
+                    tabs: [carrying]
+                ),
+            ],
+            selectedIslandIndex: 0
+        )
+        var settings = PrivacySettings.default
+        settings.rememberHistory = false
+
+        let redacted = PrivacyPolicy.redact(session, for: settings)
+        let islands = try #require(redacted.islands)
+        #expect(islands.allSatisfy { $0.tabs.allSatisfy { $0.interactionState == nil } })
+        // And the mirror an older build would read.
+        #expect(redacted.tabs.allSatisfy { $0.interactionState == nil })
+        // The isolation itself must survive redaction untouched.
+        #expect(islands.filter(\.isHome).count == 1)
+    }
 }

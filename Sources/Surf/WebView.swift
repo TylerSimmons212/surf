@@ -24,6 +24,20 @@ struct WebView: NSViewRepresentable {
     /// is why the list worked while the controls above and below it didn't.
     var chromeInset: CGFloat = 0
 
+    /// Makes the page refuse input entirely, rather than just in the chrome
+    /// strip. Set while a tab is being dragged, so the split drop zones can
+    /// receive it.
+    ///
+    /// A `WKWebView` registers itself as a dragging destination — pages take
+    /// dropped links and text — and AppKit offers the drag to the deepest
+    /// registered view under the pointer. A SwiftUI drop target merely *drawn*
+    /// over the page therefore never sees it: same reason a button drawn over
+    /// the page doesn't get clicks, which is what `chromeInset` already exists
+    /// to solve. Standing down for the length of the drag hands the whole area
+    /// to the zones above; the page is not a drop target the user is aiming at
+    /// while they're carrying a tab.
+    var isInert: Bool = false
+
     func makeNSView(context: Context) -> WebViewContainer {
         let container = WebViewContainer()
         container.present(webView)
@@ -33,6 +47,7 @@ struct WebView: NSViewRepresentable {
     func updateNSView(_ container: WebViewContainer, context: Context) {
         container.present(webView)
         container.chromeInset = chromeInset
+        container.isInert = isInert
     }
 }
 
@@ -41,6 +56,9 @@ struct WebView: NSViewRepresentable {
 /// hierarchy mutation.
 final class WebViewContainer: NSView {
     var chromeInset: CGFloat = 0
+
+    /// See `WebView.isInert`. Stands the page down for the length of a tab drag.
+    var isInert = false
 
     /// Recently shown web views, most recent last, all still mounted.
     ///
@@ -111,6 +129,7 @@ final class WebViewContainer: NSView {
     /// makes AppKit carry on looking, and what it finds next is the SwiftUI
     /// content that was drawn there — which is what the user aimed at.
     override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isInert else { return nil }
         guard chromeInset > 0 else { return super.hitTest(point) }
         let local = convert(point, from: superview)
         guard local.x > chromeInset else { return nil }
