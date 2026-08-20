@@ -7,16 +7,6 @@ CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/Surf.app"
 
-# yt-dlp reassembles segmented video, which WebKit can't download. Pinned and
-# checksummed rather than "latest": a build should produce the same app twice.
-#
-# To bump: pick a tag from github.com/yt-dlp/yt-dlp/releases and take the
-# yt-dlp_macos line from that release's SHA2-256SUMS. Worth doing regularly —
-# sites change their players and yt-dlp releases roughly monthly to keep up.
-YTDLP_VERSION="2026.07.04"
-YTDLP_SHA256="498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b"
-YTDLP_CACHE="$ROOT/.build/vendor/yt-dlp-$YTDLP_VERSION"
-
 swift build -c "$CONFIG" --package-path "$ROOT"
 BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)/Surf"
 
@@ -24,42 +14,18 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Surf"
 
-# Cached outside git: it's a 40MB binary with its own release cadence, and
-# nothing about it belongs in the history of a Swift project.
-if [ ! -f "$YTDLP_CACHE" ]; then
-    mkdir -p "$(dirname "$YTDLP_CACHE")"
-    echo "Fetching yt-dlp $YTDLP_VERSION…"
-    if curl -fsSL --retry 2 -o "$YTDLP_CACHE.tmp" \
-        "https://github.com/yt-dlp/yt-dlp/releases/download/$YTDLP_VERSION/yt-dlp_macos"; then
-        # Verify before it is ever named as the real thing, let alone signed.
-        if echo "$YTDLP_SHA256  $YTDLP_CACHE.tmp" | shasum -a 256 -c - >/dev/null 2>&1; then
-            mv "$YTDLP_CACHE.tmp" "$YTDLP_CACHE"
-        else
-            rm -f "$YTDLP_CACHE.tmp"
-            echo "error: yt-dlp checksum mismatch — refusing to bundle it." >&2
-            exit 1
-        fi
-    else
-        rm -f "$YTDLP_CACHE.tmp"
-        # Not fatal: Surf falls back to a yt-dlp on PATH, and everything other
-        # than stream downloads works regardless. A build shouldn't need network.
-        echo "warning: couldn't fetch yt-dlp — stream downloads will need a system copy." >&2
-    fi
-fi
-
-if [ -f "$YTDLP_CACHE" ]; then
-    cp "$YTDLP_CACHE" "$APP/Contents/Resources/yt-dlp"
-    chmod +x "$APP/Contents/Resources/yt-dlp"
-fi
+# yt-dlp is deliberately NOT bundled: it's a 40MB binary with its own release
+# cadence. Surf resolves it at runtime — the managed copy the update manager
+# downloads into Application Support (weekly, checksummed), or one on PATH.
+# Everything other than stream downloads works with neither present.
 
 # EasyList and EasyPrivacy, so a fresh install blocks on its first page rather
 # than after its first weekly check. Refreshed in place from then on, into
 # Application Support — these copies are only ever the floor.
 #
-# Not pinned or checksummed, unlike yt-dlp above, and the difference is what the
-# payload is. yt-dlp is an executable Surf runs; these are filter rules Surf
-# parses into declarative form for WebKit to match URLs against, with no path
-# from them into Surf or into a page. Their publisher issues no checksums, so
+# Not pinned or checksummed: these are filter rules Surf parses into
+# declarative form for WebKit to match URLs against, with no path from them
+# into Surf or into a page. Their publisher issues no checksums, so
 # what stands in for one is the same check the runtime update makes: each list
 # has to convert to tens of thousands of usable rules.
 # Each entry is "name|url|minimum rules". The minimum is per list because they
@@ -91,7 +57,7 @@ for ENTRY in \
             fi
         else
             rm -f "$LIST_CACHE.tmp"
-            # Not fatal, for the same reason as yt-dlp: Surf fetches its own
+            # Not fatal: Surf fetches its own
             # copy on first launch, and a build shouldn't need network.
             echo "warning: couldn't fetch $LIST — blocking starts after the first update." >&2
         fi
@@ -114,7 +80,7 @@ cp "$ROOT"/Resources/Fonts/OFL-*.txt "$APP/Contents/Resources/Fonts/"
 # Assets.car that macOS 26 reads for the layered icon, plus an .icns for
 # anything still asking the old question.
 #
-# Not fatal if it fails, for the same reason as yt-dlp and the filter lists: a
+# Not fatal if it fails, for the same reason as the filter lists: a
 # build shouldn't need Xcode installed, and an app with a generic icon browses
 # exactly as well as one without.
 if xcrun --find actool >/dev/null 2>&1; then
@@ -153,11 +119,6 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 # Ad-hoc signature: unsigned binaries can't spawn WebKit's XPC services.
-# Nested code is signed first — signing the bundle seals what's inside it, so
-# an unsigned helper added afterwards would invalidate the whole signature.
-if [ -f "$APP/Contents/Resources/yt-dlp" ]; then
-    codesign --force --sign - "$APP/Contents/Resources/yt-dlp" >/dev/null 2>&1
-fi
 codesign --force --sign - "$APP" >/dev/null 2>&1
 
 echo "Built $APP"

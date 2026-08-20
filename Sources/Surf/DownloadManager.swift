@@ -49,6 +49,10 @@ final class DownloadItem: Identifiable {
     /// Holds the download alive; WebKit doesn't retain it for us.
     @ObservationIgnored var download: WKDownload?
     @ObservationIgnored var progressObservation: NSKeyValueObservation?
+    /// When progress was last published to the observable properties.
+    /// `NSProgress` fires per received chunk — easily 50–200 Hz on a fast
+    /// connection — and every publish redraws the sidebar. See `bind`.
+    @ObservationIgnored var lastProgressPublish: TimeInterval = 0
     /// The yt-dlp run, for extracted downloads. Mutually exclusive with
     /// `download` — a given item is fetched one way or the other.
     @ObservationIgnored var extraction: Extraction?
@@ -190,7 +194,16 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             \.fractionCompleted, options: [.new]
         ) { progress, _ in
             MainActor.assumeIsolated {
-                item.fraction = progress.fractionCompleted
+                // Throttled to ~10 Hz: KVO fires per received chunk, and each
+                // publish re-renders every view watching the download. The
+                // final chunk always lands so the row finishes at 100%.
+                let now = ProcessInfo.processInfo.systemUptime
+                let fraction = progress.fractionCompleted
+                guard now - item.lastProgressPublish >= 0.1 || fraction >= 1 else {
+                    return
+                }
+                item.lastProgressPublish = now
+                item.fraction = fraction
                 item.bytesWritten = progress.completedUnitCount
                 item.totalBytes = progress.totalUnitCount
             }
