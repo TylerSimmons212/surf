@@ -38,6 +38,11 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// Locates rules with no element involved, for replaying edits after a
     /// reload has cleared the selection.
     case cssFindRules = "CSS.findRules"
+    /// The engine's own property list, asked of the engine. A bundled list
+    /// would drift from the WebKit actually running; enumerating one computed
+    /// style declaration answers with exactly the properties this build
+    /// understands, which is the only correct completion source.
+    case cssPropertyNames = "CSS.propertyNames"
 
     case storageRead = "Storage.read"
     case storageWrite = "Storage.write"
@@ -92,7 +97,7 @@ extension DevToolsMethod {
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
-             .cssAddRecoveredSheet, .cssFindRules,
+             .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames,
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
              .performanceRead, .performanceWatchLayout,

@@ -629,6 +629,84 @@ final class DevToolsSession: Identifiable {
         await apply(edited, replacing: declaration, in: rule, live: live)
     }
 
+    /// The engine's own property vocabulary, fetched once per session.
+    ///
+    /// Once, not per document: the list is a fact about the WebKit build, not
+    /// about any page. Empty until someone actually opens an add-row — most
+    /// sessions never pay for it.
+    private(set) var cssPropertyNames: [String] = []
+
+    func loadPropertyNamesIfNeeded() {
+        guard cssPropertyNames.isEmpty else { return }
+        Task { @MainActor in
+            guard let reply = try? await bridge.call(.cssPropertyNames, [:]) else { return }
+            cssPropertyNames = reply["names"] as? [String] ?? []
+        }
+    }
+
+    /// Appends a brand-new declaration to a rule — the other half of editing.
+    ///
+    /// Returns whether the engine accepted it, so the add-row can complain in
+    /// place instead of routing through `rejectedEdit`, which is keyed by the
+    /// index of a declaration that, on failure, never came to exist.
+    func addDeclaration(
+        _ name: String, _ value: String, to rule: MatchedRule
+    ) async -> Bool {
+        let name = name.trimmingCharacters(in: .whitespaces).lowercased()
+        let value = value.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, !value.isEmpty else { return false }
+
+        // Recomposed exactly like an edit: the whole block, in authored order,
+        // with the new line at the end — which is also where the cascade puts
+        // its weight, so the addition wins against anything earlier in the
+        // same rule, which is what "I just typed this" should mean.
+        let text = (rule.declarations
+            .filter { disabled[DeclarationRef(ruleId: rule.id, index: $0.index)] == nil }
+            .map(\.text)
+            + ["\(name): \(value)"])
+            .joined(separator: "; ")
+
+        var params: [String: any Sendable] = ["text": text, "probe": name]
+        if rule.isStyleAttribute {
+            params["nodeId"] = -rule.id
+        } else {
+            params["ruleId"] = rule.id
+        }
+
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssSetRuleText, params),
+              issued == generation
+        else { return false }
+
+        if let failure = reply["error"] as? String {
+            debugLog("add declaration failed: \(failure) — \(name) on rule \(rule.id)")
+            return false
+        }
+        // Whether *this* line survived, asked of the engine by name. The
+        // `applied` list is no use here: it enumerates longhands, so a
+        // successful `margin` add reports margin-top and never `margin` —
+        // and a declaration that never existed has no longhand list to
+        // compare against. `getPropertyValue` answers for both kinds.
+        guard let probe = reply["probe"] as? String, !probe.isEmpty else {
+            debugLog("add declaration rejected by engine: \(name): \(value)")
+            return false
+        }
+
+        changeset.record(StyleChange(
+            ruleId: rule.id,
+            selector: rule.isStyleAttribute ? "element.style" : rule.selector,
+            sourceLabel: rule.isStyleAttribute ? "element" : rule.sourceLabel,
+            layer: rule.layer,
+            conditions: rule.conditions,
+            property: name,
+            original: nil,
+            updated: value
+        ))
+        editedRuleIds.insert(rule.id)
+        loadStyles()
+        return true
+    }
+
     func setImportant(_ important: Bool, of declaration: CSSDeclaration, in rule: MatchedRule) async {
         var edited = declaration
         edited.isImportant = important

@@ -497,16 +497,23 @@ enum DevToolsAgent {
       /// `cssText` is the only CSSOM surface that preserves authored order.
       /// Setting properties one by one moves a re-enabled declaration to the
       /// end of the block, which quietly changes the cascade within the rule.
-      function applyStyleText(style, text, owner) {
-        const before = new Set();
-        for (let i = 0; i < style.length; i++) { before.add(style.item(i)); }
+      function applyStyleText(style, text, owner, probe) {
         style.cssText = text;
         // What the engine actually accepted. A value it can't parse is dropped
         // silently, and the panel needs to say so rather than show an edit that
         // didn't happen.
+        //
+        // `applied` enumerates as longhands — setting `margin` reports
+        // margin-top and friends, never `margin` itself. Fine for edits,
+        // where the caller knows its declaration's longhands from the read.
+        // Useless for a brand-new declaration, whose longhands nobody has
+        // been told — so `probe` asks about one property by name, which
+        // getPropertyValue answers for shorthands and longhands alike.
         const applied = [];
         for (let i = 0; i < style.length; i++) { applied.push(style.item(i)); }
-        return { ok: true, applied: applied, owner: owner };
+        const reply = { ok: true, applied: applied, owner: owner };
+        if (probe) { reply.probe = style.getPropertyValue(probe) || ''; }
+        return reply;
       }
 
       // ---- Colour resolution ----------------------------------------------
@@ -974,8 +981,13 @@ enum DevToolsAgent {
         }
 
         // The style attribute, which behaves as a final layer of its own.
+        //
+        // Emitted even when empty, deliberately: an element with no inline
+        // style still gets an element.style card, because that card is where
+        // "add a declaration to just this element" lives. Chrome does the
+        // same, and its absence reads as "this element can't be styled".
         const inline = readDeclarations(node.style, node);
-        if (inline.length) {
+        {
           rules.push({
             // Negative, so an inline block can never collide with a rule id.
             id: -idFor(node),
@@ -1356,7 +1368,7 @@ enum DevToolsAgent {
             ruleOriginals.set(key, node.style.cssText || '');
           }
           selfStyleEdits.add(node);
-          return (applyStyleText(node.style, text, key));
+          return (applyStyleText(node.style, text, key, params.probe));
         }
         const rule = ruleFor(params && params.ruleId);
         if (!rule || !rule.style) { return ({ error: 'no rule' }); }
@@ -1364,7 +1376,18 @@ enum DevToolsAgent {
         if (!ruleOriginals.has(key)) {
           ruleOriginals.set(key, rule.style.cssText || '');
         }
-        return (applyStyleText(rule.style, text, key));
+        return (applyStyleText(rule.style, text, key, params.probe));
+      });
+
+      runtime.define('CSS.propertyNames', () => {
+        // One computed style enumerates every property this WebKit knows,
+        // including prefixed ones — the engine's list, not a shipped copy.
+        const names = [];
+        try {
+          const style = getComputedStyle(document.documentElement);
+          for (let i = 0; i < style.length; i++) { names.push(style.item(i)); }
+        } catch (e) { /* leave empty; an empty list just means no completion */ }
+        return ({ names: names });
       });
 
       runtime.define('CSS.revert', (params) => {
