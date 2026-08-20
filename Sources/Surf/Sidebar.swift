@@ -1086,8 +1086,16 @@ final class TabDragContext {
     }
 }
 
-/// An item provider that reports its own release — the only reliable signal
-/// that a drag session is over, completed or cancelled.
+/// An item provider that reports its own release, as a signal that a drag
+/// session is over.
+///
+/// Not a reliable one, and worth knowing before leaning on it elsewhere: on a
+/// drag cancelled with Esc, this was measured never being released at all, so
+/// nothing downstream of it runs. Enough for the tab list, whose reorder is
+/// already applied by then and whose ending only has to persist it. Not enough
+/// for anything that has to *undo* something when a drag comes to nothing —
+/// see `StickerDragContext`, which proposes an order instead of applying one
+/// so that it never needs to be told.
 private final class SentinelItemProvider: NSItemProvider {
     var onDeinit: (@Sendable () -> Void)?
     deinit { onDeinit?() }

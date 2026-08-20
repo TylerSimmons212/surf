@@ -23,9 +23,16 @@ struct StickerShelf: View {
     static let slap = Animation.spring(response: 0.45, dampingFraction: 0.62)
     static let peel = Animation.spring(response: 0.5, dampingFraction: 0.78)
 
+    /// The in-flight reorder. `@State` rather than window-owned like the tab
+    /// drag: a sticker only ever reorders within the shelf, so nothing outside
+    /// it needs to watch.
+    @State private var drag = StickerDragContext()
+
     var body: some View {
         let island = session.currentIsland
-        let stickers = island.stickers
+        // The proposed order while a drag is in flight, the real one otherwise.
+        // Nothing is written back until the drag is actually dropped.
+        let stickers = drag.preview ?? island.stickers
         let showing = session.showingStickerIDs
 
         // Always in the tree, even empty — `FlowLayout` collapses to zero
@@ -37,6 +44,7 @@ struct StickerShelf: View {
                 StickerTile(
                     sticker: sticker,
                     isShowing: showing.contains(sticker.id),
+                    isDragged: drag.draggedID == sticker.id,
                     onOpen: { session.open(sticker) },
                     onPeel: {
                         withAnimation(Self.peel) {
@@ -44,12 +52,48 @@ struct StickerShelf: View {
                         }
                     }
                 )
+                .onDrag {
+                    drag.begin(sticker.id, in: island.stickers) { order in
+                        session.setStickerOrder(order, in: island)
+                    }
+                }
+                // The reorder happens in `dropEntered`, not on release — the
+                // gap slides through the shelf as the drag crosses tiles, so
+                // the drop is letting go of an order already on screen.
+                .onDrop(of: [.text], delegate: StickerReorderDropDelegate(
+                    targetID: sticker.id,
+                    drag: drag
+                ))
                 // A sticker arrives the way one goes on — pressed down — and
                 // leaves the way one comes off: a corner lifts, the vinyl
                 // curls, and it floats away.
                 .transition(.asymmetric(insertion: .stickerSlapOn, removal: .stickerPeelOff))
             }
+
+            // The end of the shelf, which otherwise has no tile to aim at.
+            // Dropping *on* a tile takes that tile's slot, so without somewhere
+            // past the last one the final position is the one place a drag
+            // can't reach.
+            if drag.isDragging {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(
+                        Color.primary.opacity(0.25),
+                        style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                    )
+                    .frame(width: Self.tileSize, height: Self.tileSize)
+                    .onDrop(of: [.text], delegate: StickerReorderDropDelegate(
+                        targetID: nil,
+                        drag: drag
+                    ))
+                    .transition(.opacity.combined(with: .scale(scale: 0.7)))
+            }
         }
+        .animation(.snappy(duration: 0.2, extraBounce: 0), value: drag.isDragging)
+        // Catches releases in the gaps between tiles, which are not targets of
+        // their own. Without it, letting go a few points wide of a sticker
+        // reads to the drag as "no drop" and throws the reorder away — the
+        // same ending as Esc, from what felt like a perfectly good drop.
+        .onDrop(of: [.text], delegate: StickerShelfDropDelegate(drag: drag))
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.top, stickers.isEmpty ? 0 : 2)
@@ -112,11 +156,13 @@ private struct StickerTile: View {
     /// Whether this sticker's tab is the page on screen. A sticker is a tab,
     /// so it needs the same "you are here" the tab rows get.
     let isShowing: Bool
+    /// Whether this tile is the one being carried, in which case it draws as
+    /// the gap it will drop into.
+    let isDragged: Bool
     let onOpen: () -> Void
     let onPeel: () -> Void
 
     @State private var isHovering = false
-    @State private var isPressed = false
     /// 0 = stuck down flat; 1 = fully folded over itself, ready to be flicked
     /// away. Driven only by "Peel Off" — hovering never starts a peel, so the
     /// animation stays the reward for actually removing one.
@@ -171,7 +217,19 @@ private struct StickerTile: View {
             .frame(width: StickerShelf.tileSize, height: StickerShelf.tileSize)
             .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressedTile())
+        // An empty slot while carried: same footprint, no content, so the
+        // sticker appears once and the gap is where it lands. `opacity`, not
+        // `hidden`, so the slot keeps taking drops.
+        .opacity(isDragged ? 0 : 1)
+        .background {
+            if isDragged {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(Color.primary.opacity(0.07))
+            }
+        }
+        // Rounds the floating snapshot to match the sticker it left.
+        .contentShape(.dragPreview, RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay {
             if isShowing {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -184,7 +242,7 @@ private struct StickerTile: View {
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isShowing)
         .rotationEffect(.degrees(isHovering ? 0 : sticker.tiltDegrees))
-        .scaleEffect(isPressed ? 0.92 : (isHovering ? 1.1 : 1))
+        .scaleEffect(isHovering ? 1.1 : 1)
         // A lifted sticker throws a longer, softer shadow than one laying flat.
         .shadow(
             color: .black.opacity(isHovering ? 0.26 : 0.16),
@@ -192,13 +250,11 @@ private struct StickerTile: View {
             y: isHovering ? 4 : 1.5
         )
         .animation(.spring(response: 0.28, dampingFraction: 0.6), value: isHovering)
-        .animation(.spring(response: 0.2, dampingFraction: 0.55), value: isPressed)
         // The icon blooming in and its ink soaking outward share one motion,
         // so the print arrives as a single event rather than two.
         .animation(.spring(response: 0.5, dampingFraction: 0.72), value: fetchedIcon)
         .animation(.easeOut(duration: 0.6), value: press)
         .onHover { isHovering = $0 }
-        .pressEvents(isPressed: $isPressed)
         .contextMenu {
             Button {
                 NSPasteboard.general.clearContents()
@@ -547,21 +603,187 @@ private struct BlurEffect: ViewModifier {
     }
 }
 
-/// Press feedback for a plain-styled button, which SwiftUI doesn't expose.
-private struct PressEvents: ViewModifier {
-    @Binding var isPressed: Bool
-
-    func body(content: Content) -> some View {
-        content.simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in isPressed = true }
-                .onEnded { _ in isPressed = false }
-        )
+/// The squish when a sticker is pressed.
+///
+/// A `ButtonStyle` rather than a simultaneous `DragGesture`, which is how this
+/// read the press before the shelf could be reordered. A zero-distance drag
+/// gesture competes with the drag-and-drop one for the same movement, and the
+/// press state has no reliable end when the drag wins — leaving a sticker stuck
+/// looking pressed for as long as it was carried. The style is told by SwiftUI
+/// instead, and cannot disagree with the gesture that actually happened.
+private struct PressedTile: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .animation(
+                .spring(response: 0.2, dampingFraction: 0.55),
+                value: configuration.isPressed
+            )
     }
 }
 
-extension View {
-    fileprivate func pressEvents(isPressed: Binding<Bool>) -> some View {
-        modifier(PressEvents(isPressed: isPressed))
+// MARK: - Reordering
+
+/// Tracks the in-flight sticker drag, and the order it is proposing.
+///
+/// The shelf itself is never reordered while a drag is in flight — this holds
+/// the proposed order and the shelf draws from it, and only a real drop writes
+/// it back. That is a correctness decision, not a tidiness one: a drag can end
+/// with no notification at all, and reordering the model live means such an
+/// ending leaves the change made with nothing left to undo it. Measured, on a
+/// cancelled drag: `performDrop` never fires, and neither does the released
+/// item provider that the tab list leans on to notice the same thing. Holding
+/// the proposal here makes cancelling free — the preview is dropped and the
+/// shelf is already right, whether or not anything told us it was over.
+///
+/// Deliberately separate from `TabDragContext`. Both carry a UUID as text, so a
+/// tab dragged over the shelf would otherwise be read as a sticker being
+/// reordered — two collections, two contexts, and each delegate sees nothing
+/// being carried in the other's drag and does nothing.
+@MainActor
+@Observable
+final class StickerDragContext {
+    private(set) var draggedID: Sticker.ID?
+
+    /// The order being proposed, which is what the shelf draws while a drag is
+    /// in flight. Nil when nothing is being carried, and the shelf falls back
+    /// to the real one.
+    private(set) var preview: [Sticker]?
+
+    var isDragging: Bool { draggedID != nil }
+
+    @ObservationIgnored private var onCommit: (@MainActor ([Sticker]) -> Void)?
+    @ObservationIgnored private var watchdog: Task<Void, Never>?
+
+    func begin(
+        _ id: Sticker.ID,
+        in order: [Sticker],
+        onCommit: @escaping @MainActor ([Sticker]) -> Void
+    ) -> NSItemProvider {
+        draggedID = id
+        preview = order
+        self.onCommit = onCommit
+        startWatchdog()
+        return NSItemProvider(object: id.uuidString as NSString)
+    }
+
+    /// Proposes the dragged sticker into `targetID`'s slot.
+    func move(before targetID: Sticker.ID) {
+        guard let draggedID, let current = preview,
+              let moved = Sticker.moving(draggedID, before: targetID, in: current)
+        else { return }
+        preview = moved
+    }
+
+    func moveToEnd() {
+        guard let draggedID, let current = preview,
+              let moved = Sticker.movingToEnd(draggedID, in: current)
+        else { return }
+        preview = moved
+    }
+
+    /// A real drop: the proposed order becomes the shelf's own.
+    func drop() {
+        let order = preview
+        let commit = onCommit
+        clear()
+        if let order { commit?(order) }
+    }
+
+    /// No drop — Esc, or a release somewhere that isn't a target. The proposal
+    /// is thrown away, and the shelf was never anything but correct underneath
+    /// it.
+    func cancel() {
+        clear()
+    }
+
+    private func clear() {
+        watchdog?.cancel()
+        watchdog = nil
+        draggedID = nil
+        preview = nil
+        onCommit = nil
+    }
+
+    /// Notices the drag ending when nothing reports it.
+    ///
+    /// The only reliable fact available is whether a mouse button is still
+    /// down: SwiftUI does not call `performDrop` for a cancelled drag, and the
+    /// item provider whose release is supposed to stand in for that was
+    /// measured never being released at all. A drop, when there is one, lands
+    /// on release too — so the button coming up is not by itself an answer, and
+    /// this waits a moment afterwards to let one arrive before concluding that
+    /// none will.
+    private func startWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { @MainActor [weak self] in
+            // The button is down as the drag begins, but the closure can run
+            // either side of that; a grace period stops the watchdog reading
+            // its own start as an ending.
+            try? await Task.sleep(for: .milliseconds(300))
+            while !Task.isCancelled, NSEvent.pressedMouseButtons != 0 {
+                try? await Task.sleep(for: .milliseconds(60))
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let self, self.isDragging else { return }
+            withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
+                self.cancel()
+            }
+        }
+    }
+}
+
+/// Proposes a new order as a drag crosses the shelf's tiles.
+///
+/// One delegate per tile (`targetID` set) plus one on the slot past the last
+/// (`targetID` nil, meaning "the end"). The moved sticker is tracked in
+/// `StickerDragContext` rather than decoded from the item provider, because
+/// `dropEntered` is synchronous and provider loading is not.
+private struct StickerReorderDropDelegate: DropDelegate {
+    /// The sticker whose slot the dragged one should take — nil for "the end".
+    let targetID: Sticker.ID?
+    let drag: StickerDragContext
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID = drag.draggedID, draggedID != targetID else { return }
+        // Short and bounceless, matching the tab list: crossing tiles briskly
+        // fires this once per tile, and a springy curve leaves each crossing
+        // still settling as the next arrives.
+        withAnimation(.snappy(duration: 0.18, extraBounce: 0)) {
+            if let targetID {
+                drag.move(before: targetID)
+            } else {
+                drag.moveToEnd()
+            }
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        // Move, not copy — no green plus badge on the cursor.
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        withAnimation(.snappy(duration: 0.2, extraBounce: 0)) { drag.drop() }
+        return true
+    }
+}
+
+/// Catches a release that lands on the shelf but not on any tile.
+///
+/// Only ends the drag — where the sticker goes was already decided by the tile
+/// delegates as the drag crossed them, and this is the difference between a
+/// drop that keeps that and a cancel that throws it away. Without it, letting
+/// go a few points wide of a tile reads as no drop at all.
+private struct StickerShelfDropDelegate: DropDelegate {
+    let drag: StickerDragContext
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        withAnimation(.snappy(duration: 0.2, extraBounce: 0)) { drag.drop() }
+        return true
     }
 }

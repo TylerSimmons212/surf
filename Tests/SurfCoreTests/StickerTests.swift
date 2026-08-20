@@ -58,6 +58,61 @@ struct StickerTests {
         #expect(Sticker.removing(b.id, from: [a, b, c]) == [a, c])
     }
 
+    // MARK: - Reordering
+
+    private var shelf: [Sticker] {
+        ["https://a.com", "https://b.com", "https://c.com", "https://d.com"]
+            .map { Sticker(url: $0, title: "")! }
+    }
+
+    private func hosts(_ list: [Sticker]?) -> [String]? {
+        list?.map { $0.host }
+    }
+
+    @Test("Dragging left lands before the sticker dropped on")
+    func moveLeft() {
+        let list = shelf
+        let moved = Sticker.moving(list[3].id, before: list[1].id, in: list)
+        #expect(hosts(moved) == ["a.com", "d.com", "b.com", "c.com"])
+    }
+
+    @Test("Dragging right lands after the sticker dropped on")
+    func moveRight() {
+        // Remove-then-insert: taking index 1 out shifts the target left, so the
+        // moved sticker settles past it. Both directions read as "it takes that
+        // slot", which is what the pointer is on.
+        let list = shelf
+        let moved = Sticker.moving(list[1].id, before: list[2].id, in: list)
+        #expect(hosts(moved) == ["a.com", "c.com", "b.com", "d.com"])
+    }
+
+    @Test("Moving to the end is reachable, and a no-op once there")
+    func moveToEnd() {
+        let list = shelf
+        #expect(hosts(Sticker.movingToEnd(list[0].id, in: list))
+            == ["b.com", "c.com", "d.com", "a.com"])
+        #expect(Sticker.movingToEnd(list[3].id, in: list) == nil)
+    }
+
+    @Test("A move that changes nothing reports that it changed nothing")
+    func noOpMoves() {
+        // The drag asks "did anything move" on every row it crosses, so this is
+        // the answer it leans on rather than comparing whole arrays.
+        let list = shelf
+        #expect(Sticker.moving(list[0].id, before: list[0].id, in: list) == nil)
+        #expect(Sticker.moving(UUID(), before: list[0].id, in: list) == nil)
+        #expect(Sticker.moving(list[0].id, before: UUID(), in: list) == nil)
+        #expect(Sticker.movingToEnd(UUID(), in: list) == nil)
+    }
+
+    @Test("Reordering keeps every sticker exactly once")
+    func reorderPreservesTheShelf() {
+        let list = shelf
+        let moved = Sticker.moving(list[2].id, before: list[0].id, in: list)
+        #expect(Set(moved?.map(\.id) ?? []) == Set(list.map(\.id)))
+        #expect(moved?.count == list.count)
+    }
+
     // MARK: - Appearance
 
     @Test("Tilt is deterministic, never zero, and stays small")

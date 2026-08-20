@@ -108,6 +108,12 @@ final class Island: Identifiable {
         stickers = Sticker.removing(id, from: stickers)
     }
 
+    /// Puts the shelf back exactly as it was — for a cancelled drag, which has
+    /// already reordered it live.
+    func replaceStickers(with replacement: [Sticker]) {
+        stickers = replacement
+    }
+
     // MARK: - Tabs
 
     /// The only place a `Tab` is constructed.
