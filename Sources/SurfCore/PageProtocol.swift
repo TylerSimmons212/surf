@@ -26,6 +26,9 @@ public enum PageProtocol {
         case themeDismissPreflight = "theme.dismissPreflight"
         case pageTopColor = "page.topColor"
         case pageFavicons = "page.favicons"
+        /// The document's full scrollable extent — what a full-page
+        /// screenshot needs to know before it can be one.
+        case pageMetrics = "page.metrics"
 
         // Page world — where the site's own `navigator` and media elements
         // are. An isolated world has its own `navigator`, with nothing in it.
@@ -44,7 +47,7 @@ public enum PageProtocol {
         public var world: World {
             switch self {
             case .themeCollect, .themeApply, .themeRevert,
-                 .themeDismissPreflight, .pageTopColor, .pageFavicons:
+                 .themeDismissPreflight, .pageTopColor, .pageFavicons, .pageMetrics:
                 return .isolated
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,

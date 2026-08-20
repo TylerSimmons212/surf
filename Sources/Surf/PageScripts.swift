@@ -17,6 +17,14 @@ enum PageDomain {
           // Walks up from the topmost element at a few points along the strip
           // until it finds an opaque background. That handles fixed headers,
           // which is exactly the case the WebKit-provided colours get wrong.
+          agent.define('page.metrics', () => {
+            const root = document.scrollingElement || document.documentElement;
+            return {
+              width: root ? root.scrollWidth : innerWidth,
+              height: root ? root.scrollHeight : innerHeight
+            };
+          });
+
           agent.define('page.topColor', () => {
             function opaqueColor(el) {
               if (!el) { return null; }

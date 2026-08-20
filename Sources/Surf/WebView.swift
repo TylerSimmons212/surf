@@ -68,6 +68,17 @@ final class WebViewContainer: NSView {
     /// page must genuinely *be* the size, or media queries and viewport
     /// units answer for a size nobody is looking at. The surround darkens
     /// so the page reads as a stage, not a rendering bug.
+    /// A momentary full-content size during a full-page screenshot. Beats
+    /// `viewportOverride` while set, and is never user state — it exists for
+    /// the milliseconds between "lay the page out at full height" and "got
+    /// the pixels, put it back".
+    var captureOverride: CGSize? {
+        didSet {
+            guard captureOverride != oldValue else { return }
+            needsLayout = true
+        }
+    }
+
     var viewportOverride: CGSize? {
         didSet {
             guard viewportOverride != oldValue else { return }
@@ -146,9 +157,19 @@ final class WebViewContainer: NSView {
     /// at zero.
     override func layout() {
         super.layout()
-        let frame = viewportOverride.map {
-            ViewportEmulation.frame(for: $0, in: bounds.size)
-        } ?? bounds
+        let frame: CGRect
+        if let captureOverride {
+            // Anchored to the container's top so the document's y=0 is at
+            // the snapshot's y=0 — centering would capture the middle.
+            frame = CGRect(
+                x: 0, y: bounds.height - captureOverride.height,
+                width: captureOverride.width, height: captureOverride.height
+            )
+        } else if let viewportOverride {
+            frame = ViewportEmulation.frame(for: viewportOverride, in: bounds.size)
+        } else {
+            frame = bounds
+        }
         subviews.forEach { $0.frame = frame }
     }
 

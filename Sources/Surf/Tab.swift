@@ -172,7 +172,9 @@ final class Tab: NSObject, Identifiable {
     /// question is what builds it. `buildWebView()` assigns both alongside the
     /// view, so reaching one of these after it is the same guarantee `webView`
     /// itself makes.
-    private var isolatedAgent: PageAgent {
+    // Not `private`: Screenshots.swift is the same type in another file,
+    // and a full-page capture asks the page its height through this.
+    var isolatedAgent: PageAgent {
         if let liveIsolatedAgent { return liveIsolatedAgent }
         _ = webView
         return liveIsolatedAgent!

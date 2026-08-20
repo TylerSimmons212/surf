@@ -1231,6 +1231,8 @@ private struct SidebarNavigationBar: View {
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
 
+            ScreenshotButton(tab: tab)
+
             CopyLinkButton(tab: tab)
 
             BlockButton(session: session, hold: hold)
@@ -1257,6 +1259,48 @@ private struct SidebarNavigationBar: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
+    }
+}
+
+/// Captures the page — visible area or the whole document — straight to
+/// Downloads, named for the page.
+///
+/// A menu rather than a click-then-choose dialog: two capture kinds is a
+/// two-item menu, and the momentary checkmark afterwards is the same
+/// "it actually happened" feedback the copy button earned its own struct for.
+private struct ScreenshotButton: View {
+    let tab: Tab
+
+    @State private var didCapture = false
+
+    var body: some View {
+        Menu {
+            Button("Visible Area") { capture { await tab.captureVisibleArea() } }
+            Button("Full Page") { capture { await tab.captureFullPage() } }
+        } label: {
+            Image(systemName: didCapture ? "checkmark" : "camera")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(didCapture ? Color.green : Color.secondary)
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(tab.mode != .browsing)
+        .help("Screenshot — saves to Downloads")
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: didCapture)
+    }
+
+    private func capture(_ take: @escaping () async -> NSImage?) {
+        Task { @MainActor in
+            guard let image = await take(),
+                  ScreenshotSaver.save(image, title: tab.displayTitle) != nil
+            else { return }
+            didCapture = true
+            try? await Task.sleep(for: .seconds(1.4))
+            didCapture = false
+        }
     }
 }
 

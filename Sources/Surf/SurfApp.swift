@@ -63,6 +63,28 @@ struct SurfApp: App {
             // ⌘W belongs to the tab in a browser, so the window moves up one.
             Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
+
+            Divider()
+
+            // In File, beside the other "get something out of the page"
+            // verbs — a screenshot is an export, not a view option.
+            Button("Screenshot Visible Area") {
+                let tab = session.selectedTab
+                Task { @MainActor in
+                    guard let image = await tab.captureVisibleArea() else { return }
+                    _ = ScreenshotSaver.save(image, title: tab.displayTitle)
+                }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+
+            Button("Screenshot Full Page") {
+                let tab = session.selectedTab
+                Task { @MainActor in
+                    guard let image = await tab.captureFullPage() else { return }
+                    _ = ScreenshotSaver.save(image, title: tab.displayTitle)
+                }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift, .option])
         }
 
         // Replaces the stock Edit-menu find items, which act on text fields and
