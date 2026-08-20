@@ -424,7 +424,8 @@ final class DevToolsSession: Identifiable {
         styles = CSSCascade.resolve(
             rules: stylePayload.rules,
             layerOrder: stylePayload.layerOrder,
-            pseudoElement: stylePseudo
+            pseudoElement: stylePseudo,
+            context: stylePayload.context
         )
     }
 

@@ -21,6 +21,18 @@ struct DeclarationRow: View {
         styles.status(of: declaration, in: rule)
     }
 
+    /// Why winning didn't matter — the cascade card's sibling question.
+    ///
+    /// Asked only of declarations that are *applying*: an overridden one
+    /// already has its explanation (the trace), and stacking "also, it
+    /// wouldn't have worked" on a loser is trivia. The misleading case is
+    /// the winner that does nothing — width on an inline element sits there
+    /// looking perfectly healthy while the box refuses to move.
+    private var inactiveReason: String? {
+        guard status == .active, rule.isActive, !isOff else { return nil }
+        return CSSInactive.reason(for: declaration.name, in: styles.context)
+    }
+
     /// Which longhand's story to tell. A shorthand has several, so the one
     /// worth opening is the one that was actually contested.
     private var tracedProperty: String? {
@@ -83,6 +95,24 @@ struct DeclarationRow: View {
                 }
             }
             .font(DevToolsTheme.mono)
+            // Dimmed, not struck: a strikethrough means "beaten by another
+            // rule", and this declaration beat nobody and was beaten by
+            // nobody — it just does nothing where it landed.
+            .opacity(inactiveReason == nil ? 1 : 0.55)
+
+            if let inactiveReason, !isEditing {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Image(systemName: "moon.zzz")
+                        .font(DevToolsTheme.badge)
+                        .foregroundStyle(.tertiary)
+                    Text(inactiveReason)
+                        .font(DevToolsTheme.prose)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.leading, 14)
+                .padding(.top, 1)
+            }
 
             if isEditing { editingFooter }
         }

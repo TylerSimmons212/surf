@@ -1048,8 +1048,22 @@ enum DevToolsAgent {
           }
         }
 
+        // The four facts inactive-CSS reasoning runs on. Replaced elements
+        // are the ones that take a size even inline.
+        const REPLACED = ['img', 'input', 'textarea', 'select', 'button',
+          'video', 'audio', 'canvas', 'iframe', 'embed', 'object'];
+        const tag = (node.nodeName || '').toLowerCase();
+        const parent = node.parentElement;
+        const context = {
+          display: computed.display || '',
+          position: computed.position || '',
+          parentDisplay: parent ? (getComputedStyle(parent).display || '') : '',
+          replaced: REPLACED.indexOf(tag) >= 0
+        };
+
         return {
-          rules: rules, layers: layers, unreadable: unreadable, variables: variables
+          rules: rules, layers: layers, unreadable: unreadable,
+          variables: variables, context: context
         };
       }
 

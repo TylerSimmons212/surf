@@ -3,6 +3,8 @@ import Foundation
 /// Everything the page can say about one element's styles, in one reply.
 public struct MatchedStylesPayload: Sendable {
     public var rules: [MatchedRule]
+    /// The element facts inactive-CSS reasoning needs.
+    public var context: StyleContext
     /// The document's `@layer` order, first declared first.
     public var layerOrder: [String]
     /// Every computed property, resolved.
@@ -21,12 +23,14 @@ public struct MatchedStylesPayload: Sendable {
 
     public init(
         rules: [MatchedRule] = [],
+        context: StyleContext = StyleContext(),
         layerOrder: [String] = [],
         computed: [String: String] = [:],
         variables: [String: String] = [:],
         unreadableSheets: [String] = []
     ) {
         self.rules = rules
+        self.context = context
         self.layerOrder = layerOrder
         self.computed = computed
         self.variables = variables
@@ -39,10 +43,21 @@ public enum CSSWire {
     public static func decodeMatchedStyles(_ body: [String: Any]) -> MatchedStylesPayload {
         MatchedStylesPayload(
             rules: (body["rules"] as? [[String: Any]] ?? []).compactMap(decodeRule),
+            context: decodeContext(body["context"]),
             layerOrder: body["layers"] as? [String] ?? [],
             computed: body["computed"] as? [String: String] ?? [:],
             variables: body["variables"] as? [String: String] ?? [:],
             unreadableSheets: body["unreadable"] as? [String] ?? []
+        )
+    }
+
+    public static func decodeContext(_ value: Any?) -> StyleContext {
+        guard let dict = value as? [String: Any] else { return StyleContext() }
+        return StyleContext(
+            display: dict["display"] as? String ?? "",
+            position: dict["position"] as? String ?? "",
+            parentDisplay: dict["parentDisplay"] as? String ?? "",
+            isReplaced: dict["replaced"] as? Bool ?? false
         )
     }
 

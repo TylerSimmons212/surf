@@ -58,3 +58,23 @@
   <p>Scrolled down here, the armed overlay should have followed.</p>
 </body>
 </html>
+<!-- Inactive-CSS specimens, appended: every declaration below wins its
+     cascade and still does nothing. -->
+<style>
+  .sleepy-span { width: 200px; height: 40px; vertical-align: middle; }
+  .sleepy-static { top: 20px; left: 30px; z-index: 5; }
+  .sleepy-block { flex-direction: column; justify-content: center;
+                  grid-template-columns: 1fr 1fr; }
+  .flexrow > .sleepy-item { float: left; grid-area: main; }
+  .grid > .sleepy-griditem { flex-grow: 2; }
+</style>
+<h2 style="margin-top: 40px">Inactive CSS specimens</h2>
+<p><span class="sleepy-span">An inline span with width, height and vertical-align</span> —
+   all three should carry a sleeping reason.</p>
+<p class="sleepy-static">Static, with top/left/z-index — three reasons.</p>
+<p class="sleepy-block">A block with flex-direction, justify-content and
+   grid-template-columns — three reasons.</p>
+<script>
+  document.querySelector('.flexrow > div').classList.add('sleepy-item');
+  document.querySelector('.grid > div').classList.add('sleepy-griditem');
+</script>
