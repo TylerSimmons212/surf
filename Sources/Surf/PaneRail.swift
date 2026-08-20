@@ -34,6 +34,7 @@ struct PaneRail: View {
             // chrome every pane shares. First resident: the colour-scheme
             // emulation.
             if let tab = session.tab {
+                ViewportEmulationMenu(tab: tab)
                 AppearanceEmulationMenu(tab: tab)
             }
         }
@@ -161,5 +162,48 @@ private struct AppearanceEmulationMenu: View {
         case .light: "This page is emulating light mode"
         case .dark: "This page is emulating dark mode"
         }
+    }
+}
+
+/// The page at a phone's size, or a tablet's — the second resident of the
+/// rail's foot. Same contract as the appearance menu: native menu, amber
+/// while overriding, per tab, gone when the tab goes.
+private struct ViewportEmulationMenu: View {
+    @Bindable var tab: Tab
+
+    var body: some View {
+        Menu {
+            Picker("Viewport", selection: $tab.emulatedViewport) {
+                Text("Fill window").tag(CGSize?.none)
+                ForEach(ViewportEmulation.presets) { preset in
+                    Text(preset.label).tag(CGSize?.some(preset.size))
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Image(systemName: tab.emulatedViewport == nil
+                ? "rectangle.expand.vertical" : "iphone")
+                .font(.system(size: 13))
+                .foregroundStyle(
+                    tab.emulatedViewport == nil ? Color.secondary : Color.orange
+                )
+                .frame(
+                    width: DevToolsTheme.railItemWidth,
+                    height: DevToolsTheme.railItemHeight
+                )
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(help)
+    }
+
+    private var help: String {
+        guard let size = tab.emulatedViewport else {
+            return "Lay the page out at a phone or tablet size"
+        }
+        return "Emulating a \(Int(size.width)) × \(Int(size.height)) viewport"
     }
 }

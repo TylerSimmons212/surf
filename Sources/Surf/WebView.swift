@@ -1,3 +1,4 @@
+import SurfCore
 import SwiftUI
 import WebKit
 
@@ -38,9 +39,13 @@ struct WebView: NSViewRepresentable {
     /// while they're carrying a tab.
     var isInert: Bool = false
 
+    /// Viewport emulation: the page at this CSS-pixel size, or nil to fill.
+    var viewportOverride: CGSize? = nil
+
     func makeNSView(context: Context) -> WebViewContainer {
         let container = WebViewContainer()
         container.present(webView)
+        container.viewportOverride = viewportOverride
         return container
     }
 
@@ -48,6 +53,7 @@ struct WebView: NSViewRepresentable {
         container.present(webView)
         container.chromeInset = chromeInset
         container.isInert = isInert
+        container.viewportOverride = viewportOverride
     }
 }
 
@@ -56,6 +62,21 @@ struct WebView: NSViewRepresentable {
 /// hierarchy mutation.
 final class WebViewContainer: NSView {
     var chromeInset: CGFloat = 0
+
+    /// When set, the web view is laid out at exactly this size instead of
+    /// filling the container — viewport emulation, unscaled by design: the
+    /// page must genuinely *be* the size, or media queries and viewport
+    /// units answer for a size nobody is looking at. The surround darkens
+    /// so the page reads as a stage, not a rendering bug.
+    var viewportOverride: CGSize? {
+        didSet {
+            guard viewportOverride != oldValue else { return }
+            needsLayout = true
+            layer?.backgroundColor = viewportOverride == nil
+                ? nil
+                : NSColor.black.withAlphaComponent(0.35).cgColor
+        }
+    }
 
     /// See `WebView.isInert`. Stands the page down for the length of a tab drag.
     var isInert = false
@@ -71,7 +92,10 @@ final class WebViewContainer: NSView {
     private static let mountLimit = 3
 
     /// Shows `webView`, mounting it if this is the first time.
+    override var wantsUpdateLayer: Bool { false }
+
     func present(_ webView: WKWebView) {
+        wantsLayer = true
         // The pop-out panel borrows the same web view, and it can only live in
         // one hierarchy. Claiming it back here would tear it out of the panel
         // mid-flight; it returns on its own when the pop-out is restored.
@@ -79,8 +103,8 @@ final class WebViewContainer: NSView {
 
         if webView.superview !== self {
             webView.removeFromSuperview()
-            webView.frame = bounds
             addSubview(webView)
+            needsLayout = true
         }
 
         // Drop anything that has left on its own — a closed tab detaches its
@@ -122,7 +146,10 @@ final class WebViewContainer: NSView {
     /// at zero.
     override func layout() {
         super.layout()
-        subviews.forEach { $0.frame = bounds }
+        let frame = viewportOverride.map {
+            ViewportEmulation.frame(for: $0, in: bounds.size)
+        } ?? bounds
+        subviews.forEach { $0.frame = frame }
     }
 
     /// Declines the click outright rather than forwarding it. Returning nil

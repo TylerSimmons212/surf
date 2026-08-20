@@ -24,6 +24,11 @@ final class Tab: NSObject, Identifiable {
         didSet { webView.appearance = emulatedAppearance.nsAppearance }
     }
 
+    /// The page laid out at a chosen CSS-pixel size — nil fills the window.
+    /// Like the appearance emulation: per tab, never persisted, and applied
+    /// by the container's layout rather than stored anywhere the page sees.
+    var emulatedViewport: CGSize?
+
 
     /// Home = the centered search field; browsing = chrome + page. This is
     /// per-tab, so a new tab opens on the search screen while others keep pages.
