@@ -26,6 +26,10 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
     public var dataStoreID: UUID?
     public var tabs: [PersistedTab]
     public var selectedIndex: Int
+    /// Pinned sites, in shelf order. Optional so a `session.json` written
+    /// before stickers existed decodes unchanged — the same additive-field rule
+    /// `PersistedSession` follows.
+    public var stickers: [Sticker]?
 
     public init(
         id: UUID = UUID(),
@@ -34,7 +38,8 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         tint: IslandTint,
         dataStoreID: UUID?,
         tabs: [PersistedTab] = [],
-        selectedIndex: Int = 0
+        selectedIndex: Int = 0,
+        stickers: [Sticker]? = nil
     ) {
         self.id = id
         self.name = name
@@ -43,6 +48,7 @@ public struct PersistedIsland: Codable, Equatable, Sendable, Identifiable {
         self.dataStoreID = dataStoreID
         self.tabs = tabs
         self.selectedIndex = selectedIndex
+        self.stickers = stickers
     }
 
     /// The island the browser starts life as, and the only one that may use the

@@ -115,7 +115,14 @@ public struct PersistedSession: Codable, Equatable, Sendable {
         // island the user actually made is kept even when empty, because the
         // island *is* the cookie jar — throwing it away here would orphan a
         // store full of logins on the first quit with everything closed.
-        if cleaned.count == 1, cleaned[0].isHome, cleaned[0].tabs.isEmpty { return nil }
+        //
+        // Stickers count as something open: they're the user's pins, and a
+        // shelf of them with every tab closed is a perfectly normal way to
+        // quit. Sanitizing that to nil would peel every sticker off at launch.
+        if cleaned.count == 1, cleaned[0].isHome, cleaned[0].tabs.isEmpty,
+           cleaned[0].stickers?.isEmpty ?? true {
+            return nil
+        }
 
         return PersistedSession(islands: cleaned, selectedIslandIndex: selectedIsland)
     }
