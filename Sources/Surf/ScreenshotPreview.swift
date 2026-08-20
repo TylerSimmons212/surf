@@ -141,23 +141,29 @@ private struct ScreenshotPreviewView: View {
                     .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
                     .offset(x: origin.x, y: origin.y)
 
+                // Placed with a single offset and no clipping: the old
+                // .offset-then-.frame().clipped() stack clipped against the
+                // stage's origin rather than the image's, which ate every
+                // handle on the right and bottom edges and let the top ones
+                // float above the shot. The veil now draws at exactly the
+                // fitted size, and handles are *meant* to overhang by half
+                // their width — that's what makes an edge grabbable.
                 CropChrome(
-                    crop: viewRect(crop, in: frame, scale: scale)
+                    crop: viewRect(crop, in: frame, scale: scale),
+                    size: fitted
                 )
                 .offset(x: origin.x, y: origin.y)
-                .frame(width: fitted.width, height: fitted.height)
-                .clipped()
-                .offset(x: 0, y: 0)
             }
             .contentShape(Rectangle())
+            // The crop owns every drag on the stage. Drag-out lives on the
+            // footer chip instead — two drag interpretations on one surface
+            // meant the crop and the export fought for the same gesture,
+            // and both lost.
             .gesture(cropGesture(frame: frame, scale: scale))
             .onTapGesture(count: 2) {
                 crop = imageBounds
             }
-            .onDrag { NSItemProvider(object: croppedImage()) }
-            .help(isCropped
-                ? "Drag out to export the crop · double-click to uncrop"
-                : "Drag the edges to crop · drag the image into any app")
+            .help("Drag the edges to crop · double-click to uncrop")
         }
     }
 
@@ -223,22 +229,26 @@ private struct ScreenshotPreviewView: View {
 
             Spacer(minLength: 12)
 
+            // The drag-out handle: pick this up and drop the crop into any
+            // app. A chip rather than the image itself, so the stage's drags
+            // all belong to the crop.
+            Image(systemName: "photo")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+                .onDrag { NSItemProvider(object: croppedImage()) }
+                .help("Drag into any app")
+
             SharePickerButton(imageProvider: croppedImage)
+                .fixedSize()
 
-            Button {
-                copy()
-            } label: {
-                Label("Copy to Clipboard", systemImage: "doc.on.doc")
-            }
-            .keyboardShortcut("c", modifiers: .command)
+            Button("Copy to Clipboard") { copy() }
+                .keyboardShortcut("c", modifiers: .command)
 
-            Button {
-                save()
-            } label: {
-                Label("Save", systemImage: "arrow.down.circle")
-            }
-            .keyboardShortcut(.defaultAction)
-            .help("Save to Downloads")
+            Button("Save") { save() }
+                .keyboardShortcut(.defaultAction)
+                .help("Save to Downloads")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -291,18 +301,23 @@ private struct ScreenshotPreviewView: View {
 /// The crop's visible parts: the veil outside it, its border, its handles.
 private struct CropChrome: View {
     let crop: CGRect
+    /// The fitted image's size — the veil's exact extent.
+    let size: CGSize
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Veil with the crop punched out.
             Path { path in
-                path.addRect(CGRect(x: 0, y: 0, width: 100_000, height: 100_000))
+                path.addRect(CGRect(origin: .zero, size: size))
                 path.addRect(crop)
             }
             .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
 
+            // White line, dark halo: legible on a white page and on a dark
+            // one, which a bare white hairline was not.
             Rectangle()
-                .strokeBorder(Color.white.opacity(0.9), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.95), lineWidth: 1)
+                .shadow(color: .black.opacity(0.7), radius: 1)
                 .frame(width: crop.width, height: crop.height)
                 .offset(x: crop.minX, y: crop.minY)
 
@@ -353,6 +368,7 @@ private struct SharePickerButton: NSViewRepresentable {
         button.bezelStyle = .rounded
         button.controlSize = .regular
         button.imagePosition = .imageLeading
+        button.setContentHuggingPriority(.required, for: .horizontal)
         return button
     }
 
