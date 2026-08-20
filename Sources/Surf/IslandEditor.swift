@@ -47,10 +47,10 @@ struct IslandEditorSheet: View {
     private enum Field { case name, symbol }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 16) {
             header
 
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 12) {
                 labelled("Name") {
                     TextField("Name this island", text: $name)
                         .textFieldStyle(.plain)
@@ -72,7 +72,7 @@ struct IslandEditorSheet: View {
 
             footer
         }
-        .padding(24)
+        .padding(20)
         .frame(width: 380)
         .onAppear(perform: load)
         .onDisappear {
@@ -148,24 +148,20 @@ struct IslandEditorSheet: View {
     /// new desk for the same accounts, or a different person entirely, and
     /// which one you meant is not something the app can guess.
     private func carryOver(_ source: Island) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             carryToggle(
                 "Stay signed in",
-                detail: "Shares \(source.name)'s logins, cookies and site data — the same "
-                    + "accounts at a new desk. It keeps sharing them: sign in or out on "
-                    + "either island and both follow.",
+                detail: "Goes on sharing \(source.name)'s logins — sign out on one, "
+                    + "you're out on both.",
                 isOn: $keepsLogins
             )
             .onChange(of: keepsLogins) { _, keeps in
                 session.setIslandKeepsLogins(keeps, for: island)
             }
 
-            Divider().opacity(0.5)
-
             carryToggle(
                 "Bring the pinned sites",
-                detail: "Copies \(source.name)'s shelf of stickers. They're copies — peel "
-                    + "one off here and \(source.name) keeps its own.",
+                detail: "Copies \(source.name)'s shelf. The copies are yours.",
                 isOn: $keepsStickers
             )
             .onChange(of: keepsStickers) { _, keeps in
@@ -173,7 +169,7 @@ struct IslandEditorSheet: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 9)
         .glassEffect(.regular, in: .rect(cornerRadius: 10))
     }
 
@@ -324,21 +320,18 @@ struct IslandEditorSheet: View {
             } else if island.isHome {
                 Text("Your first island, and the one your old cookies washed up on. "
                      + "Everything you were signed in to before islands existed is still here.")
-            } else if keepsLogins, let source {
-                // Said plainly, because it is the one thing about a shared jar
-                // that surprises people later: this island is not private from
-                // the one it shares with, in either direction.
-                Text("This island browses as \(source.name) does. Sites see one account "
-                     + "across both, and anything signed in on one is signed in on the "
-                     + "other — so it's a second desk, not a second identity.")
-            } else {
+            } else if source == nil {
+                // Only where nothing above has already said it. On the sheet
+                // that makes an island, the switches and the chip under them
+                // cover this ground twice over, and a third telling is the
+                // difference between a sheet that fits and one that doesn't.
                 Text("Sign in to the same site on two islands and it'll swear you're "
                      + "two different people. Logins, cookies and site data never drift "
                      + "between them.")
             }
 
-            Text("Passwords and passkeys in your keychain are the exception — "
-                 + "those belong to macOS, and every island can reach them.")
+            Text("Passwords and passkeys in your keychain belong to macOS rather "
+                 + "than to an island, so every island can reach them.")
                 .foregroundStyle(.tertiary)
         }
         .font(.system(size: 11))

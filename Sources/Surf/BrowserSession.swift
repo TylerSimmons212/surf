@@ -382,13 +382,20 @@ final class BrowserSession {
     /// revisiting one. Cancelling means different things in the two cases.
     private(set) var islandEditorIsForNewIsland = false
 
-    /// The island a new one was made from: where "keep my logins" keeps them
-    /// from, and whose shelf "keep my pinned sites" copies.
+    /// Where "keep my logins" keeps them from, and whose shelf "keep my pinned
+    /// sites" copies. Always home.
     ///
-    /// Whichever island you were standing on when you made the new one, which
-    /// is the only answer that needs no explaining. Nil while editing an
-    /// existing island — there is nothing to bring over after the fact, because
-    /// the jar is settled the moment anything is browsed in it.
+    /// Home rather than wherever you were standing, and the difference matters
+    /// twice. Home is where the accounts actually are — its jar is the one the
+    /// browser has been filling since before islands existed, so it is what
+    /// "my logins" means without qualification. And a switch that brought a
+    /// different island's identity depending on which chip you happened to be
+    /// on is a switch nobody can predict: the same label, doing something else
+    /// each time you meet it.
+    ///
+    /// Nil while editing an existing island — there is nothing to bring over
+    /// after the fact, because the jar is settled the moment anything is
+    /// browsed in it.
     private(set) var islandEditorSource: Island?
 
     /// Opens the editor for an island.
@@ -407,12 +414,19 @@ final class BrowserSession {
     /// work login into a personal island by not reading a sheet.
     @discardableResult
     func createIslandAndEdit() -> Island {
-        let source = currentIsland
         let island = createIsland()
         select(island: island)
-        beginEditing(island, isNew: true, broughtFrom: source)
+        beginEditing(island, isNew: true, broughtFrom: homeIsland)
         return island
     }
+
+    /// The island the browser started life as.
+    ///
+    /// `IslandLayout.normalize` guarantees exactly one, at launch and after
+    /// every decode, so the fallback is unreachable — and is the current island
+    /// rather than a crash, because failing to find home is not worth taking
+    /// somebody's browser down over.
+    var homeIsland: Island { islands.first(where: \.isHome) ?? currentIsland }
 
     /// The island a tab belongs to.
     ///
