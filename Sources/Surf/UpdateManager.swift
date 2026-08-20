@@ -4,11 +4,11 @@ import SurfCore
 
 /// Keeps Surf's helper binaries current, silently.
 ///
-/// The user has a Surf version and nothing else. yt-dlp ships inside the app so
-/// downloads work on first launch with no network; from then on this quietly
-/// installs newer copies alongside it, because sites change their players and a
-/// pinned extractor goes stale within weeks. ffmpeg has no bundled copy for
-/// licensing reasons and arrives here on first check.
+/// The user has a Surf version and nothing else. Neither helper ships inside
+/// the app — yt-dlp was dropped from the bundle to keep it small, and ffmpeg
+/// was never bundled for licensing reasons — so both arrive here on first
+/// check, and this quietly installs newer copies from then on, because sites
+/// change their players and a pinned extractor goes stale within weeks.
 ///
 /// Nothing here ever prompts, blocks, or reports success. A failed update leaves
 /// the previous copy in place and tries again next week; the only user-visible

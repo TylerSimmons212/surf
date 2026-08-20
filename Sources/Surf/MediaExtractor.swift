@@ -49,8 +49,8 @@ final class MediaExtractor {
     ///
     /// 1. an explicit override, for debugging — no UI, `defaults write` only
     /// 2. the managed copy `UpdateManager` keeps current
-    /// 3. the copy bundled into Surf.app, which is why downloads work offline
-    ///    on first launch
+    /// 3. a copy bundled into Surf.app, if a build ever ships one (none do
+    ///    today — it was dropped to keep the app small)
     /// 4. anything on the usual `PATH` locations, which is what makes
     ///    `swift run` builds work without a bundle
     private static func locate(_ component: Component) -> URL? {
