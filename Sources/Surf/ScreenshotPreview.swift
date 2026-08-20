@@ -80,7 +80,24 @@ private struct ScreenshotPreviewView: View {
     let title: String
     let onClose: () -> Void
 
+    /// The crop, in image points. Starts as the whole shot; every action
+    /// exports whatever this says. Double-click puts it back.
+    @State private var crop: CGRect
+    @State private var activeHandle: CropGeometry.Handle?
+    @State private var rectAtDragStart: CGRect?
     @State private var flash: String?
+
+    init(image: NSImage, title: String, onClose: @escaping () -> Void) {
+        self.image = image
+        self.title = title
+        self.onClose = onClose
+        _crop = State(initialValue: CGRect(origin: .zero, size: image.size))
+    }
+
+    private var imageBounds: CGRect { CGRect(origin: .zero, size: image.size) }
+    private var isCropped: Bool {
+        crop.integral != imageBounds.integral
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,28 +108,109 @@ private struct ScreenshotPreviewView: View {
         .onExitCommand { onClose() }
     }
 
-    /// The shot as an object on a surface, not wallpaper filling a frame —
-    /// and draggable, because the fastest export is dropping it straight
-    /// into Slack or an email.
-    private var stage: some View {
-        ZStack {
-            Color(nsColor: .underPageBackgroundColor)
+    // MARK: - Stage
 
-            Image(nsImage: image)
-                .resizable()
-                .aspectRatio(contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
-                .padding(24)
-                .onDrag { NSItemProvider(object: image) }
-                .help("Drag me into any app")
+    /// The shot as an object on a surface, wearing its crop. All gesture
+    /// math routes through CropGeometry — the view only converts between
+    /// its fitted coordinates and image points.
+    private var stage: some View {
+        GeometryReader { geometry in
+            let available = CGRect(origin: .zero, size: geometry.size)
+                .insetBy(dx: 24, dy: 24)
+            let scale = min(
+                available.width / max(image.size.width, 1),
+                available.height / max(image.size.height, 1),
+                1
+            )
+            let fitted = CGSize(
+                width: image.size.width * scale, height: image.size.height * scale
+            )
+            let origin = CGPoint(
+                x: (geometry.size.width - fitted.width) / 2,
+                y: (geometry.size.height - fitted.height) / 2
+            )
+            let frame = CGRect(origin: origin, size: fitted)
+
+            ZStack(alignment: .topLeading) {
+                Color(nsColor: .underPageBackgroundColor)
+
+                Image(nsImage: image)
+                    .resizable()
+                    .frame(width: fitted.width, height: fitted.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    .shadow(color: .black.opacity(0.35), radius: 14, y: 4)
+                    .offset(x: origin.x, y: origin.y)
+
+                CropChrome(
+                    crop: viewRect(crop, in: frame, scale: scale)
+                )
+                .offset(x: origin.x, y: origin.y)
+                .frame(width: fitted.width, height: fitted.height)
+                .clipped()
+                .offset(x: 0, y: 0)
+            }
+            .contentShape(Rectangle())
+            .gesture(cropGesture(frame: frame, scale: scale))
+            .onTapGesture(count: 2) {
+                crop = imageBounds
+            }
+            .onDrag { NSItemProvider(object: croppedImage()) }
+            .help(isCropped
+                ? "Drag out to export the crop · double-click to uncrop"
+                : "Drag the edges to crop · drag the image into any app")
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Image points → this layout's view coordinates.
+    private func viewRect(_ rect: CGRect, in frame: CGRect, scale: CGFloat) -> CGRect {
+        CGRect(
+            x: rect.minX * scale,
+            y: rect.minY * scale,
+            width: rect.width * scale,
+            height: rect.height * scale
+        )
+    }
+
+    private func cropGesture(frame: CGRect, scale: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if activeHandle == nil {
+                    // Hit-test in view space, where the tolerance is a
+                    // finger's worth of pixels regardless of image size.
+                    let local = CGPoint(
+                        x: value.startLocation.x - frame.minX,
+                        y: value.startLocation.y - frame.minY
+                    )
+                    activeHandle = CropGeometry.handle(
+                        at: local, in: viewRect(crop, in: frame, scale: scale)
+                    )
+                    rectAtDragStart = crop
+                }
+                guard let handle = activeHandle, let start = rectAtDragStart else { return }
+                crop = CropGeometry.drag(
+                    start,
+                    handle: handle,
+                    by: CGSize(
+                        width: value.translation.width / scale,
+                        height: value.translation.height / scale
+                    ),
+                    in: imageBounds,
+                    minSize: 24 / scale
+                )
+            }
+            .onEnded { _ in
+                activeHandle = nil
+                rectAtDragStart = nil
+            }
+    }
+
+    // MARK: - Footer
+
+    /// Three verbs, as asked: Share, Copy to Clipboard, Save. Everything
+    /// exports the crop — there is no separate "export crop" step to forget.
     private var footer: some View {
         HStack(spacing: 10) {
-            Text("\(Int(image.size.width)) × \(Int(image.size.height))")
+            Text("\(Int(crop.width)) × \(Int(crop.height))\(isCropped ? " of \(Int(image.size.width)) × \(Int(image.size.height))" : "")")
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
 
@@ -125,62 +223,60 @@ private struct ScreenshotPreviewView: View {
 
             Spacer(minLength: 12)
 
-            SharePickerButton(image: image)
+            SharePickerButton(imageProvider: croppedImage)
 
             Button {
                 copy()
             } label: {
-                Label("Copy", systemImage: "doc.on.doc")
+                Label("Copy to Clipboard", systemImage: "doc.on.doc")
             }
             .keyboardShortcut("c", modifiers: .command)
-            .help("Copy to the clipboard (⌘C)")
 
-            Button("Save As…") { saveAs() }
-
-            // The headline action: what the old flow did unconditionally is
-            // now the default button rather than the only outcome.
             Button {
-                saveToDownloads()
+                save()
             } label: {
-                Label("Save to Downloads", systemImage: "arrow.down.circle")
+                Label("Save", systemImage: "arrow.down.circle")
             }
             .keyboardShortcut(.defaultAction)
+            .help("Save to Downloads")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(.bar)
     }
 
+    // MARK: - Actions
+
+    private func croppedImage() -> NSImage {
+        guard isCropped,
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let pixelRect = ScreenshotCrop.pixelRect(
+                  for: crop,
+                  capturedSize: image.size,
+                  imageSize: CGSize(width: cg.width, height: cg.height)
+              ),
+              let cut = cg.cropping(to: pixelRect)
+        else { return image }
+        let scale = CGFloat(cg.width) / max(image.size.width, 1)
+        return NSImage(
+            cgImage: cut,
+            size: CGSize(width: pixelRect.width / scale, height: pixelRect.height / scale)
+        )
+    }
+
     private func copy() {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([image])
+        NSPasteboard.general.writeObjects([croppedImage()])
         note("Copied")
     }
 
-    private func saveToDownloads() {
-        guard let url = ScreenshotSaver.save(image, title: title) else {
+    private func save() {
+        guard let url = ScreenshotSaver.save(croppedImage(), title: title) else {
             note("Couldn't save")
             return
         }
         NSWorkspace.shared.activateFileViewerSelecting([url])
         onClose()
-    }
-
-    private func saveAs() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = ScreenshotNaming.filename(title: title, date: Date())
-        panel.allowedContentTypes = [.png]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        guard let tiff = image.tiffRepresentation,
-              let bitmap = NSBitmapImageRep(data: tiff),
-              let png = bitmap.representation(using: .png, properties: [:])
-        else { note("Couldn't encode"); return }
-        do {
-            try png.write(to: url)
-            onClose()
-        } catch {
-            note("Couldn't save")
-        }
     }
 
     private func note(_ text: String) {
@@ -192,6 +288,49 @@ private struct ScreenshotPreviewView: View {
     }
 }
 
+/// The crop's visible parts: the veil outside it, its border, its handles.
+private struct CropChrome: View {
+    let crop: CGRect
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // Veil with the crop punched out.
+            Path { path in
+                path.addRect(CGRect(x: 0, y: 0, width: 100_000, height: 100_000))
+                path.addRect(crop)
+            }
+            .fill(Color.black.opacity(0.45), style: FillStyle(eoFill: true))
+
+            Rectangle()
+                .strokeBorder(Color.white.opacity(0.9), lineWidth: 1)
+                .frame(width: crop.width, height: crop.height)
+                .offset(x: crop.minX, y: crop.minY)
+
+            ForEach(Array(handlePoints.enumerated()), id: \.offset) { _, point in
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 7, height: 7)
+                    .overlay { Rectangle().strokeBorder(Color.black.opacity(0.4), lineWidth: 0.5) }
+                    .offset(x: point.x - 3.5, y: point.y - 3.5)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private var handlePoints: [CGPoint] {
+        [
+            CGPoint(x: crop.minX, y: crop.minY),
+            CGPoint(x: crop.midX, y: crop.minY),
+            CGPoint(x: crop.maxX, y: crop.minY),
+            CGPoint(x: crop.minX, y: crop.midY),
+            CGPoint(x: crop.maxX, y: crop.midY),
+            CGPoint(x: crop.minX, y: crop.maxY),
+            CGPoint(x: crop.midX, y: crop.maxY),
+            CGPoint(x: crop.maxX, y: crop.maxY),
+        ]
+    }
+}
+
 /// The system share sheet, from a real anchor.
 ///
 /// `NSSharingServicePicker` insists on an NSView to point its popover at, so
@@ -199,7 +338,7 @@ private struct ScreenshotPreviewView: View {
 /// price of the native sheet, which is worth paying: AirDrop, Messages, and
 /// whatever the user has installed, none of it reimplemented.
 private struct SharePickerButton: NSViewRepresentable {
-    let image: NSImage
+    let imageProvider: () -> NSImage
 
     func makeNSView(context: Context) -> NSButton {
         let button = NSButton(
@@ -218,21 +357,21 @@ private struct SharePickerButton: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSButton, context: Context) {
-        context.coordinator.image = image
+        context.coordinator.imageProvider = imageProvider
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(image: image) }
+    func makeCoordinator() -> Coordinator { Coordinator(imageProvider: imageProvider) }
 
     @MainActor
     final class Coordinator: NSObject {
-        var image: NSImage
+        var imageProvider: () -> NSImage
 
-        init(image: NSImage) {
-            self.image = image
+        init(imageProvider: @escaping () -> NSImage) {
+            self.imageProvider = imageProvider
         }
 
         @objc func share(_ sender: NSButton) {
-            let picker = NSSharingServicePicker(items: [image])
+            let picker = NSSharingServicePicker(items: [imageProvider()])
             picker.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         }
     }
