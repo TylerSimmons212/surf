@@ -636,12 +636,49 @@ final class DevToolsSession: Identifiable {
     /// sessions never pay for it.
     private(set) var cssPropertyNames: [String] = []
 
+    /// Selectors worth offering for a new rule on the selected element —
+    /// generated from its tag, id and classes, so every one is valid and
+    /// matches by construction.
+    var newRuleSelectors: [String] {
+        guard let selectedNode, let node = tree[selectedNode],
+              node.nodeType == .element
+        else { return [] }
+        let attributes = Dictionary(
+            uniqueKeysWithValues: node.attributes.map { ($0.name.lowercased(), $0.value) }
+        )
+        return CSSSelectorSuggestion.candidates(
+            tag: node.nodeName,
+            id: attributes["id"],
+            classes: (attributes["class"] ?? "").split(separator: " ").map(String.init)
+        )
+    }
+
     func loadPropertyNamesIfNeeded() {
         guard cssPropertyNames.isEmpty else { return }
         Task { @MainActor in
             guard let reply = try? await bridge.call(.cssPropertyNames, [:]) else { return }
             cssPropertyNames = reply["names"] as? [String] ?? []
         }
+    }
+
+    /// Creates an empty rule for a selector, in Surf's own sheet on the page.
+    ///
+    /// The rule arrives empty and stays visible because it is flagged as the
+    /// inspector's (`isInspectorRule`); its declarations then come through
+    /// `addDeclaration` like anyone else's. Nothing is recorded in the
+    /// changeset here — an empty rule *is* no change, and the declarations
+    /// record themselves as they land.
+    func addRule(_ selector: String) async -> Bool {
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssAddRule, ["selector": selector]),
+              issued == generation
+        else { return false }
+        if let failure = reply["error"] as? String {
+            debugLog("add rule failed: \(failure)")
+            return false
+        }
+        loadStyles()
+        return true
     }
 
     /// Appends a brand-new declaration to a rule — the other half of editing.

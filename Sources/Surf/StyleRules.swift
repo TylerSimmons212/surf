@@ -68,7 +68,9 @@ struct RuleSections: View {
         // The style attribute stays even when empty: its card is where "add
         // a declaration to just this element" lives, and the agent now emits
         // it for every inspected element for exactly that reason.
-        let reaching = rules.filter { $0.isStyleAttribute || $0.hasVisibleDeclarations }
+        let reaching = rules.filter {
+            $0.isStyleAttribute || $0.isInspectorRule || $0.hasVisibleDeclarations
+        }
         let needle = filter.trimmingCharacters(in: .whitespaces).lowercased()
         guard !needle.isEmpty else { return reaching }
         return reaching.filter { rule in

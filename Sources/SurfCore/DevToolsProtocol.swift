@@ -43,6 +43,8 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     /// style declaration answers with exactly the properties this build
     /// understands, which is the only correct completion source.
     case cssPropertyNames = "CSS.propertyNames"
+    /// Creates an empty rule in Surf's own stylesheet on the page.
+    case cssAddRule = "CSS.addRule"
 
     case storageRead = "Storage.read"
     case storageWrite = "Storage.write"
@@ -97,7 +99,7 @@ extension DevToolsMethod {
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
-             .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames,
+             .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames, .cssAddRule,
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
              .performanceRead, .performanceWatchLayout,

@@ -806,8 +806,14 @@ enum DevToolsAgent {
         return out;
       }
 
+      function isSurfSheet(sheet) {
+        return !!(sheet && sheet.ownerNode && sheet.ownerNode.dataset
+          && sheet.ownerNode.dataset.surfInspector === '1');
+      }
+
       function sheetLabel(sheet) {
         if (!sheet) { return '<style>'; }
+        if (isSurfSheet(sheet)) { return 'inspector'; }
         if (!sheet.href) { return sheet.ownerNode && sheet.ownerNode.nodeName === 'STYLE'
           ? '<style>' : 'inline'; }
         try {
@@ -894,7 +900,8 @@ enum DevToolsAgent {
                 inline: false,
                 distance: d,
                 from: d > 0 ? describe(target) : '',
-                recovered: !!context.recovered
+                recovered: !!context.recovered,
+                inspector: !!context.inspector
               });
               // One hit per element is enough; the heaviest branch is what
               // decides the fight and `calculate` already takes the maximum.
@@ -976,7 +983,8 @@ enum DevToolsAgent {
           }
           if (!list) { continue; }
           walk(list, {
-            conditions: [], layer: '', label: sheetLabel(sheet), parent: null, recovered: false
+            conditions: [], layer: '', label: sheetLabel(sheet), parent: null,
+            recovered: false, inspector: isSurfSheet(sheet)
           });
         }
 
@@ -1377,6 +1385,42 @@ enum DevToolsAgent {
           ruleOriginals.set(key, rule.style.cssText || '');
         }
         return (applyStyleText(rule.style, text, key, params.probe));
+      });
+
+      // The stylesheet Surf owns on this page — where "new rule" rules go.
+      //
+      // A real <style> element rather than an adopted sheet, for one load-
+      // bearing reason: the matched-styles walk iterates document.styleSheets,
+      // and an adopted sheet is not in it. As a member of the ordinary sheet
+      // list, a rule added here is read, edited, disabled and reverted by all
+      // the existing machinery with no special cases — it is just the last
+      // sheet on the page, which is also the cascade position "my new rule
+      // should win ties" wants. Lost on navigation, like Chrome's
+      // inspector-stylesheet; the Changes pane is the record that survives.
+      function surfSheet() {
+        let node = document.querySelector('style[data-surf-inspector]');
+        if (!node) {
+          node = document.createElement('style');
+          node.dataset.surfInspector = '1';
+          (document.head || document.documentElement).appendChild(node);
+        }
+        return node.sheet;
+      }
+
+      runtime.define('CSS.addRule', (params) => {
+        const selector = (params && params.selector || '').trim();
+        if (!selector) { return ({ error: 'no selector' }); }
+        const sheet = surfSheet();
+        if (!sheet) { return ({ error: 'no inspector stylesheet' }); }
+        try {
+          const index = sheet.insertRule(selector + ' { }', sheet.cssRules.length);
+          return ({ ruleId: idForRule(sheet.cssRules[index]) });
+        } catch (e) {
+          // insertRule refuses invalid selectors, which is the engine
+          // validating for us — the menu only offers generated ones, but the
+          // refusal is still reported rather than swallowed.
+          return ({ error: 'not a valid selector: ' + selector });
+        }
       });
 
       runtime.define('CSS.propertyNames', () => {

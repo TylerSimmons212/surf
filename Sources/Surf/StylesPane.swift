@@ -85,6 +85,25 @@ struct StylesPane: View {
 
             Divider().frame(height: 14)
 
+            // A native Menu, so the system supplies the popup, the metrics
+            // and the announcement. Every item is a selector generated from
+            // the element itself — valid and matching by construction — so
+            // there is no invalid-selector path to design an error state for.
+            Menu {
+                ForEach(session.newRuleSelectors, id: \.self) { selector in
+                    Button(selector) {
+                        Task { @MainActor in _ = await session.addRule(selector) }
+                    }
+                }
+            } label: {
+                Label("New Rule", systemImage: "plus")
+                    .labelStyle(.iconOnly)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(session.newRuleSelectors.isEmpty || mode != .rules)
+            .help("New rule for the selected element")
+
             Picker("Mode", selection: $mode) {
                 ForEach(Mode.allCases) { option in
                     // The count rides in the label because a segmented control
