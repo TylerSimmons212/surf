@@ -301,8 +301,10 @@ check_size find.js                2000
 check_size console.js            40000
 check_size network.js            33000
 check_size preflight.js           2000
-# Only while dev tools are attached.
-check_size devtools.js           70000
+# Only while dev tools are attached — never on ordinary pages, so this one
+# budgets feature growth rather than per-page cost. Raised from 70000 when
+# the elements-pane work landed (74683 bytes at the time).
+check_size devtools.js           90000
 if [ "$BUDGET_FAIL" -ne 0 ]; then
     echo "check-js: injected-script size budget exceeded — trim the script or raise the budget deliberately." >&2
     exit 1
