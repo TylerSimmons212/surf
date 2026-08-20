@@ -64,6 +64,7 @@ struct Sidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             SidebarNavigationBar(session: session, isPinned: $isPinned, hold: hold)
+            StickerShelf(session: session)
             tabList
             SidebarMediaSection(session: session)
             IslandStrip(session: session, hold: hold)
@@ -85,7 +86,14 @@ struct Sidebar: View {
                         tab: tab,
                         isSelected: tab.id == session.selectedTabID,
                         onSelect: { session.select(tab) },
-                        onClose: { session.close(tab) }
+                        onClose: { session.close(tab) },
+                        // Wrapped here, at the mutation, because that is what
+                        // drives the new tile's slap-on transition.
+                        onPin: {
+                            withAnimation(StickerShelf.slap) {
+                                session.pinSticker(for: tab)
+                            }
+                        }
                     )
                 }
                 newTabButton
@@ -284,6 +292,7 @@ private struct TabRow: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onPin: () -> Void
 
     @State private var isHovered = false
     @State private var didCopy = false
@@ -325,6 +334,22 @@ private struct TabRow: View {
                 .animation(.easeOut(duration: 0.2), value: isSelected)
         }
         .onHover { isHovered = $0 }
+        .contextMenu {
+            // A home tab has no page to pin, so the item would only ever
+            // silently do nothing there.
+            if tab.mode == .browsing {
+                Button(action: onPin) {
+                    Label("Add Sticker", systemImage: "star.square.on.square")
+                }
+                Button(action: copyURL) {
+                    Label("Copy Link", systemImage: "link")
+                }
+                Divider()
+            }
+            Button(role: .destructive, action: onClose) {
+                Label("Close Tab", systemImage: "xmark")
+            }
+        }
         .help(tab.displayTitle)
     }
 

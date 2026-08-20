@@ -510,6 +510,42 @@ final class BrowserSession {
         }
     }
 
+    // MARK: - Stickers
+
+    /// Pins a tab's current page to its island's sticker shelf.
+    ///
+    /// Filed under the island *holding* the tab, not the current one — the two
+    /// can differ when pinning from the media player, and a sticker that jumped
+    /// islands would open the site in the wrong cookie jar.
+    func pinSticker(for tab: Tab) {
+        guard let island = island(holding: tab),
+              let url = tab.currentURL,
+              let sticker = Sticker(url: url, title: tab.displayTitle)
+        else { return }
+        island.addSticker(sticker)
+        scheduleSave()
+    }
+
+    /// Peels a sticker off its island's shelf. The sites themselves are
+    /// untouched — a sticker is only a pointer.
+    func removeSticker(_ sticker: Sticker, from island: Island) {
+        island.removeSticker(id: sticker.id)
+        scheduleSave()
+    }
+
+    /// Opens a sticker: jumps to a tab already showing its URL, or makes one.
+    ///
+    /// The search keeps a sticker from minting a duplicate tab on every click —
+    /// the Arc behaviour people's fingers expect. Scoped to the current island,
+    /// because a sticker lives on the shelf of the island being looked at.
+    func open(_ sticker: Sticker) {
+        if let existing = currentIsland.tabs.first(where: { $0.currentURL == sticker.url }) {
+            select(existing)
+            return
+        }
+        addTab().submit(sticker.url)
+    }
+
     // MARK: - Lifecycle
 
     @discardableResult
