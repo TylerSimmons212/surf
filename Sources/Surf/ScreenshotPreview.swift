@@ -230,15 +230,23 @@ private struct ScreenshotPreviewView: View {
             Spacer(minLength: 12)
 
             // The drag-out handle: pick this up and drop the crop into any
-            // app. A chip rather than the image itself, so the stage's drags
-            // all belong to the crop.
-            Image(systemName: "photo")
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(width: 26, height: 22)
+            // app. A live thumbnail of the crop itself rather than an icon —
+            // an abstract glyph here read as decoration and got asked about,
+            // while "the picture, small, in hand" is the same learned object
+            // as the system screenshot thumbnail and a titlebar proxy icon.
+            // Off the stage because the stage's drags all belong to the crop.
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 30, height: 22)
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.25), lineWidth: 0.5)
+                }
                 .contentShape(Rectangle())
                 .onDrag { NSItemProvider(object: croppedImage()) }
-                .help("Drag into any app")
+                .help("Drag into any app to export")
 
             SharePickerButton(imageProvider: croppedImage)
                 .fixedSize()
