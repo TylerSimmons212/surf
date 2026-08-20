@@ -110,6 +110,10 @@ struct ElementDetail: View {
                         FontsCard(report: fonts)
                     }
 
+                    if let contrast = session.elementContrast {
+                        ContrastCard(session: session, verdict: contrast)
+                    }
+
                     ForEach(node.attributes) { attribute in
                         AttributeRow(
                             attribute: attribute,
