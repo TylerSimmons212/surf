@@ -26,7 +26,15 @@ final class BrowserSession {
     /// Tab" row and a `Tab` object apiece for islands nobody has opened in a
     /// month. The cost is one rule — switching to an empty island creates its
     /// home tab first — and in exchange `selectedTab` stays non-optional.
-    var tabs: [Tab] { currentIsland.tabs }
+    /// The tabs the sidebar lists, which is every tab in the island except the
+    /// ones stickers own — those already have a place on screen.
+    ///
+    /// The listed tabs, not all of them, because that is what every consumer of
+    /// this means: the rows to draw, the run to cycle through, the thing ⌘1
+    /// counts from. The handful of places that genuinely need every tab —
+    /// resolving a selection, deciding whether to pop out — reach through
+    /// `currentIsland.tabs` instead, and say why.
+    var tabs: [Tab] { currentIsland.tabs.filter { $0.stickerID == nil } }
     private(set) var selectedTabID: Tab.ID
 
     /// Every tab in every island. For the things that genuinely span them:
@@ -573,28 +581,95 @@ final class BrowserSession {
               let url = tab.currentURL,
               let sticker = Sticker(url: url, title: tab.displayTitle)
         else { return }
+
         island.addSticker(sticker)
+
+        // The tab *becomes* the sticker's tab rather than being copied by it.
+        // Pinning is a promotion, not a duplication: leaving the row behind
+        // would mean the page you just pinned is open twice the moment you
+        // click the sticker, and neither copy is more real than the other.
+        //
+        // Only when the shelf actually took it — pinning a URL already pinned
+        // is a no-op, and quietly unlisting this tab into a sticker owned by
+        // another one would leave it unreachable.
+        guard let pinned = island.stickers.last, pinned.url == sticker.url else { return }
+
+        // A split draws its pair from the listed tabs, so half of one going
+        // unlisted would leave the sidebar unable to show the pairing it is
+        // still in.
+        if split?.contains(tab.id) == true { closeSplit() }
+        // It is leaving the list, and a group is a run of tabs *in* the list.
+        removeFromGroup(tab)
+        tab.stickerID = pinned.id
         scheduleSave()
     }
 
     /// Peels a sticker off its island's shelf. The sites themselves are
     /// untouched — a sticker is only a pointer.
     func removeSticker(_ sticker: Sticker, from island: Island) {
+        // Its tab is handed back to the list rather than closed — the exact
+        // inverse of pinning, which took it out of one. Peeling a sticker off
+        // says the site no longer deserves a permanent place, not that the
+        // page open on it should be thrown away mid-read. Left as it was it
+        // would be worse than either: a tab with no row and no sticker,
+        // holding a web content process nothing in the interface can reach.
+        if let tab = island.tabs.first(where: { $0.stickerID == sticker.id }) {
+            tab.stickerID = nil
+        }
         island.removeSticker(id: sticker.id)
         scheduleSave()
     }
 
-    /// Opens a sticker: jumps to a tab already showing its URL, or makes one.
+    /// The live tab a sticker owns, if it has opened one.
+    func tab(for sticker: Sticker) -> Tab? {
+        currentIsland.tabs.first { $0.stickerID == sticker.id }
+    }
+
+    /// The stickers whose tabs are on screen right now, so the shelf can show
+    /// which one you are looking at.
     ///
-    /// The search keeps a sticker from minting a duplicate tab on every click —
-    /// the Arc behaviour people's fingers expect. Scoped to the current island,
-    /// because a sticker lives on the shelf of the island being looked at.
+    /// Written to avoid reading the tab array in the common case. Unsplit, the
+    /// answer is one property on the one held selected tab — so switching tabs
+    /// redraws the shelf, but opening or closing an unrelated tab does not.
+    /// Only a split has to go looking, and only while one is up.
+    var showingStickerIDs: Set<UUID> {
+        guard split != nil else {
+            guard let id = selectedTab.stickerID else { return [] }
+            return [id]
+        }
+        let visible = visibleTabIDs
+        return Set(
+            currentIsland.tabs
+                .filter { visible.contains($0.id) }
+                .compactMap(\.stickerID)
+        )
+    }
+
+    /// Opens a sticker — which is to say, selects it. A sticker *is* a tab.
+    ///
+    /// The tab it owns is made once, on the first click, and selected on every
+    /// click after. It is never listed in the sidebar, because the sticker is
+    /// already there: a row as well would be one tab in two places, and closing
+    /// the row would leave a sticker that looks pinned and is pointing at
+    /// nothing. Matched by `stickerID` rather than by URL, so a page the user
+    /// opened separately in an ordinary tab stays theirs and doesn't get
+    /// silently annexed by the shelf.
     func open(_ sticker: Sticker) {
-        if let existing = currentIsland.tabs.first(where: { $0.currentURL == sticker.url }) {
+        if let existing = tab(for: sticker) {
             select(existing)
             return
         }
-        addTab().submit(sticker.url)
+
+        let island = currentIsland
+        let tab = island.makeTab()
+        tab.session = self
+        tab.stickerID = sticker.id
+        // Appended rather than slotted in beside the selection: position is
+        // what orders the sidebar's list, and this tab isn't in it.
+        island.append(tab)
+        setSelection(to: tab.id)
+        tab.submit(sticker.url)
+        scheduleSave()
     }
 
     // MARK: - Lifecycle
@@ -648,7 +723,11 @@ final class BrowserSession {
             }
         }
 
-        rememberClosedTab(tab, in: island)
+        // A sticker's tab is not remembered for ⌘⇧T. The sticker is still on
+        // the shelf and still reopens the page, so there is nothing to restore
+        // — and putting one back would make a second tab claiming the same
+        // sticker, with only one of them reachable by clicking it.
+        if tab.stickerID == nil { rememberClosedTab(tab, in: island) }
         // Read before teardown, so the group is pruned against the list as it
         // will be, not as it was.
         defer { island.pruneEmptyGroups() }
@@ -1050,7 +1129,9 @@ final class BrowserSession {
         guard id != selectedTabID else { return }
 
         let outgoing = selectedTab
-        guard let incoming = tabs.first(where: { $0.id == id }) else { return }
+        // Every tab in the island, not just the listed ones: clicking a sticker
+        // selects a tab that deliberately has no row.
+        guard let incoming = currentIsland.tabs.first(where: { $0.id == id }) else { return }
 
         // Coming back to a popped-out tab folds it back into the window.
         if PopOutController.shared.isPoppedOut(incoming) {
@@ -1097,7 +1178,7 @@ final class BrowserSession {
     private func shouldAutoPopOut(_ tab: Tab) -> Bool {
         guard MediaPreferences.autoPopOut else { return false }
         // A tab being closed is already torn down — nothing to pop out.
-        guard tabs.contains(where: { $0.id == tab.id }) else { return false }
+        guard currentIsland.tabs.contains(where: { $0.id == tab.id }) else { return false }
         guard !PopOutController.shared.isPoppedOut(tab) else { return false }
         // Audio-only playback has no rectangle to crop to.
         guard let media = tab.media, media.isPlaying, media.hasVideo else { return false }

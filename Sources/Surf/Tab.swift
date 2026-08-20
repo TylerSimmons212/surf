@@ -310,6 +310,14 @@ final class Tab: NSObject, Identifiable {
     /// then, is the run of consecutive tabs naming it — see `TabGrouping`.
     var groupID: UUID?
 
+    /// The sticker this tab belongs to, if any.
+    ///
+    /// Set once, when a sticker opens its page, and never cleared: a sticker's
+    /// tab is its tab for as long as it lives. The sidebar leaves these out of
+    /// its list — the sticker is already on screen, and a row for it as well
+    /// would be one tab claiming two places in the same sidebar.
+    var stickerID: UUID?
+
     /// Set once the user (or code) navigates deliberately. A pending restore
     /// must never overwrite that — restoring a tab you've already typed into
     /// would silently throw the new page away.
@@ -320,6 +328,7 @@ final class Tab: NSObject, Identifiable {
     func prepareRestore(from persisted: PersistedTab) {
         pendingRestore = persisted
         groupID = persisted.groupID
+        stickerID = persisted.stickerID
         pageTitle = persisted.title
         addressText = persisted.url ?? ""
         if persisted.isRestorable { mode = .browsing }
@@ -1156,6 +1165,7 @@ final class Tab: NSObject, Identifiable {
         func filed(_ tab: PersistedTab) -> PersistedTab {
             var tab = tab
             tab.groupID = groupID
+            tab.stickerID = stickerID
             return tab
         }
 
