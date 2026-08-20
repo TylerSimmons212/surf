@@ -69,8 +69,10 @@ function context() {
 const worlds = {
   // focus-extract.js is not resident — Tab.enterFocus() evaluates it on
   // demand — but it registers focus.extract and focus.reveal against the
-  // same agent, so it installs here like everything else.
-  isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'focus.js', 'focus-extract.js'],
+  // same agent, so it installs here like everything else, beside capture.js,
+  // main's lazy domain with the same arrangement.
+  isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'capture.js',
+             'focus.js', 'focus-extract.js'],
   page: ['runtime-page.js', 'media.js', 'find.js'],
 };
 
@@ -100,7 +102,7 @@ for (const { name, world } of pageAgent.methods) {
 {
   const ctx = context();
   ctx.document.readyState = 'loading';
-  for (const f of ['runtime-isolated.js', 'theme.js', 'page.js']) {
+  for (const f of ['runtime-isolated.js', 'theme.js', 'page.js', 'capture.js']) {
     vm.runInContext(read(f), ctx, { filename: f });
   }
   const reply = JSON.parse(await ctx[handle].dispatch('theme.collect', {}));
@@ -304,6 +306,9 @@ check_size media.js              16000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000
+# Injected on first use of the screenshot pick, never at page load — this
+# budget bounds feature creep, not per-page cost.
+check_size capture.js             6000
 check_size find.js                2000
 # Main frame only.
 check_size console.js            40000

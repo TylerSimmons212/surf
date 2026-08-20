@@ -11,6 +11,27 @@ import WebKit
 @Observable
 @MainActor
 final class Tab: NSObject, Identifiable {
+    /// The page's colour scheme, emulated per tab — the dev-tools "what does
+    /// this look like in dark mode" switch, not the browser's own theme.
+    ///
+    /// WebKit exposes no colour-scheme API; what it reads is the web view's
+    /// `effectiveAppearance`, mapped straight onto `prefers-color-scheme`
+    /// and restyled live. Overriding the view's `appearance` therefore flips
+    /// the page and only the page: the panel, the chrome and every other tab
+    /// keep following the app. Deliberately not persisted — an emulation is
+    /// a question being asked, not a setting.
+    var emulatedAppearance: AppearanceMode = .system {
+        didSet { webView.appearance = emulatedAppearance.nsAppearance }
+    }
+
+    /// The page laid out at a chosen CSS-pixel size — nil fills the window.
+    /// Like the appearance emulation: per tab, never persisted, and applied
+    /// by the container's layout rather than stored anywhere the page sees.
+    var emulatedViewport: CGSize?
+
+    /// The element-pick capture veil, present only while picking.
+    @ObservationIgnored var captureOverlay: CaptureOverlayView?
+
 
     /// Home = the centered search field; browsing = chrome + page. This is
     /// per-tab, so a new tab opens on the search screen while others keep pages.
@@ -154,7 +175,9 @@ final class Tab: NSObject, Identifiable {
     /// question is what builds it. `buildWebView()` assigns both alongside the
     /// view, so reaching one of these after it is the same guarantee `webView`
     /// itself makes.
-    private var isolatedAgent: PageAgent {
+    // Not `private`: Screenshots.swift is the same type in another file,
+    // and a full-page capture asks the page its height through this.
+    var isolatedAgent: PageAgent {
         if let liveIsolatedAgent { return liveIsolatedAgent }
         _ = webView
         return liveIsolatedAgent!
@@ -248,6 +271,9 @@ final class Tab: NSObject, Identifiable {
         // Set outside the `configuration == nil` block deliberately: popup and
         // `target="_blank"` tabs skip that branch, and they need this too.
         created.isInspectable = true
+        // Hibernation rebuilds the web view; the emulation must survive that
+        // or waking a tab silently un-darks it.
+        created.appearance = emulatedAppearance.nsAppearance
 
         // Rebuilt with the view, not with the tab: hibernation releases the web
         // view and builds another, and an agent still pointed at the released
@@ -416,9 +442,16 @@ final class Tab: NSObject, Identifiable {
         isolatedAgent.register(on: controller)
         pageAgent.register(on: controller)
 
-        isolatedAgent.onEvent = { [weak self] header, _, _ in
-            guard header.domain == "theme", header.event == "mutated" else { return }
-            self?.pageDidMutate()
+        isolatedAgent.onEvent = { [weak self] header, data, _ in
+            guard let self else { return }
+            switch header.domain {
+            case "theme":
+                if header.event == "mutated" { pageDidMutate() }
+            case "capture":
+                handleCaptureEvent(header.event, data)
+            default:
+                break
+            }
         }
         pageAgent.onEvent = { [weak self] header, data, frame in
             guard let self, header.domain == "media", header.event == "report" else { return }
@@ -1770,6 +1803,10 @@ extension Tab: WKNavigationDelegate {
     /// wipe the tally of what put it there.
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         DevToolsController.shared.documentDidCommit(for: self)
+        // An armed capture pick dies with its document — the agent's
+        // listeners just did, and a veil with nobody reporting hovers into
+        // it would sit there dimming the new page forever.
+        cancelAreaCapture()
         // A new document: whatever the model named the old one is wrong now.
         aiNamingTask?.cancel()
         aiTitle = nil

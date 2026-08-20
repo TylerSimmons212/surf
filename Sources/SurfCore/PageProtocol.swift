@@ -33,6 +33,14 @@ public enum PageProtocol {
         case focusSignals = "focus.signals"
         case focusExtract = "focus.extract"
         case focusReveal = "focus.reveal"
+        /// The document's full scrollable extent — what a full-page
+        /// screenshot needs to know before it can be one.
+        case pageMetrics = "page.metrics"
+        /// Arms element-pick capture: hover highlights, click chooses.
+        case captureBegin = "capture.begin"
+        case captureEnd = "capture.end"
+        /// The picked element's rect, re-measured after a relayout.
+        case captureRect = "capture.rect"
 
         // Page world — where the site's own `navigator` and media elements
         // are. An isolated world has its own `navigator`, with nothing in it.
@@ -53,8 +61,9 @@ public enum PageProtocol {
         public var world: World {
             switch self {
             case .themeCollect, .themeApply, .themeRevert,
-                 .themeDismissPreflight, .pageTopColor, .pageFavicons,
-                 .focusSignals, .focusExtract, .focusReveal:
+                 .themeDismissPreflight, .pageTopColor, .pageFavicons, .pageMetrics,
+                 .focusSignals, .focusExtract, .focusReveal,
+                 .captureBegin, .captureEnd, .captureRect:
                 return .isolated
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,

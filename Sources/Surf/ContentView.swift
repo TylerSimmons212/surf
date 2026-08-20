@@ -604,7 +604,8 @@ private struct TabContent: View {
                         WebView(
                             webView: tab.webView,
                             chromeInset: chromeInset,
-                            isInert: isInert
+                            isInert: isInert,
+                            viewportOverride: tab.emulatedViewport
                         )
                     }
                     if let error = tab.lastError {

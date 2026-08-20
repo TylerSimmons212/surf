@@ -1231,6 +1231,8 @@ private struct SidebarNavigationBar: View {
                 .transition(.scale(scale: 0.7).combined(with: .opacity))
             }
 
+            ScreenshotButton(tab: tab)
+
             CopyLinkButton(tab: tab)
 
             BlockButton(session: session, hold: hold)
@@ -1257,6 +1259,44 @@ private struct SidebarNavigationBar: View {
         .padding(.top, 8)
         .padding(.bottom, 6)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
+    }
+}
+
+/// Captures the page — visible area or the whole document — straight to
+/// Downloads, named for the page.
+///
+/// A menu rather than a click-then-choose dialog: two capture kinds is a
+/// two-item menu, and the momentary checkmark afterwards is the same
+/// "it actually happened" feedback the copy button earned its own struct for.
+private struct ScreenshotButton: View {
+    let tab: Tab
+
+    var body: some View {
+        Menu {
+            Button("Select Area…") { tab.beginAreaCapture() }
+            Button("Visible Area") { capture { await tab.captureVisibleArea() } }
+            Button("Full Page") { capture { await tab.captureFullPage() } }
+        } label: {
+            Image(systemName: "camera")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(tab.mode != .browsing)
+        .help("Screenshot")
+    }
+
+    private func capture(_ take: @escaping () async -> NSImage?) {
+        Task { @MainActor in
+            guard let image = await take() else { return }
+            // The preview is the feedback now — the checkmark this button
+            // used to flash was standing in for a window that didn't exist.
+            ScreenshotPreviewController.shared.show(image, title: tab.displayTitle)
+        }
     }
 }
 
