@@ -177,6 +177,16 @@ struct ArticleLensView: View {
 
             Divider().frame(height: 16)
 
+            if tab.media?.hasVideo == true {
+                IconButton(
+                    systemName: "play.rectangle",
+                    size: 12, width: 24, height: 24, cornerRadius: 7,
+                    help: "Watch the Video in Theater"
+                ) { tab.enterVideoStage() }
+
+                Divider().frame(height: 16)
+            }
+
             if tab.focusRecipe != nil {
                 IconButton(
                     systemName: "fork.knife",
@@ -593,7 +603,7 @@ struct FocusPill: View {
     }
 
     private var pillIcon: String {
-        switch tab.focusDetection?.kind {
+        switch tab.focusOfferKind {
         case .recipe: return "fork.knife"
         case .video: return "play.rectangle"
         default: return "text.page"

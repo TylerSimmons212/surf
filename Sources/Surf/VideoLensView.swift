@@ -18,7 +18,9 @@ struct VideoLensView: View {
     @State private var isChromeVisible = true
     @State private var chromeTimer: Task<Void, Never>?
 
-    private var media: MediaState? { tab.media }
+    /// The pinned stage element's state — never the ranking's current pick,
+    /// which a hover-preview or an advert can take mid-show.
+    private var media: MediaState? { tab.stagedMedia }
 
     var body: some View {
         ZStack {
@@ -33,7 +35,7 @@ struct VideoLensView: View {
                     Text("The video has gone away.")
                         .font(.title3.weight(.medium))
                         .foregroundStyle(.white)
-                    Button("Back to the Page") { tab.exitFocus() }
+                    Button("Back to the Page") { tab.exitVideoStage() }
                         .buttonStyle(.glassProminent)
                 }
             }
@@ -78,8 +80,8 @@ struct VideoLensView: View {
         IconButton(
             systemName: "xmark",
             size: 11, weight: .bold, width: 26, height: 26, cornerRadius: 8,
-            help: "Leave Focus (⇧⌘F)"
-        ) { tab.exitFocus() }
+            help: "Leave the Theater"
+        ) { tab.exitVideoStage() }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .glassEffect(
@@ -104,19 +106,19 @@ struct VideoLensView: View {
                     systemName: "gobackward.10",
                     size: 13, width: 28, height: 26, cornerRadius: 8,
                     help: "Back 10 Seconds"
-                ) { tab.skipMedia(by: -10) }
+                ) { tab.stagedSkip(by: -10) }
 
                 IconButton(
                     systemName: media.isPlaying ? "pause.fill" : "play.fill",
                     size: 15, width: 32, height: 28, cornerRadius: 9,
                     help: media.isPlaying ? "Pause" : "Play"
-                ) { tab.toggleMediaPlayback() }
+                ) { tab.stagedToggle() }
 
                 IconButton(
                     systemName: "goforward.10",
                     size: 13, width: 28, height: 26, cornerRadius: 8,
                     help: "Forward 10 Seconds"
-                ) { tab.skipMedia(by: 10) }
+                ) { tab.stagedSkip(by: 10) }
 
                 if media.duration > 0 {
                     Text(timestamp(scrubTarget ?? media.currentTime))
@@ -134,7 +136,7 @@ struct VideoLensView: View {
                         // makes streaming players stutter through the whole
                         // gesture.
                         if !editing, let target = scrubTarget {
-                            tab.seekMedia(to: target)
+                            tab.stagedSeek(to: target)
                             scrubTarget = nil
                         }
                     }
@@ -153,10 +155,16 @@ struct VideoLensView: View {
                     size: 12, width: 26, height: 24, cornerRadius: 8,
                     help: "Pop Out"
                 ) {
-                    // The pop-out is the stage's portable sibling; hand off
-                    // cleanly rather than stacking one lens on another.
-                    tab.exitFocus()
-                    PopOutController.shared.popOut(tab)
+                    // The pop-out is the stage's portable sibling — it stages
+                    // too now. Sequenced, not fired together: the theater's
+                    // unstage is asynchronous, and racing it with the
+                    // pop-out's own stage would tear down what it just built.
+                    let tab = tab
+                    Task { @MainActor in
+                        tab.exitVideoStage()
+                        try? await Task.sleep(for: .milliseconds(200))
+                        PopOutController.shared.popOut(tab)
+                    }
                 }
             }
         }

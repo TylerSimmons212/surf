@@ -74,8 +74,20 @@ Both lenses carry the native share menu, sharing the page's address. The parser
 lives in `SurfCore` behind tests, because real recipe JSON-LD is filthy —
 `@graph` wrappers, entity-encoded apostrophes, instructions nested two
 sections deep, and five spellings of every field. The page's prose stays one
-toggle away as the article lens. Video pages are recognised too, for the
-lens they'll get later.
+toggle away as the article lens.
+
+A video page gets theater mode. Rehosting the stream in a player of our own
+is the obvious spelling and doesn't work — most video is a `blob:` URL that
+exists only in its page — so the page's *own* element is promoted where it
+stands: pinned fullscreen over everything the page drew, restored
+byte-for-byte from its saved inline style on the way out. A video inside an
+iframe pins itself within its frame and each parent pins the frame carrying
+it, hopping origins by message the same way the pop-out measures them. On
+top rides Surf's transport — one set of controls on every site, driven by
+the same agent methods as the now-playing strip — with chrome that fades
+when the pointer stops. The offer follows the evidence: the classifier for
+pages that are plainly a player, and live media state for embed hosts whose
+video lives in a frame the detector can't see.
 
 The reader can also read aloud. Listen starts a narration with lyric mode:
 the sentence being spoken carries a faint wash, the word being spoken is lit

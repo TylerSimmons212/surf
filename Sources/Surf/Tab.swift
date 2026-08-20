@@ -673,18 +673,6 @@ final class Tab: NSObject, Identifiable {
         }
     }
 
-    /// The playing video's rectangle in the *top* document's viewport, in CSS
-    /// pixels (== points) — which is the coordinate space the lens crops in.
-    ///
-    /// The script resolves its own frame offset before answering, so a video
-    /// inside an iframe reports where it sits on the page rather than where it
-    /// sits inside its embed. It returns nil rather than guessing when that
-    /// offset can't be established; a lens aimed at the wrong part of the page
-    /// is worse than a pop-out that declines.
-    func measureVideoFrame() async -> CGRect? {
-        await runInMediaFrame(.mediaFrame, as: MediaFrame.self)?.rect
-    }
-
     func seekMedia(to seconds: Double) {
         Task { @MainActor in
             _ = await runInMediaFrame(.mediaSeek, ["time": seconds], as: PageProtocol.Empty.self)
@@ -1380,6 +1368,128 @@ final class Tab: NSObject, Identifiable {
     /// Theater mode: the page's own video promoted over everything it drew.
     /// True makes the overlay a transparent transport instead of a reader.
     private(set) var focusVideoStage = false
+
+    /// The element the stage was applied to, pinned at entry. The ranking
+    /// keeps running — a hover-preview or an advert can win it mid-show —
+    /// but the transport must describe and command the video on the stage,
+    /// not whatever the ranking currently likes.
+    @ObservationIgnored private var stagedElementID: String?
+    @ObservationIgnored private var stagedFrame: WKFrameInfo?
+
+    /// The staged element's live state, wherever the ranking stands. Nil
+    /// once the element is genuinely gone — an SPA route, a torn-out embed,
+    /// an anti-adblock script swapping the player out from under the stage.
+    ///
+    /// Gone is judged by the same heartbeat as the now-playing strip: a
+    /// frame reports once a second while playing, so a *playing* entry that
+    /// went silent is a ghost — its frame died and will never say so. The
+    /// stale state would otherwise describe the swapped-out element forever.
+    var stagedMedia: MediaState? {
+        guard let stagedElementID else { return nil }
+        let cutoff = Date().addingTimeInterval(-4)
+        for (_, entry) in mediaFrames {
+            if let item = entry.items.first(where: { $0.elementID == stagedElementID }) {
+                if item.isPlaying, entry.seenAt < cutoff { return nil }
+                return item
+            }
+        }
+        return nil
+    }
+
+    @ObservationIgnored private var stageWatchdog: Task<Void, Never>?
+
+    /// The shared half of raising a stage: pin the ranking's current pick,
+    /// promote it, lock the page. Used by the theater and the pop-out.
+    /// - Parameter keepingInteraction: the theater leaves the player alive
+    ///   under the pointer; the pop-out wants the page inert — its own
+    ///   chrome is the only control surface.
+    fileprivate func beginVideoStage(keepingInteraction: Bool) {
+        stagedElementID = mediaElementID
+        stagedFrame = mediaFrame
+        Task { @MainActor in
+            await runOnStagedElement(.mediaStage)
+            setPageScrollLocked(true, keepingInteraction: keepingInteraction)
+        }
+    }
+
+    /// The shared half of lowering one: restore the page, forget the pin.
+    /// Harmless when the element is already gone — the unstage method cleans
+    /// the stage attributes and sheet regardless, and the main-frame
+    /// fallback sweeps a dead iframe's leftovers in the top document.
+    fileprivate func endVideoStage() {
+        stageWatchdog?.cancel()
+        stageWatchdog = nil
+        Task { @MainActor in
+            await runOnStagedElement(.mediaUnstage)
+            setPageScrollLocked(false)
+        }
+        stagedElementID = nil
+        stagedFrame = nil
+    }
+
+    /// Lowers the theater when the show is over and nobody said so: the
+    /// staged element gone for a few consecutive beats means the page
+    /// replaced it, and a stage with nothing on it must not hold the tab.
+    private func startStageWatchdog() {
+        stageWatchdog?.cancel()
+        stageWatchdog = Task { @MainActor in
+            var misses = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, focusVideoStage else { return }
+                misses = stagedMedia == nil ? misses + 1 : 0
+                if misses >= 3 {
+                    debugLog("focus: staged video gone — leaving the theater")
+                    exitVideoStage()
+                    return
+                }
+                if misses == 0 {
+                    // Re-assert, don't just watch: a player that re-parents
+                    // its video (YouTube does, on layout changes) walks it
+                    // out from under the tagged ancestor chain. Staging is
+                    // idempotent, and re-running it tags the chain the
+                    // element lives under *now*.
+                    await runOnStagedElement(.mediaStage)
+                }
+            }
+        }
+    }
+
+    /// Like `runInMediaFrame`, but addressed to the pinned stage element.
+    private func runOnStagedElement(
+        _ method: PageProtocol.Method, _ params: [String: Any] = [:]
+    ) async {
+        guard let stagedElementID else {
+            _ = await runInMediaFrame(method, params, as: PageProtocol.Empty.self)
+            return
+        }
+        var params = params
+        params["id"] = stagedElementID
+        if let stagedFrame {
+            do {
+                _ = try await pageAgent.call(
+                    method, params, as: PageProtocol.Empty.self, in: stagedFrame
+                )
+                return
+            } catch {
+                // Fall through to the main frame — same reasoning as the
+                // ranking's runner: a gone frame should stop being addressed.
+            }
+        }
+        _ = await pageAgent.value(method, params, as: PageProtocol.Empty.self)
+    }
+
+    func stagedToggle() {
+        Task { @MainActor in await runOnStagedElement(.mediaToggle) }
+    }
+
+    func stagedSeek(to seconds: Double) {
+        Task { @MainActor in await runOnStagedElement(.mediaSeek, ["time": seconds]) }
+    }
+
+    func stagedSkip(by seconds: Double) {
+        Task { @MainActor in await runOnStagedElement(.mediaSkip, ["delta": seconds]) }
+    }
     /// The user's lens choice on a recipe page — a recipe page still has
     /// prose, and the toggle lets them read it as an article.
     var focusPrefersArticle = false
@@ -1402,21 +1512,94 @@ final class Tab: NSObject, Identifiable {
     /// the classifier also reports videos, but advertising a lens that
     /// can't render yet would be a button that lies.
     var canOfferFocus: Bool {
-        guard focusPhase == .inactive, let detection = focusDetection else { return false }
-        guard detection.confidence >= FocusClassification.offerThreshold else { return false }
-        switch detection.kind {
-        case .article, .recipe:
-            return true
-        case .video:
-            // The stage promotes an element the media bridge can address,
-            // and the bridge tracks elements from their first play — so the
-            // offer waits for one.
-            return media?.hasVideo == true
+        guard focusPhase == .inactive else { return false }
+        if let detection = focusDetection,
+           detection.confidence >= FocusClassification.offerThreshold {
+            switch detection.kind {
+            case .article, .recipe:
+                return true
+            case .video:
+                // The stage promotes an element the media bridge can
+                // address, and the bridge tracks elements from their first
+                // play — so the offer waits for one.
+                return media?.hasVideo == true
+            }
         }
+        // No confident classification, but a started video is its own
+        // evidence. The detector counts <video> in the main frame only; an
+        // embed-host page keeps its video in an iframe the detector can't
+        // see — and the media bridge, which runs in every frame, can.
+        return offersVideoStage
+    }
+
+    /// Whether entering Focus here means the video stage: a started video on
+    /// a page the classifier didn't confidently claim for prose, or one it
+    /// called a video page outright.
+    private var offersVideoStage: Bool {
+        guard media?.hasVideo == true else { return false }
+        guard let detection = focusDetection,
+              detection.confidence >= FocusClassification.offerThreshold
+        else { return true }
+        return detection.kind == .video
+    }
+
+    /// What the pill's icon promises — which lens entering would actually
+    /// raise, media evidence included.
+    var focusOfferKind: FocusKind? {
+        guard canOfferFocus else { return nil }
+        return offersVideoStage ? .video : focusDetection?.kind
     }
 
     func toggleFocus() {
         focusPhase == .inactive ? enterFocus() : exitFocus()
+    }
+
+    /// Raises the theater directly — reachable from the reader, because a
+    /// page with real prose *and* a playing video classifies as an article
+    /// and would otherwise keep the stage unreachable. The iframe case
+    /// especially: the embed's video is invisible to the detector, so prose
+    /// wins the classification every time.
+    func enterVideoStage() {
+        guard media?.hasVideo == true else { return }
+        narrator.stop()
+        focusVideoStage = true
+        focusPhase = .active
+        beginVideoStage(keepingInteraction: true)
+        startStageWatchdog()
+        debugLog("focus: video staged from the reader")
+    }
+
+    /// Lowers the theater. Back to the reader when the stage was raised from
+    /// one; back to the page when the stage was the whole show.
+    func exitVideoStage() {
+        guard focusVideoStage else { return }
+        endVideoStage()
+        focusVideoStage = false
+        if focusArticle == nil {
+            focusPhase = .inactive
+        }
+    }
+
+    // The pop-out's half of the same machinery: it stages too now — the
+    // staged video fills the web view's viewport, so a panel showing the
+    // web view shows exactly the video, with no cropping to chase.
+
+    /// Pins and stages for the pop-out. False when there is nothing to show.
+    func stageVideoForPopOut() -> Bool {
+        guard media?.hasVideo == true else { return false }
+        beginVideoStage(keepingInteraction: false)
+        return true
+    }
+
+    func unstageVideoAfterPopOut() {
+        endVideoStage()
+    }
+
+    /// Re-tags the staged element's *current* ancestor chain — the pop-out's
+    /// tracking loop calls this on its beat, for players that re-parent.
+    func reassertStagedVideo() async {
+        guard stagedElementID != nil else { return }
+        await runOnStagedElement(.mediaStage)
     }
 
     /// Extracts the page and raises the reader.
@@ -1431,17 +1614,18 @@ final class Tab: NSObject, Identifiable {
 
         // A video page gets the stage, not the reader: no extraction — the
         // page's own element is the content, promoted in place.
-        if focusDetection?.kind == .video {
+        if offersVideoStage || focusDetection?.kind == .video {
             guard media?.hasVideo == true else {
                 focusPhase = .failed("Start the video, then enter Focus.")
                 return
             }
             focusVideoStage = true
             focusPhase = .active
-            Task { @MainActor in
-                _ = await runInMediaFrame(.mediaStage, as: PageProtocol.Empty.self)
-                setPageScrollLocked(true, keepingInteraction: true)
-            }
+            // Pinned now, while the ranking still points at the video the
+            // user actually started — not later, when a preview may have
+            // taken the ranking from it.
+            beginVideoStage(keepingInteraction: true)
+            startStageWatchdog()
             debugLog("focus: video staged")
             return
         }
@@ -1499,11 +1683,8 @@ final class Tab: NSObject, Identifiable {
         guard focusPhase != .inactive else { return }
         narrator.stop()
         if focusVideoStage {
-            // Back exactly as the page drew it, from the saved inline style.
-            Task { @MainActor in
-                _ = await runInMediaFrame(.mediaUnstage, as: PageProtocol.Empty.self)
-                setPageScrollLocked(false)
-            }
+            // Back exactly as the page drew it.
+            endVideoStage()
         }
         focusVideoStage = false
         focusPhase = .inactive
@@ -1553,8 +1734,12 @@ final class Tab: NSObject, Identifiable {
         focusRecipe = nil
         focusPrefersArticle = false
         // A staged element died with its document; there is nothing to
-        // unstage, and the flag must not survive onto the next page.
+        // unstage, and the pin must not survive onto the next page.
+        stageWatchdog?.cancel()
+        stageWatchdog = nil
         focusVideoStage = false
+        stagedElementID = nil
+        stagedFrame = nil
     }
 
     /// Returns to the search screen without tearing down the web view, so the

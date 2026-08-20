@@ -3,24 +3,25 @@ import SurfCore
 import Observation
 import SwiftUI
 
-/// Floats a playing tab's video in a small always-on-top panel — by cropping,
-/// not by restyling.
+/// Floats a playing tab's video in a small always-on-top panel.
 ///
-/// The live `WKWebView` keeps its full main-window size inside a clipping
-/// container whose `bounds` are set to the video's rectangle. AppKit's
-/// frame/bounds decoupling then does everything at once: translation, scaling,
-/// clipping, *and* correct hit-testing, so the site's own player controls keep
-/// working inside the lens.
+/// The video is *staged* — the same attribute-and-stylesheet promotion the
+/// theater lens uses: the page's own element pinned to fill its viewport,
+/// every ancestor's containing-block and stacking-context traps dissolved,
+/// everything off the path to the video hidden. The panel then simply shows
+/// the web view, and the web view's whole viewport *is* the video.
 ///
-/// Why not inject CSS to blow the video up to fill the page? Because that's a
-/// war: any ancestor with a transform, filter, containment, or z-index forms a
-/// containing block or stacking context that re-scopes `position: fixed`, and
-/// real players (YouTube) nest the video many such layers deep. The lens never
-/// touches the page's layout, so there is nothing to fight.
+/// This replaced a geometry lens — a clipped container whose bounds tracked
+/// the measured video rect on a 700ms beat. An earlier comment here argued
+/// CSS promotion was an unwinnable war against players that nest the video
+/// under transforms and stacking contexts; the theater lens won that war
+/// (attributes survive style rewrites, ancestors are neutralised, lights-out
+/// ends the z-order fight — proven against YouTube's player), and staging
+/// carries what the lens could not: no frozen page size, no rect to chase
+/// when the site relayouts, and no site overlay bleeding into the frame.
 ///
-/// The same reasoning covers streaming sites: this is the original document in
-/// the original web view, so DRM playback and `blob:` media keep working —
-/// nothing is scraped or re-loaded.
+/// It is still the original document in the original web view, so DRM
+/// playback and `blob:` media keep working — nothing is scraped or re-loaded.
 @Observable
 @MainActor
 final class PopOutController: NSObject, NSWindowDelegate {
@@ -30,13 +31,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
     private(set) var poppedOutTab: Tab?
 
     @ObservationIgnored private var panel: NSPanel?
-    @ObservationIgnored private var lensContainer: NSView?
     @ObservationIgnored private var chromeView: NSHostingView<PopOutChrome>?
     @ObservationIgnored private let chromeModel = PopOutChromeModel()
-    /// The web view's size at pop-out time. Its frame is pinned to this so the
-    /// page never reflows inside the panel and the measured rect stays valid.
-    @ObservationIgnored private var pageSize: CGSize = .zero
-    @ObservationIgnored private var lastVideoFrame: CGRect = .zero
     /// The size the panel was presented at. Used to tell an untouched panel
     /// from one the user has sized themselves.
     @ObservationIgnored private var presentedSize: CGSize?
@@ -55,33 +51,30 @@ final class PopOutController: NSObject, NSWindowDelegate {
     func popOut(_ tab: Tab) {
         if poppedOutTab != nil { restore() }
 
-        // Read the size synchronously: on an automatic pop-out the selection
-        // changes immediately after this call, and the web view is unmounted
-        // before an awaited read would run.
-        let capturedSize = tab.webView.bounds.size
-        guard capturedSize.width > 0, capturedSize.height > 0 else { return }
+        // The element's shape, read before staging inflates it to viewport
+        // size — after that, its measured rect is the panel's own aspect and
+        // says nothing about the video.
+        guard let media = tab.media, media.hasVideo else { return }
+        let signals = media.signals
+        let videoSize = signals.width > 1 && signals.height > 1
+            ? CGSize(width: signals.width, height: signals.height)
+            : CGSize(width: 16, height: 9)
+
+        guard tab.stageVideoForPopOut() else { return }
 
         Task { @MainActor in
-            // Measure while the page is still laid out at that size. If there's
-            // no measurable video, do nothing at all — a lens onto nothing is
-            // worse than no lens.
-            guard let rect = await tab.measureVideoFrame() else { return }
-            pageSize = capturedSize
-            lastVideoFrame = rect
-
-            tab.setPageScrollLocked(true)
             // Publishing first makes the main window swap in its placeholder,
             // which releases the web view from SwiftUI's hierarchy before we
             // adopt it into the panel.
             poppedOutTab = tab
             try? await Task.sleep(for: .milliseconds(60))
-            presentPanel(for: tab, videoFrame: rect)
+            presentPanel(for: tab, videoSize: videoSize)
             startTracking(tab)
         }
     }
 
-    private func presentPanel(for tab: Tab, videoFrame: CGRect) {
-        let contentSize = PopOutSizing.panelSize(forVideo: videoFrame.size)
+    private func presentPanel(for tab: Tab, videoSize: CGSize) {
+        let contentSize = PopOutSizing.panelSize(forVideo: videoSize)
         presentedSize = contentSize
 
         // Borderless: a titled panel reads as a mini window, and the whole point
@@ -98,8 +91,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
-        panel.contentAspectRatio = videoFrame.size
-        panel.contentMinSize = PopOutSizing.minimumSize(forVideo: videoFrame.size)
+        panel.contentAspectRatio = videoSize
+        panel.contentMinSize = PopOutSizing.minimumSize(forVideo: videoSize)
         panel.delegate = self
         // Transparent so the rounded corners aren't filled in by the window's
         // own background, and shadowed so it lifts off whatever is behind it.
@@ -110,26 +103,24 @@ final class PopOutController: NSObject, NSWindowDelegate {
         let root = PopOutRootView(frame: NSRect(origin: .zero, size: contentSize))
         root.autoresizingMask = [.width, .height]
 
-        let container = NSView(frame: root.bounds)
-        container.autoresizingMask = [.width, .height]
-        container.clipsToBounds = true
-
-        // The web view keeps the size it had in the main window — the page
-        // must not reflow — and is never autoresized by the panel.
-        tab.webView.autoresizingMask = []
-        tab.webView.frame = NSRect(origin: .zero, size: pageSize)
-        container.addSubview(tab.webView)
-        root.addSubview(container)
+        // The staged video fills whatever viewport it is given, so the web
+        // view just fills the panel and resizes with it. The page reflowing
+        // underneath is invisible — lights-out hides it — and harmless.
+        tab.webView.autoresizingMask = [.width, .height]
+        tab.webView.frame = root.bounds
+        root.addSubview(tab.webView)
 
         chromeModel.title = tab.displayTitle
-        chromeModel.isPlaying = tab.media?.isPlaying ?? false
+        chromeModel.isPlaying = tab.stagedMedia?.isPlaying ?? false
         chromeModel.onClose = { [weak self] in self?.closeFromChrome() }
         chromeModel.onRestore = { [weak self] in self?.restore() }
-        chromeModel.onTogglePlay = { [weak tab] in tab?.toggleMediaPlayback() }
-        chromeModel.onSeek = { [weak tab] time in tab?.seekMedia(to: time) }
-        chromeModel.onSkip = { [weak tab] delta in tab?.skipMedia(by: delta) }
-        chromeModel.currentTime = tab.media?.currentTime ?? 0
-        chromeModel.duration = tab.media?.duration ?? 0
+        // The staged element, not the ranking's pick: an advert starting
+        // mid-float must not capture the pop-out's buttons.
+        chromeModel.onTogglePlay = { [weak tab] in tab?.stagedToggle() }
+        chromeModel.onSeek = { [weak tab] time in tab?.stagedSeek(to: time) }
+        chromeModel.onSkip = { [weak tab] delta in tab?.stagedSkip(by: delta) }
+        chromeModel.currentTime = tab.stagedMedia?.currentTime ?? 0
+        chromeModel.duration = tab.stagedMedia?.duration ?? 0
 
         let chrome = NSHostingView(rootView: PopOutChrome(model: chromeModel))
         chrome.frame = root.bounds
@@ -142,8 +133,6 @@ final class PopOutController: NSObject, NSWindowDelegate {
         }
 
         panel.contentView = root
-        lensContainer = container
-        applyLens(videoFrame)
 
         positionInBottomTrailingCorner(panel, size: contentSize)
         panel.orderFront(nil)
@@ -156,67 +145,34 @@ final class PopOutController: NSObject, NSWindowDelegate {
         restore()
     }
 
-    /// The heart of the lens: point the container's bounds at the video.
-    ///
-    /// With `frame` at panel size and `bounds` set to the video's rect in the
-    /// web view's coordinate space, AppKit renders exactly that rect scaled to
-    /// fill the panel — and routes events with the same mapping. The rect
-    /// arrives in CSS coordinates (top-left origin), so flip into AppKit's
-    /// bottom-left space.
-    private func applyLens(_ videoFrame: CGRect) {
-        lensContainer?.bounds = NSRect(
-            x: videoFrame.minX,
-            y: pageSize.height - videoFrame.maxY,
-            width: videoFrame.width,
-            height: videoFrame.height
-        )
-    }
-
-    /// Sites move their players — layout settles late, ads collapse, theater
-    /// mode toggles. Re-measure on a slow beat and follow.
+    /// No geometry left to track — the stage holds its own. What remains is
+    /// the watch for a video the page tore out, and keeping the chrome's
+    /// numbers honest when playback changes from anywhere else.
     private func startTracking(_ tab: Tab) {
         trackingTask?.cancel()
         trackingTask = Task { @MainActor in
+            var misses = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(700))
                 guard !Task.isCancelled, poppedOutTab?.id == tab.id else { return }
-                guard let rect = await tab.measureVideoFrame() else {
-                    // The video left the DOM — nothing to show anymore.
-                    restore()
-                    return
+                guard let media = tab.stagedMedia else {
+                    // A beat of grace: reports arrive on a heartbeat, and one
+                    // silent read mustn't fold a healthy pop-out.
+                    misses += 1
+                    if misses >= 3 { restore() ; return }
+                    continue
                 }
-                if rect != lastVideoFrame {
-                    lastVideoFrame = rect
-                    applyLens(rect)
-                    reshapeIfVideoChangedShape(to: rect.size)
-                }
-                // Keeps the chrome's play/pause glyph honest when playback is
-                // changed from anywhere else — the sidebar, or the page itself.
-                chromeModel.isPlaying = tab.media?.isPlaying ?? false
-                chromeModel.currentTime = tab.media?.currentTime ?? 0
-                chromeModel.duration = tab.media?.duration ?? 0
+                misses = 0
+                chromeModel.isPlaying = media.isPlaying
+                chromeModel.currentTime = media.currentTime
+                chromeModel.duration = media.duration
+                // Same re-assertion the theater's watchdog makes: a player
+                // that re-parents its video walks it out from under the
+                // tagged chain, and the panel goes white with the audio
+                // still running. Staging is idempotent; re-run it.
+                await tab.reassertStagedVideo()
             }
         }
-    }
-
-    /// Adopts a new shape when the video turns out not to be the shape it first
-    /// measured — dimensions often aren't known until metadata loads, and a
-    /// player can swap clips without the panel closing.
-    ///
-    /// Only re-sizes a panel the user hasn't touched. Once it's been dragged to
-    /// a size, that size is theirs; the aspect ratio still updates so the next
-    /// drag snaps to the right shape.
-    private func reshapeIfVideoChangedShape(to videoSize: CGSize) {
-        guard let panel, videoSize.width > 0, videoSize.height > 0 else { return }
-        guard !PopOutSizing.aspectMatches(panel.contentAspectRatio, videoSize) else { return }
-
-        panel.contentAspectRatio = videoSize
-        panel.contentMinSize = PopOutSizing.minimumSize(forVideo: videoSize)
-
-        guard let presentedSize, panel.frame.size == presentedSize else { return }
-        let fitted = PopOutSizing.panelSize(forVideo: videoSize)
-        panel.setContentSize(fitted)
-        self.presentedSize = panel.frame.size
     }
 
     private func positionInBottomTrailingCorner(_ panel: NSPanel, size: NSSize) {
@@ -240,9 +196,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
         // view down with it and the tab would come back blank.
         tab.webView.removeFromSuperview()
         tab.webView.autoresizingMask = [.width, .height]
-        tab.setPageScrollLocked(false)
+        tab.unstageVideoAfterPopOut()
 
-        lensContainer = nil
         chromeView = nil
         presentedSize = nil
         panel?.delegate = nil
@@ -258,11 +213,5 @@ final class PopOutController: NSObject, NSWindowDelegate {
     /// The panel's own close button routes here.
     nonisolated func windowWillClose(_ notification: Notification) {
         MainActor.assumeIsolated { restore() }
-    }
-
-    /// Resizing a view's frame resets its bounds scale, which would break the
-    /// lens mapping — so re-point it after every live resize.
-    nonisolated func windowDidResize(_ notification: Notification) {
-        MainActor.assumeIsolated { applyLens(lastVideoFrame) }
     }
 }

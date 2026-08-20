@@ -296,7 +296,11 @@ check_size() {
 # Injected into every frame of every page.
 check_size theme.js              34000
 check_size block.js              14000
-check_size media.js              12000
+# Raised from 12000 when theater mode landed, and again to 16000 when it
+# learned to survive hostile players (14451 at the time): stylesheet-based
+# staging, ancestor neutralisation, and lights-out all have to run where the
+# element lives, which is here.
+check_size media.js              16000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000
@@ -305,6 +309,10 @@ check_size find.js                2000
 check_size console.js            40000
 check_size network.js            33000
 check_size preflight.js           2000
+check_size focus.js               3000
+# Not resident at all — evaluated once, on the pages the user focuses — so
+# like devtools.js this budgets feature growth rather than per-page cost.
+check_size focus-extract.js      16000
 # Only while dev tools are attached — never on ordinary pages, so this one
 # budgets feature growth rather than per-page cost. Raised from 70000 when
 # the elements-pane work landed (74683 bytes at the time).
