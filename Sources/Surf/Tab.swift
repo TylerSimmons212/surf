@@ -1255,6 +1255,7 @@ final class Tab: NSObject, Identifiable {
                     // an open reader is handled by didCommit when it's a real
                     // navigation, and a fragment scroll shouldn't close it.
                     self.focusDetection = nil
+                    self.focusPrevalidated = nil
                     self.scheduleFocusDetection()
                     // A popup tab starts in .home but is loaded by WebKit
                     // directly, so the mode has to follow the URL. Not during
@@ -1537,6 +1538,14 @@ final class Tab: NSObject, Identifiable {
     /// extraction be the judge.
     private(set) var focusDetection: FocusDetection?
 
+    /// The extraction that proved the pill's promise, kept so honouring it
+    /// is instant. The classifier only counts — an index page wearing
+    /// `og:type article` over link-heavy teasers counts beautifully and
+    /// extracts to nothing — so a reader verdict isn't advertised until the
+    /// real extraction has produced a real article.
+    @ObservationIgnored private var focusPrevalidated:
+        (article: FocusArticle, recipe: FocusRecipe?)?
+
     @ObservationIgnored private var focusDetectionTask: Task<Void, Never>?
 
     var isFocusActive: Bool { focusPhase != .inactive }
@@ -1665,22 +1674,28 @@ final class Tab: NSObject, Identifiable {
 
         focusPhase = .extracting
         Task { @MainActor in
-            _ = try? await webView.callAsyncJavaScript(
-                FocusBridge.extractorScript, arguments: [:],
-                in: nil, contentWorld: .defaultClient
-            )
+            let article: FocusArticle?
+            let cached = focusPrevalidated
+            if let cached {
+                // The pill's promise was verified by a real extraction
+                // moments ago; honouring it re-uses that work, which is why
+                // the reader opens instantly from the pill.
+                article = cached.article
+            } else {
+                article = await extractFocusArticle()
+            }
             // The user may have left Focus, or the page, while that ran.
             guard focusPhase == .extracting else { return }
-            guard let article = await isolatedAgent.value(.focusExtract, as: FocusArticle.self)
-            else {
+            guard let article else {
                 focusPhase = .failed("This page couldn't be read.")
                 return
             }
-            guard focusPhase == .extracting else { return }
             // A recipe stands on its structured data, not on prose volume —
             // plenty of real recipe pages are thin on paragraphs and rich in
             // JSON-LD, and `parse` already refuses the hollow ones.
-            let recipe = FocusRecipe.parse(fromJSONLD: article.jsonLD)
+            let recipe = cached != nil
+                ? cached?.recipe
+                : FocusRecipe.parse(fromJSONLD: article.jsonLD)
             // A title over sixty words of boilerplate is a failure wearing a
             // heading — better to say so than to render it with confidence.
             guard article.isSubstantial || recipe != nil else {
@@ -1733,6 +1748,12 @@ final class Tab: NSObject, Identifiable {
     /// sampling: articles hydrate late, and the first reading routinely lands
     /// before the prose does. Each rung re-classifies, so the verdict improves
     /// rather than freezes.
+    ///
+    /// A reader verdict is verified before it's advertised: the extraction
+    /// runs now, and a page whose article turns out to be nothing keeps its
+    /// pill hidden — a button whose click says "there's nothing here" should
+    /// not have been a button. The verified result is kept, so the pill
+    /// opens the reader instantly.
     private func scheduleFocusDetection() {
         focusDetectionTask?.cancel()
         focusDetectionTask = Task { @MainActor in
@@ -1749,9 +1770,44 @@ final class Tab: NSObject, Identifiable {
                         \(signals.wordCount) words in \(signals.paragraphCount) paragraphs
                         """)
                 }
-                focusDetection = verdict
+
+                guard let verdict, verdict.kind != .video,
+                      verdict.confidence >= FocusClassification.offerThreshold,
+                      focusPhase == .inactive
+                else {
+                    focusDetection = verdict
+                    continue
+                }
+                // Already proved on an earlier rung; don't extract twice.
+                if focusPrevalidated != nil {
+                    focusDetection = verdict
+                    continue
+                }
+                guard let article = await extractFocusArticle(), !Task.isCancelled
+                else { continue }
+                let recipe = FocusRecipe.parse(fromJSONLD: article.jsonLD)
+                if article.isSubstantial || recipe != nil {
+                    focusPrevalidated = (article, recipe)
+                    focusDetection = verdict
+                } else {
+                    focusDetection = nil
+                    debugLog("""
+                        focus: \(verdict.kind.rawValue) verdict withheld — \
+                        extraction found \(article.wordCount) words
+                        """)
+                }
             }
         }
+    }
+
+    /// Installs the extractor (idempotent) and runs it — the one extraction
+    /// path, shared by pre-validation and by entering Focus by hand.
+    private func extractFocusArticle() async -> FocusArticle? {
+        _ = try? await webView.callAsyncJavaScript(
+            FocusBridge.extractorScript, arguments: [:],
+            in: nil, contentWorld: .defaultClient
+        )
+        return await isolatedAgent.value(.focusExtract, as: FocusArticle.self)
     }
 
     /// The page under the reader is gone or changing; nothing about the old
@@ -1760,6 +1816,7 @@ final class Tab: NSObject, Identifiable {
         narrator.stop()
         focusDetectionTask?.cancel()
         focusDetection = nil
+        focusPrevalidated = nil
         // Not exitFocus(): there is no page position worth revealing, and the
         // agent may already be unreachable.
         focusPhase = .inactive

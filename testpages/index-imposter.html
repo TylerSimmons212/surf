@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Sea Journal — Latest</title>
+  <!-- The lie this fixture exists for: an index page wearing an article's
+       declaration. The classifier counts its teaser text and believes it;
+       extraction filters the link-heavy paragraphs and finds nothing. -->
+  <meta property="og:type" content="article">
+  <style>
+    body { font-family: Georgia, serif; max-width: 800px; margin: 20px auto; }
+    .card { border-bottom: 1px solid #ddd; padding: 12px 0; }
+    a { color: #146; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <h1>Latest from the harbour</h1>
+  <div id="cards"></div>
+  <script>
+    // Twenty teasers, every word of them a link: plenty for a word counter,
+    // nothing for an extractor that filters navigation wearing prose.
+    const cards = document.getElementById('cards');
+    for (let i = 1; i <= 20; i++) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.innerHTML = '<p><a href="#' + i + '">Dispatch number ' + i +
+        ' from the harbour wall where the tide keeps its own ledger and ' +
+        'the gulls audit every entry twice before the fog signs off</a></p>';
+      cards.appendChild(card);
+    }
+  </script>
+</body>
+</html>
