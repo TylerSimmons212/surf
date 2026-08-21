@@ -592,6 +592,9 @@ struct FocusPill: View {
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
+            // The whole capsule is the button. A plain button style hit-tests
+            // the glyphs themselves, and padding isn't glyphs.
+            .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
         .glassEffect(
