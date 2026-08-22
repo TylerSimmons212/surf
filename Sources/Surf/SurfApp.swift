@@ -164,7 +164,7 @@ struct SurfApp: App {
             // the sidebar is hidden.
             Button("Back") { session.selectedTab.goBack() }
                 .keyboardShortcut("[", modifiers: .command)
-                .disabled(!session.selectedTab.canGoBack)
+                .disabled(!session.selectedTab.canGoBackOrClose)
 
             Button("Forward") { session.selectedTab.goForward() }
                 .keyboardShortcut("]", modifiers: .command)

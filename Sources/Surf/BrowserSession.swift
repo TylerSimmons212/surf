@@ -901,9 +901,12 @@ final class BrowserSession {
             debugLog("popup arrived with a data store that isn't its island's")
         }
         tab.session = self
-        // Insert next to the current tab, like Safari, rather than at the end —
-        // a tab opened from a link belongs beside its opener.
-        let insertAt = (island.index(of: selectedTab)).map { $0 + 1 } ?? island.tabs.count
+        // A popup arrives with its opener's configuration and belongs beside
+        // it, like Safari. A tab the user asked for joins the end of the list,
+        // so the list reads in the order things were opened.
+        let insertAt = configuration != nil
+            ? (island.index(of: selectedTab)).map { $0 + 1 } ?? island.tabs.count
+            : island.tabs.count
         island.insert(tab, at: insertAt)
         if select { setSelection(to: tab.id) }
         scheduleSave()
@@ -989,6 +992,22 @@ final class BrowserSession {
     }
 
     func closeSelectedTab() { close(selectedTab) }
+
+    /// Back's exit from a page-opened tab: close it and land on its opener.
+    ///
+    /// Selection moves first, while both tabs are live — `close` on a
+    /// no-longer-selected tab leaves the selection alone, so the opener is
+    /// simply where the window already is when the tab goes. If the opener has
+    /// been closed in the meantime, plain `close` takes over and its next-tab
+    /// rule picks the neighbour, which is the best "back" still available.
+    func closeReturningToOpener(_ tab: Tab) {
+        if let openerID = tab.openerTabID,
+           let island = island(holding: tab),
+           let opener = island.tabs.first(where: { $0.id == openerID }) {
+            select(opener)
+        }
+        close(tab)
+    }
 
     /// Puts back the most recently closed tab, with its history if it had any.
     func reopenClosedTab() {

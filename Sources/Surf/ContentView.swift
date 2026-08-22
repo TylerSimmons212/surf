@@ -6,15 +6,16 @@ struct ContentView: View {
 
     @AppStorage(PreferenceKeys.sidebarPinned) private var isPinned = false
 
-    /// The one piece of chrome currently revealed. Exactly one, ever — the
-    /// traffic lights and the sidebar both live in the top-left, so showing
-    /// both would stack them.
-    @State private var revealed: ChromeTarget = .none
+    /// Whether the pointer currently has the floating sidebar revealed. The
+    /// traffic lights need no state of their own: they sit just above the
+    /// panel's top-left corner and show exactly when it does.
+    @State private var isHoverRevealed = false
     @State private var pointer = ChromePointer()
     @State private var revealTask: Task<Void, Never>?
-    /// The lights' one unprompted appearance, so a window that opens with no
-    /// chrome at all still shows you where its controls are.
-    @State private var isIntroducingLights = false
+    /// The sidebar's one unprompted appearance, so a window that opens with no
+    /// chrome at all still shows you where everything — the window controls
+    /// included — now lives.
+    @State private var isIntroducingSidebar = false
     @State private var isAddressBarOpen = false
     /// Captured when the palette opens, because the session's flag may have
     /// changed again by the time it's submitted.
@@ -39,13 +40,27 @@ struct ContentView: View {
         return pointer
     }
 
-    private var isSidebarRevealed: Bool { revealed == .sidebar }
+    private var isSidebarRevealed: Bool { isHoverRevealed || isIntroducingSidebar }
 
-    /// The lights follow the pointer, except for their one turn at launch.
-    private var areLightsRevealed: Bool { revealed == .trafficLights || isIntroducingLights }
+    /// The lights show whenever the sidebar does — pinned counts, since a
+    /// pinned sidebar is permanently on screen.
+    private var areLightsRevealed: Bool { isPinned || isSidebarRevealed }
 
     /// Clear of the lights' row, so a find bar can never sit under a reveal.
     private var overlayTopInset: CGFloat { ChromeReveal.lightsRowHeight + 10 }
+
+    /// Where the lights' row begins, from the window's leading edge. A touch
+    /// in from the floating panel's own edge (which sits 8pt off the window's),
+    /// so the buttons read as perched above its top-left corner; the same
+    /// figure pinned keeps them from hugging the window edge.
+    private var lightsLeadingInset: CGFloat { 12 }
+
+    /// The centre of the lights' row, from the window's top. Floating, the row
+    /// is the gap the panel hangs below; pinned, it's the strip the panel
+    /// holds clear at its top.
+    private var lightsRowCenter: CGFloat {
+        isPinned ? ChromeReveal.lightsRowHeight / 2 : Sidebar.floatingTopPadding / 2
+    }
 
     var body: some View {
         ZStack {
@@ -73,17 +88,15 @@ struct ContentView: View {
                 }
             }
 
-            // The lights' zone sits outside the pinned/floating split because
-            // the buttons are the window's, not the page's — they overlay the
-            // same corner either way.
-            HoverZone { pointer.inCorner = $0 }
-                .frame(width: ChromeReveal.cornerZone.width, height: ChromeReveal.cornerZone.height)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .zIndex(16)
-
             // Not a rendered view: this reaches out to the window and fades the
-            // real AppKit buttons, which draw above everything here.
-            TrafficLights(isRevealed: areLightsRevealed)
+            // real AppKit buttons, which draw above everything here — perched
+            // just above the floating panel, or on the row a pinned one holds
+            // clear at its top.
+            TrafficLights(
+                isRevealed: areLightsRevealed,
+                leadingInset: lightsLeadingInset,
+                rowCenterFromTop: lightsRowCenter
+            )
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
 
@@ -126,12 +139,12 @@ struct ContentView: View {
         // otherwise re-evaluate this entire chrome body every tick.
         .background { WindowTitle(tab: session.selectedTab) }
         .onChange(of: pointerNow) { _, pointer in
-            scheduleReveal(ChromeReveal.resolve(pointer, current: revealed))
+            scheduleReveal(ChromeReveal.shouldReveal(pointer))
         }
         // Pinning mid-hover would otherwise leave a stale floating copy behind.
         .onChange(of: isPinned) { _, _ in
             revealTask?.cancel()
-            revealed = .none
+            isHoverRevealed = false
         }
         // ⌘L routes through the session so the menu command reaches whichever
         // window is frontmost.
@@ -172,7 +185,7 @@ struct ContentView: View {
             guard session.selectedTab.mode != .home else { return }
             openAddressBar()
         }
-        .onAppear(perform: introduceTrafficLights)
+        .onAppear(perform: introduceSidebar)
         .onAppear(perform: applyLaunchEnvironment)
         .onAppear(perform: installTabCycleMonitor)
         .onDisappear {
@@ -186,7 +199,6 @@ struct ContentView: View {
             session: session,
             isPinned: $isPinned,
             isFloating: isFloating,
-            lightsRevealed: areLightsRevealed,
             hold: sidebarHold,
             dragContext: dragContext
         )
@@ -276,30 +288,34 @@ struct ContentView: View {
     /// Commits a resolved target after its delay, cancelling whatever was
     /// pending — so a pointer sweeping up the edge to the corner settles on the
     /// lights rather than flashing the sidebar on the way past.
-    private func scheduleReveal(_ target: ChromeTarget) {
-        guard target != revealed else {
+    private func scheduleReveal(_ reveal: Bool) {
+        guard reveal != isHoverRevealed else {
             revealTask?.cancel()
             return
         }
         revealTask?.cancel()
         revealTask = Task { @MainActor in
-            try? await Task.sleep(for: ChromeReveal.delay(revealing: target))
+            try? await Task.sleep(for: ChromeReveal.delay(revealing: reveal))
             guard !Task.isCancelled else { return }
             withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
-                revealed = target
+                isHoverRevealed = reveal
             }
         }
     }
 
-    /// Shows the lights once when the window opens, then lets them go.
+    /// Shows the sidebar once when the window opens, then lets it go.
     ///
-    /// Without this the window arrives with no visible controls at all, and
-    /// nothing to suggest that the corner is worth reaching for.
-    private func introduceTrafficLights() {
-        isIntroducingLights = true
+    /// Without this the window arrives with no visible chrome at all — and the
+    /// sidebar is where everything lives now, the window controls included, so
+    /// its one unprompted turn is what suggests the edge is worth reaching for.
+    private func introduceSidebar() {
+        guard !isPinned else { return }
+        isIntroducingSidebar = true
         Task { @MainActor in
             try? await Task.sleep(for: ChromeReveal.launchRevealDuration)
-            isIntroducingLights = false
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                isIntroducingSidebar = false
+            }
         }
     }
 
