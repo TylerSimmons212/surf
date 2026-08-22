@@ -901,9 +901,12 @@ final class BrowserSession {
             debugLog("popup arrived with a data store that isn't its island's")
         }
         tab.session = self
-        // Insert next to the current tab, like Safari, rather than at the end —
-        // a tab opened from a link belongs beside its opener.
-        let insertAt = (island.index(of: selectedTab)).map { $0 + 1 } ?? island.tabs.count
+        // A popup arrives with its opener's configuration and belongs beside
+        // it, like Safari. A tab the user asked for joins the end of the list,
+        // so the list reads in the order things were opened.
+        let insertAt = configuration != nil
+            ? (island.index(of: selectedTab)).map { $0 + 1 } ?? island.tabs.count
+            : island.tabs.count
         island.insert(tab, at: insertAt)
         if select { setSelection(to: tab.id) }
         scheduleSave()
