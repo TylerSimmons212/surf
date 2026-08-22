@@ -100,6 +100,12 @@ final class Tab: NSObject, Identifiable {
     /// user opened. Only these are closed again when nothing arrives in them.
     @ObservationIgnored var wasOpenedByPage = false
 
+    /// The tab whose page opened this one, so Back has somewhere to go on a
+    /// tab with no history of its own: it closes this tab and returns there.
+    /// Weakly by id, not by reference — the opener may be closed first, and
+    /// this must not keep a torn-down tab alive.
+    @ObservationIgnored var openerTabID: UUID?
+
     /// Whether any document has ever committed here.
     @ObservationIgnored private var hasCommittedDocument = false
 
@@ -1376,7 +1382,25 @@ final class Tab: NSObject, Identifiable {
     func clearFindSelection() {
         pageAgent.send(.findClearSelection)
     }
-    func goBack() { webView.goBack() }
+    /// Whether Back has anywhere to go: page history, or — on a tab a page
+    /// opened — back out of the tab entirely, to the page it was opened from.
+    ///
+    /// Without the second half, a link that opens in a new tab is a one-way
+    /// door: the new tab starts with empty history, so Back is dead and the
+    /// only way home is finding the old tab in the list by hand.
+    var canGoBackOrClose: Bool { canGoBack || wasOpenedByPage }
+
+    func goBack() {
+        if canGoBack {
+            webView.goBack()
+        } else if wasOpenedByPage {
+            // At the start of a page-opened tab's history, Back un-opens the
+            // tab: close it and return to the page that spawned it, which is
+            // where the reader was before the click.
+            session?.closeReturningToOpener(self)
+        }
+    }
+
     func goForward() { webView.goForward() }
 
     // MARK: - Focus
@@ -2030,6 +2054,7 @@ extension Tab: WKUIDelegate {
         // new view won't be linked to the opener.
         let tab = session.addTab(configuration: configuration)
         tab.wasOpenedByPage = true
+        tab.openerTabID = id
         tab.watchForAnEmptyWindow()
         // No explicit load here — WebKit drives the returned view itself.
         return tab.webView

@@ -993,6 +993,22 @@ final class BrowserSession {
 
     func closeSelectedTab() { close(selectedTab) }
 
+    /// Back's exit from a page-opened tab: close it and land on its opener.
+    ///
+    /// Selection moves first, while both tabs are live — `close` on a
+    /// no-longer-selected tab leaves the selection alone, so the opener is
+    /// simply where the window already is when the tab goes. If the opener has
+    /// been closed in the meantime, plain `close` takes over and its next-tab
+    /// rule picks the neighbour, which is the best "back" still available.
+    func closeReturningToOpener(_ tab: Tab) {
+        if let openerID = tab.openerTabID,
+           let island = island(holding: tab),
+           let opener = island.tabs.first(where: { $0.id == openerID }) {
+            select(opener)
+        }
+        close(tab)
+    }
+
     /// Puts back the most recently closed tab, with its history if it had any.
     func reopenClosedTab() {
         let island = currentIsland
