@@ -32,12 +32,7 @@ final class VoiceInstaller {
     // from them off the main actor, and a path is a value, not UI state.
 
     /// Where the voice lives, beside the helper binaries' directory.
-    nonisolated static var directory: URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        )[0]
-        return base.appendingPathComponent("Surf/Voice", isDirectory: true)
-    }
+    nonisolated static var directory: URL { SupportDirectory.subdirectory("Voice") }
 
     /// Present means every file inference stands on is there. A partial
     /// extraction reads as absent — reinstalling is cheap, debugging a voice

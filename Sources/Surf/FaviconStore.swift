@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import SurfCore
 
 /// Fetches and caches favicons, keyed by host.
 ///
@@ -17,11 +18,7 @@ final class FaviconStore {
     private var failed: Set<String> = []
     private var inFlight: Set<String> = []
 
-    private let directory: URL = {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Surf/Favicons", isDirectory: true)
-    }()
+    private let directory: URL = SupportDirectory.subdirectory("Favicons")
 
     /// Hosts already looked for on disk and not found.
     ///

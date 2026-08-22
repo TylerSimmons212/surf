@@ -620,6 +620,10 @@ results to stderr — handy for exercising navigation without clicking.
 Comma-separate to open several tabs: `SURF_URL=example.com,apple.com swift run`.
 
 State lives in `~/Library/Application Support/Surf/session.json`.
+`SURF_STATE_DIR=<dir>` moves all of Application Support — session, history,
+favicons, filter lists, helpers, voice — so a second Surf can run without
+touching the first's tabs. Overriding `HOME` doesn't: `FileManager` resolves
+Application Support from the account.
 
 `SURF_DEVTOOLS=elements` alongside `SURF_URL` opens the panel on that pane at
 launch. The injected half of dev tools exists only while a panel is attached,
