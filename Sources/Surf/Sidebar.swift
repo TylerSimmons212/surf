@@ -20,12 +20,11 @@ struct Sidebar: View {
     let session: BrowserSession
     @Binding var isPinned: Bool
     /// Floating mode draws its own material panel; pinned sits on the window's
-    /// glass. Also shifts the top inset: the floating panel already starts
-    /// below the traffic lights' row, so it has less of it left to clear.
+    /// glass. Also decides where the traffic lights' row goes: the floating
+    /// panel hangs *below* it, so the lights sit just above its top-left
+    /// corner; the pinned panel is flush with the window's top, so it holds
+    /// the row clear inside itself instead.
     let isFloating: Bool
-    /// Whether the traffic lights are currently overlaying the window's corner
-    /// — which is this panel's corner too, whenever it's pinned.
-    let lightsRevealed: Bool
     /// Lets the sidebar's own transient UI keep it on screen.
     let hold: SidebarHold
     /// The in-flight tab drag, owned by the window: a drag that starts on a row
@@ -41,29 +40,20 @@ struct Sidebar: View {
     /// One 21pt control.
     static let actionsWidth: CGFloat = 21
 
-    /// How far the floating panel is held off the top of the window.
-    static let floatingTopPadding: CGFloat = 4
+    /// How far the floating panel is held off the top of the window: clear of
+    /// the traffic lights' row, plus a small gap. The lights appear with the
+    /// panel and sit just above it, so the two read as one piece of chrome
+    /// without the buttons ever being *on* the panel.
+    static let floatingTopPadding: CGFloat = ChromeReveal.lightsRowHeight + 4
 
-    /// Steps out of the traffic lights' way — but only while they're actually
-    /// there.
+    /// The traffic lights' row, held clear at the top of a pinned panel.
     ///
-    /// Holding this space permanently rebuilds, inside the sidebar, exactly the
-    /// dead strip that removing the title bar was meant to reclaim: the lights
-    /// are hidden almost all of the time, so almost all of the time it reserved
-    /// room for nothing.
-    ///
-    /// A pinned panel is the case that needs it, since it's on screen no matter
-    /// what the pointer is doing and the lights can appear right on top of its
-    /// back and forward buttons. A floating panel is nearly always spared by
-    /// arbitration — it holds the corner while the pointer is inside it, so the
-    /// lights don't reveal — and this only covers the moment one is animating
-    /// out as the other fades in.
-    ///
-    /// Measured from the window's top edge, so the floating panel subtracts the
-    /// gap it's already sitting below.
+    /// The pinned panel runs to the window's top edge, so the lights — which
+    /// are always up while it's pinned — would land on its navigation bar
+    /// otherwise. The floating panel already hangs below their row and needs
+    /// nothing.
     private var topInset: CGFloat {
-        guard lightsRevealed else { return 0 }
-        return ChromeReveal.lightsRowHeight - (isFloating ? Sidebar.floatingTopPadding : 0)
+        isFloating ? 0 : ChromeReveal.lightsRowHeight
     }
 
     var body: some View {
@@ -75,9 +65,6 @@ struct Sidebar: View {
             IslandStrip(session: session, hold: hold)
         }
         .padding(.top, topInset)
-        // Matched to the lights' own fade, so the room appears as they do
-        // rather than as a separate jolt just after them.
-        .animation(.easeOut(duration: 0.18), value: topInset)
         .frame(width: Sidebar.width)
     }
 
@@ -1196,7 +1183,7 @@ private struct SidebarNavigationBar: View {
         return HStack(spacing: 2) {
             IconButton(
                 systemName: "chevron.left",
-                isEnabled: tab.canGoBack,
+                isEnabled: tab.canGoBackOrClose,
                 drawsIn: true,
                 help: "Back (⌘[)"
             ) { tab.goBack() }
