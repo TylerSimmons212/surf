@@ -55,12 +55,7 @@ final class ContentBlocker {
 
     /// Alongside the helper binaries rather than inside the bundle, for the same
     /// reason: the bundle is signed and read-only.
-    static let directory: URL = {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        return base.appendingPathComponent("Surf/Filters", isDirectory: true)
-    }()
+    static let directory: URL = SupportDirectory.subdirectory("Filters")
 
     private static var userRulesURL: URL { directory.appendingPathComponent("rules.json") }
 

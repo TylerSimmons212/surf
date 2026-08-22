@@ -148,14 +148,37 @@ public struct PersistedSession: Codable, Equatable, Sendable {
     }
 }
 
+/// Where everything Surf keeps between launches lives: the session, history,
+/// favicons, filter lists, helper binaries, the voice.
+///
+/// `~/Library/Application Support/Surf` normally. `SURF_STATE_DIR` replaces
+/// it wholesale, which is how a verification run gets a Surf of its own —
+/// `FileManager` resolves Application Support from the account, not `HOME`,
+/// so no environment short of this one keeps a second instance out of the
+/// user's tabs.
+public enum SupportDirectory {
+
+    public static let url: URL = {
+        if let override = ProcessInfo.processInfo.environment["SURF_STATE_DIR"],
+           !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        return base.appendingPathComponent("Surf", isDirectory: true)
+    }()
+
+    /// A named subdirectory, e.g. `Favicons`.
+    public static func subdirectory(_ name: String) -> URL {
+        url.appendingPathComponent(name, isDirectory: true)
+    }
+}
+
 /// Where the session file lives, and how it's read and written.
 public enum SessionFile {
 
     public static var url: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Surf", isDirectory: true)
-            .appendingPathComponent("session.json")
+        SupportDirectory.url.appendingPathComponent("session.json")
     }
 
     public static func load(from url: URL = SessionFile.url) -> PersistedSession? {

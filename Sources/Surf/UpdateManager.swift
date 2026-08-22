@@ -24,12 +24,7 @@ final class UpdateManager {
     /// Where managed copies live. Deliberately not inside the app bundle:
     /// that's code-signed and read-only, and writing to it would break the
     /// signature.
-    static let directory: URL = {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        return base.appendingPathComponent("Surf/Components", isDirectory: true)
-    }()
+    static let directory: URL = SupportDirectory.subdirectory("Components")
 
     /// The managed copy of a component, if one is installed and runnable.
     static func installedURL(_ component: Component) -> URL? {
