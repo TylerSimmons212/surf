@@ -181,18 +181,30 @@ echo "Generating the appcast…"
 # tool, and the build stops if it still isn't there afterwards.
 SIGNER="$(find "$ROOT/.build/artifacts" -maxdepth 6 -type f \
     -name sign_update ! -path "*old_dsa*" 2>/dev/null | head -1)"
-if ! grep -q "sparkle:edSignature" "$APPCAST"; then
+# Asked of *this* release's enclosure, not of the file. The appcast keeps
+# older entries, so a whole-file check passes the moment any previous version
+# is signed — which is exactly when a new unsigned entry would slip through.
+enclosure_for() {
+    grep -o "<enclosure url=\"[^\"]*$(basename "$DMG")\"[^>]*>" "$APPCAST" || true
+}
+case "$(enclosure_for)" in
+*sparkle:edSignature=*) ;;
+*)
     ED="$("$SIGNER" "$DMG" | sed -E 's/.*(sparkle:edSignature="[^"]+").*/\1/')"
     if [ -z "$ED" ]; then
         echo "error: couldn't sign the update — is the EdDSA key in the keychain?" >&2
         exit 1
     fi
     sed -i '' "s|<enclosure url=\"\([^\"]*$(basename "$DMG")\)\"|<enclosure url=\"\1\" $ED|" "$APPCAST"
-fi
-if ! grep -q "sparkle:edSignature" "$APPCAST"; then
-    echo "error: the appcast has no signature; every copy of Surf would refuse this update." >&2
+    ;;
+esac
+case "$(enclosure_for)" in
+*sparkle:edSignature=*) ;;
+*)
+    echo "error: the $VERSION entry has no signature; every copy of Surf would refuse it." >&2
     exit 1
-fi
+    ;;
+esac
 
 echo
 echo "Ready: $DMG"
