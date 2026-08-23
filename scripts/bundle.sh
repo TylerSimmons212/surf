@@ -213,6 +213,13 @@ sign() {
         codesign --force --options runtime --timestamp --sign "$IDENTITY" "$@"
     fi
 }
+# The XPC services first, and they are the ones easy to miss: they arrive
+# already signed by the Sparkle project, so `codesign --verify --deep` is
+# perfectly happy with them and Apple is not. A valid signature belonging to
+# somebody else is exactly what notarization exists to reject.
+for XPC in "$SPARKLE/Versions/B/XPCServices/"*.xpc; do
+    [ -e "$XPC" ] && sign "$XPC"
+done
 sign "$SPARKLE/Versions/B/Updater.app"
 sign "$SPARKLE/Versions/B/Autoupdate"
 sign "$SPARKLE"
@@ -226,6 +233,20 @@ else
     # --deep, only to verify: it walks the nested code the plain check skips,
     # which is exactly where a mis-ordered signature would still be hiding.
     codesign --verify --deep --strict --verbose=2 "$APP"
+
+    # And then the question --deep does not ask: is every nested piece signed
+    # by *us*? Sparkle's XPC services ship with the Sparkle project's own
+    # signature, which is valid, which is why the check above waves them
+    # through and notarization refuses them ten minutes into a release. Asking
+    # here turns that into a failure at the point the mistake was made.
+    TEAM="$(echo "$IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\)$/\1/')"
+    while IFS= read -r NESTED; do
+        if ! codesign -dv "$NESTED" 2>&1 | grep -q "TeamIdentifier=$TEAM"; then
+            echo "error: $NESTED is not signed by team $TEAM." >&2
+            echo "       Notarization would reject it. Sign it before the bundle that holds it." >&2
+            exit 1
+        fi
+    done < <(find "$APP" \( -name "*.xpc" -o -name "*.app" -o -name "*.framework" \) -print)
 fi
 
 echo "Built $APP ($VERSION build $BUILD)"
