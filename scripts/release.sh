@@ -65,6 +65,26 @@ fi
 SURF_VERSION="$VERSION" SURF_BUILD="$BUILD" SURF_SIGN_IDENTITY="$IDENTITY" \
     "$ROOT/scripts/bundle.sh" release
 
+# ---- Notarize the app itself ----------------------------------------------
+#
+# Before packaging, not after. The ticket has to be stapled into the .app that
+# goes *into* the image, or the copy someone drags to /Applications carries no
+# proof of its own: it passes today only because Gatekeeper is reading the
+# image's ticket, and an app moved to a machine that is offline has nothing
+# left to show.
+if [ "${SURF_SKIP_NOTARIZE:-}" != "1" ]; then
+    require_notary_profile
+    APPZIP="$(mktemp -d)/Surf.zip"
+    # ditto, not zip: it is the only one that preserves the bundle's symlinks
+    # and extended attributes, and a mangled bundle fails notarization with an
+    # error that says nothing about zip.
+    ditto -c -k --keepParent "$APP" "$APPZIP"
+    echo "Notarizing the app…"
+    xcrun notarytool submit "$APPZIP" --keychain-profile "$PROFILE" --wait
+    xcrun stapler staple "$APP"
+    rm -rf "$(dirname "$APPZIP")"
+fi
+
 # ---- Package ---------------------------------------------------------------
 #
 # A folder with the app and a symlink to /Applications: the drag-to-install
@@ -91,7 +111,8 @@ if [ "${SURF_SKIP_NOTARIZE:-}" = "1" ]; then
     exit 0
 fi
 
-if ! xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1; then
+require_notary_profile() {
+    xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 && return 0
     cat >&2 <<MSG
 
 error: no notary profile named "$PROFILE" in the keychain.
@@ -107,23 +128,16 @@ here or in this repo ever reads it:
 The password is not your Apple ID password. Make one at
 appleid.apple.com › Sign-In and Security › App-Specific Passwords.
 
-The signed but un-notarized image is at:
-  $DMG
 MSG
     exit 1
-fi
+}
 
-echo "Submitting to Apple. This usually takes a few minutes…"
+echo "Notarizing the image…"
 xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
 
 # Stapling writes the ticket into the image, so it validates with no network.
 # Without it, someone opening the download offline is refused.
 xcrun stapler staple "$DMG"
-# And onto the app itself, by the same ticket, so a copy dragged out of the
-# image and moved to another machine still carries its own proof.
-xcrun stapler staple "$APP" || \
-    echo "note: couldn't staple the .app; the image is stapled and is what ships."
-
 # ---- Prove it --------------------------------------------------------------
 echo
 echo "Verifying…"

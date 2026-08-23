@@ -5,6 +5,22 @@ A web browser for macOS, built in Swift + SwiftUI.
 Requires macOS 26 or later — the chrome uses the current SF Symbols effects
 (`rotate`, `drawOn`) with no fallbacks.
 
+## Download
+
+[**Download Surf**](https://github.com/TylerSimmons212/surf/releases/latest) —
+open the `.dmg` and drag Surf to Applications.
+
+It is signed and notarized by Apple, so it opens like any other app. No
+right-clicking, no quarantine to strip, no trip to System Settings to talk it
+into running. macOS 26 or later only; on anything older it will not launch.
+
+To make it your browser: Settings (`⌘,`) has a **Make Surf the Default** button,
+or use System Settings › Desktop & Dock › Default web browser. Either way macOS
+asks you to confirm, and you can change it back the same way.
+
+Nothing Surf knows about you leaves your Mac. History is off unless you turn it
+on, and there is no account, no sync, and no telemetry of any kind.
+
 ## Status
 
 Working tabbed browser: type a search or an address on the home screen and it
