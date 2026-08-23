@@ -533,8 +533,8 @@ last launch is never compiled twice.
 
 ### Privacy
 
-Surf is private by default and keeps no browsing history. Settings (`⌘,`) has
-four switches:
+Surf is private by default and keeps no browsing history. Settings (`⌘,`) has a
+Privacy pane, with four switches at the heart of it:
 
 | Setting | Default | Effect |
 |---|---|---|
@@ -546,6 +546,12 @@ four switches:
 The guarantee is that caches and cookies are independent: clearing where you
 went never signs you out. `PrivacyPolicy` encodes that rule and the tests
 enforce it.
+
+Each switch still explains itself, but behind an ⓘ rather than in a paragraph
+underneath. Printed under every row at once — which is how this started — the
+window grew taller than the screen and became something to scroll past rather
+than read, which is its own way of going unread. Settings is one pane per
+subject now: General, Privacy, Links, Reader, AI.
 
 ### Helpers
 
