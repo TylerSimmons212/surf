@@ -70,7 +70,7 @@ done
 
 # Surf's two faces. `ATSApplicationFontsPath` is what registers them at launch —
 # no CTFontManager call anywhere — which also means they exist only in a built
-# app: `swift run` gets the system font and a wordmark that looks a size off.
+# app: `swift run` gets the system font instead.
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT"/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
 # The licence travels with the fonts; OFL requires it be distributed alongside.
