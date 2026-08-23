@@ -577,6 +577,26 @@ Tests:
 swift test
 ```
 
+### Updating itself
+
+Surf checks one address for one file listing the current version, and installs
+what it finds only after the download's signature verifies against a key built
+into the app. Nothing about the machine goes with the question: system
+profiling is off in the bundle and off on the updater, so the request has no
+query string and says nothing except which file it wants.
+
+That is the only dependency in the project. The rule the rest of the code
+follows is to write it yourself, and the reason this is the exception is that
+replacing a running signed application is a genuinely hard job with a lot of
+ways to leave somebody holding a broken app: verify, stage beside the original,
+swap a bundle whose code is executing, relaunch, survive losing power halfway.
+Sparkle is the implementation the rest of the Mac already trusts with it.
+
+The signing key is not the Developer ID. It is a separate EdDSA pair whose
+private half lives in the keychain of whoever cuts releases, which is what
+makes a tampered download — or one served by something that isn't us —
+refusable by a copy that is already installed.
+
 ## Shipping it to someone else
 
 ```

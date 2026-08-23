@@ -281,12 +281,35 @@ struct GeneralSettingsView: View {
 
             Section {
                 LabeledContent("Version") {
-                    Text(version).foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Text(version).foregroundStyle(.secondary)
+                        if updater.isAvailable {
+                            Button("Check Now") { updater.checkForUpdates() }
+                                .disabled(!updater.canCheck)
+                        }
+                    }
                 }
-                explain("""
-                Surf keeps itself current in the background. There is nothing \
-                to install and nothing to check.
-                """)
+                if updater.isAvailable {
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { updater.checksAutomatically },
+                        set: { updater.checksAutomatically = $0 }
+                    ))
+                    explain("""
+                    Surf asks one address for one file listing the current \
+                    version. It sends nothing about you or your Mac \
+                    along with the question, and an update is only installed \
+                    after its signature is checked against a key built into \
+                    this app.
+                    """)
+                    if let last = updater.lastCheck {
+                        explain("Last checked \(last.formatted(.relative(presentation: .named))).")
+                    }
+                } else {
+                    explain("""
+                    This build can't update itself: updating replaces an app \
+                    bundle, and this one was launched from the command line.
+                    """, isCaveat: true)
+                }
             }
         }
         .formStyle(.grouped)
@@ -300,6 +323,8 @@ struct GeneralSettingsView: View {
     /// remembered: System Settings can change this behind our back, and a
     /// remembered answer would be wrong the moment it did.
     @State private var isDefaultBrowser = false
+
+    private var updater: SoftwareUpdater { SoftwareUpdater.shared }
 
     /// A bare `swift run` has no bundle for LaunchServices to register, so the
     /// button would fail silently. Better to say why.

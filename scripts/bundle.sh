@@ -79,6 +79,20 @@ for ENTRY in \
     fi
 done
 
+# Sparkle, the one framework Surf links. SwiftPM leaves it in the artifacts
+# directory; an app assembled by hand has to carry its own copy, which is what
+# the @executable_path/../Frameworks rpath in Package.swift is looking for.
+FRAMEWORK="$(find "$ROOT/.build/artifacts" -maxdepth 6 -type d \
+    -name Sparkle.framework -path "*macos-arm64*" 2>/dev/null | head -1)"
+if [ -z "$FRAMEWORK" ]; then
+    echo "error: Sparkle.framework not found — run swift build first." >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+# -R preserves the version symlinks a framework is made of; cp -r flattens
+# them and produces a bundle that fails to sign.
+cp -R "$FRAMEWORK" "$APP/Contents/Frameworks/"
+
 # Surf's two faces. `ATSApplicationFontsPath` is what registers them at launch —
 # no CTFontManager call anywhere — which also means they exist only in a built
 # app: `swift run` gets the system font and a wordmark that looks a size off.
@@ -128,6 +142,19 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>Surf adds a recipe's remaining ingredients to your grocery list when you ask it to.</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+    <!-- Sparkle. The public half of the key updates are signed with; the
+         private half lives in the keychain of whoever cuts releases and
+         never leaves it. An update that doesn't verify against this is not
+         installed, which is what makes downloading one over the network an
+         acceptable thing for an app to do at all. -->
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/TylerSimmons212/surf/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>qEWeFK8yNh0gb7jhHr+b/dGZsFgfeanZpzEYLmkOkDM=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <!-- Off, and stated rather than left to the default: this is the flag
+         that would attach a profile of the machine to the feed request. -->
+    <key>SUEnableSystemProfiling</key><false/>
     <!-- Without this Surf is not a browser as far as macOS is concerned: it
          never appears in the default-browser list, and no link ever reaches
          it. The code half is \`onOpenURL\` in SurfApp. -->
@@ -171,13 +198,34 @@ PLIST
 # dlopen of the downloaded Kokoro runtime are both things the hardened runtime
 # stops by default, and a signed build without them is an app whose pages
 # don't run scripts and whose enhanced voice never loads.
+#
+# Inside out, and that ordering is the whole game. A signature covers what is
+# inside the bundle at the time it is made, so signing the app first and its
+# framework second invalidates the app's own seal. Sparkle carries two nested
+# executables of its own — Autoupdate, and the Updater it launches to swap the
+# app while Surf is not running — and each has to be signed before the
+# framework that contains it, which has to be signed before the app.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+sign() {
+    if [ "$IDENTITY" = "-" ]; then
+        codesign --force --sign - "$@" >/dev/null 2>&1
+    else
+        codesign --force --options runtime --timestamp --sign "$IDENTITY" "$@"
+    fi
+}
+sign "$SPARKLE/Versions/B/Updater.app"
+sign "$SPARKLE/Versions/B/Autoupdate"
+sign "$SPARKLE"
+
 if [ "$IDENTITY" = "-" ]; then
     codesign --force --sign - "$APP" >/dev/null 2>&1
 else
     codesign --force --options runtime --timestamp \
         --entitlements "$ROOT/scripts/Surf.entitlements" \
         --sign "$IDENTITY" "$APP"
-    codesign --verify --strict --verbose=2 "$APP"
+    # --deep, only to verify: it walks the nested code the plain check skips,
+    # which is exactly where a mis-ordered signature would still be hiding.
+    codesign --verify --deep --strict --verbose=2 "$APP"
 fi
 
 echo "Built $APP ($VERSION build $BUILD)"

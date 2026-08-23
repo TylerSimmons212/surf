@@ -94,7 +94,8 @@ enum FocusBridge {
     /// A compact Readability: score the containers that hold real paragraph
     /// text, discount the ones that are mostly links, take the best one, and
     /// walk it into the flat block model every lens shares. Hand-rolled
-    /// rather than vendored — Surf carries no dependencies, and the ~10% of
+    /// rather than vendored — Surf takes a dependency only for work it would
+    /// be reckless to do itself, which is Sparkle and nothing else, and the ~10% of
     /// layouts the full library wins on are exactly the ones Focus should
     /// decline gracefully anyway (`FocusArticle.isSubstantial`).
     static var extractorScript: String {

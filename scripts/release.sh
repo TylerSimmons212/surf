@@ -25,6 +25,13 @@ APP="$ROOT/Surf.app"
 DIST="$ROOT/.build/dist"
 DMG="$DIST/Surf-$VERSION.dmg"
 PROFILE="${SURF_NOTARY_PROFILE:-surf-notary}"
+REPO="${SURF_REPO:-TylerSimmons212/surf}"
+
+# Publishing is opt-in. Everything up to it is local and repeatable; this is
+# the step that puts a build in front of other people, and it should not
+# happen because someone re-ran a build script.
+PUBLISH="${SURF_PUBLISH:-0}"
+[ "${2:-}" = "--publish" ] && PUBLISH=1
 
 # The build number has to rise for every release even when the version string
 # repeats; seconds since epoch is monotonic and needs no state file.
@@ -144,7 +151,82 @@ echo "Verifying…"
 xcrun stapler validate "$DMG"
 spctl -a -vvv -t open --context context:primary-signature "$DMG"
 
+# ---- The appcast -----------------------------------------------------------
+#
+# The file Sparkle actually asks for. Every entry is signed with the EdDSA key
+# in the keychain — the private half of SUPublicEDKey in the bundle — so an
+# update that has been tampered with in transit, or served by something that
+# is not us, is refused by the copy already installed.
+APPCAST="$ROOT/appcast.xml"
+GENERATE="$(find "$ROOT/.build/artifacts" -maxdepth 6 -type f \
+    -name generate_appcast 2>/dev/null | head -1)"
+if [ -z "$GENERATE" ]; then
+    echo "error: generate_appcast not found — run swift build first." >&2
+    exit 1
+fi
+
+echo
+echo "Generating the appcast…"
+"$GENERATE" \
+    --download-url-prefix "https://github.com/$REPO/releases/download/v$VERSION/" \
+    --link "https://github.com/$REPO" \
+    -o "$APPCAST" \
+    "$DIST"
+
+# generate_appcast in 2.9.6 writes the entry without an EdDSA signature even
+# with the key sitting in the keychain where its own sign_update finds it. A
+# feed whose enclosure carries no signature is one that every installed copy
+# refuses, so the signature goes in here, produced by Sparkle's own signing
+# tool, and the build stops if it still isn't there afterwards.
+SIGNER="$(find "$ROOT/.build/artifacts" -maxdepth 6 -type f \
+    -name sign_update ! -path "*old_dsa*" 2>/dev/null | head -1)"
+if ! grep -q "sparkle:edSignature" "$APPCAST"; then
+    ED="$("$SIGNER" "$DMG" | sed -E 's/.*(sparkle:edSignature="[^"]+").*/\1/')"
+    if [ -z "$ED" ]; then
+        echo "error: couldn't sign the update — is the EdDSA key in the keychain?" >&2
+        exit 1
+    fi
+    sed -i '' "s|<enclosure url=\"\([^\"]*$(basename "$DMG")\)\"|<enclosure url=\"\1\" $ED|" "$APPCAST"
+fi
+if ! grep -q "sparkle:edSignature" "$APPCAST"; then
+    echo "error: the appcast has no signature; every copy of Surf would refuse this update." >&2
+    exit 1
+fi
+
 echo
 echo "Ready: $DMG"
 echo "sha256: $(shasum -a 256 "$DMG" | cut -d' ' -f1)"
 echo "size:   $(du -h "$DMG" | cut -f1)"
+
+if [ "$PUBLISH" != "1" ]; then
+    cat <<MSG
+
+Nothing has been published. To put this in front of people:
+
+  scripts/release.sh $VERSION --publish
+
+MSG
+    exit 0
+fi
+
+# ---- Publish ---------------------------------------------------------------
+echo
+echo "Creating the GitHub release…"
+gh release create "v$VERSION" "$DMG" --repo "$REPO" \
+    --title "Surf $VERSION" \
+    --notes "Open the .dmg and drag Surf to Applications. Requires macOS 26 or later."
+
+# The appcast has to land on the branch the feed URL points at, or the release
+# exists and nobody is told about it. Loud, because that failure is silent.
+cat <<MSG
+
+The release is up. One step left, and skipping it means nobody's copy of Surf
+ever hears about this version:
+
+  git add appcast.xml && git commit -m "Surf $VERSION" && git push origin main
+
+Then confirm the feed is live:
+
+  curl -s https://raw.githubusercontent.com/$REPO/main/appcast.xml | grep sparkle:version
+
+MSG

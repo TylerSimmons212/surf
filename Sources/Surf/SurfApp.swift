@@ -42,7 +42,16 @@ struct SurfApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 640)
-        .commands { tabCommands }
+        .commands {
+            tabCommands
+            CommandGroup(after: .appInfo) {
+                // Where every Mac app keeps it, directly under About.
+                Button("Check for Updates\u{2026}") {
+                    SoftwareUpdater.shared.checkForUpdates()
+                }
+                .disabled(!SoftwareUpdater.shared.canCheck)
+            }
+        }
 
         Settings {
             SettingsView()
