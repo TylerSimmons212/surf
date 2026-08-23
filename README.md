@@ -354,6 +354,24 @@ apart the moment someone switches islands with a panel open, and a page carrying
 one island's identity into another island's list is the confusion `openSplit`
 already refuses to create.
 
+Links from other applications are the case this is really for. `bundle.sh`
+declares `http` and `https` in `CFBundleURLTypes`, which is what puts Surf in the
+default-browser list and what makes macOS hand it links at all; the app delegate
+receives them and `ExternalLinks` routes them. Settings has the switch for
+whether they arrive as a mini window or straight as a tab, and the button that
+asks macOS to make Surf the default — a request, not a change, since the system
+puts up its own confirmation.
+
+Only a real bundle can be a browser. Run from `swift run` there is nothing for
+Launch Services to point at, so Settings says so rather than offering a button
+that would fail quietly.
+
+`ExternalLinks` holds a queue and `BrowserSession` a static `current`, both for
+the same reason: the app delegate is the one place in Surf with no owner to hand
+it a session. Every other AppKit entry point is reached from a view or a tab
+that already has one. macOS delivers these URLs with no context, and can deliver
+them before there is a session at all — opening a link is one of the ways the
+app gets launched.
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content

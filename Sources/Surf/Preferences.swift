@@ -15,6 +15,9 @@ enum PreferenceKeys {
     static let appearanceMode = "appearanceMode"
     static let synthesizeTheme = "synthesizeTheme"
     static let blockAds = "blockAds"
+    /// Whether a link arriving from another application opens in a mini window
+    /// rather than straight into a tab.
+    static let externalLinksInMiniWindow = "externalLinksInMiniWindow"
     /// Which CLI powers AI features: an `AICLIProvider` raw value, or empty
     /// for "the first one found". Per-feature keys (toggles, model picks) are
     /// derived on `AIFeature` — they're per feature and per provider, and a
@@ -58,6 +61,10 @@ extension PrivacySettings {
             // the user never asked to make; restyling redraws a page its
             // authors did draw. Only one of those needs asking first.
             PreferenceKeys.blockAds: true,
+            // On, because a link from another app is a question rather than a
+            // decision, and because it has no island context — a tab has to
+            // live in one, and a mini window can defer that until you keep it.
+            PreferenceKeys.externalLinksInMiniWindow: true,
             // Empty: whichever CLI is found first. A fresh machine has
             // neither, and the AI tab explains itself either way.
             PreferenceKeys.aiProvider: "",
@@ -115,6 +122,14 @@ enum AIPreferences {
             stored, options: status.modelOptions, descriptions: status.modelDescriptions
         ) else { return nil }
         return (provider, model)
+    }
+}
+
+enum LinkPreferences {
+    /// Whether a link handed over by another application opens in a mini
+    /// window rather than as a tab.
+    static var externalUseMiniWindow: Bool {
+        UserDefaults.standard.bool(forKey: PreferenceKeys.externalLinksInMiniWindow)
     }
 }
 

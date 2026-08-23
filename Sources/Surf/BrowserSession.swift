@@ -173,7 +173,21 @@ final class BrowserSession {
             // for.
             MainActor.assumeIsolated { self.saveNow(blocking: true) }
         }
+
+        // Last, once there is something worth handing a link to.
+        Self.current = self
+        ExternalLinks.flushPending()
     }
+
+    /// The session, for the one caller that cannot be handed it.
+    ///
+    /// Everything else in Surf reaches a session through a view or a tab that
+    /// already holds one. `NSApplicationDelegate` does not: macOS hands it URLs
+    /// from other applications with no context at all, and the app delegate is
+    /// built by SwiftUI before `SurfApp` has made anything. Weak, and never
+    /// read from inside the session itself — this exists for `ExternalLinks`
+    /// and should stay that way.
+    private(set) static weak var current: BrowserSession?
 
     /// Honours "Reopen tabs on launch" — with it off, the file isn't even read.
     private static func restorableSession() -> PersistedSession? {

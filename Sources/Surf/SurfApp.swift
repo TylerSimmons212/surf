@@ -463,6 +463,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         UpdateManager.shared.checkIfDue()
     }
 
+    /// Links from other applications, once Surf is the default browser.
+    ///
+    /// This can arrive before `applicationDidFinishLaunching` — opening a link
+    /// is one of the ways the app gets launched — so `ExternalLinks` queues
+    /// anything that turns up before there is a session to give it to.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        ExternalLinks.receive(urls)
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
