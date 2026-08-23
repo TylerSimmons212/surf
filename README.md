@@ -58,6 +58,16 @@ is injected only when Focus is entered, so only pages you focus pay for it.
 The menu item works on any page and lets extraction be the judge; when a page
 has no article to give, Focus says so instead of rendering the attempt.
 
+Escape leaves Focus, and it cancels an armed screenshot pick first — the thing
+started last goes first. The key is caught by the same local `NSEvent` monitor
+that handles ⌃⇥, not by a SwiftUI shortcut: Escape is a focus key, so whichever
+view is first responder eats it before a menu or a hidden button would see it,
+and the web view in particular never passes a plain key down on. The monitor
+runs before the responder chain and consumes the key only when it did
+something; an Escape aimed at a text field (the address palette, the find bar)
+or at a mini window is left alone, so those close themselves and the reader
+stays.
+
 A recipe page gets its own lens. Recipe SEO guarantees the page carries
 `schema.org/Recipe` JSON-LD, and the lens renders what that data says the
 recipe *is* — not the essay above it. Ingredients check off as you gather
