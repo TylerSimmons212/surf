@@ -11,5 +11,6 @@ One file per user-facing feature. Each says what it is, how a user reaches it, h
 | [devtools.md](devtools.md) — the attached inspector panel | `SURF_DEVTOOLS=<pane>` | `testpages/styles-demo.html`, `console-demo.html` |
 | [media-and-popout.md](media-and-popout.md) — now-playing, theater, pop-out | human | `testpages/media-demo.html` |
 | [menu-bar.md](menu-bar.md) — the nine menus, dynamic tab and island lists | Accessibility API | any |
+| [mini-window.md](mini-window.md) — the floating panel for uncommitted links | context menu + `CGEvent` | `testpages/context-demo.html` |
 
 Not yet mapped (human-driven, no log hook): downloads, element capture/screenshots, address palette. Split panes and island switching have no log hook either, but both are reachable through the menu bar, which `menu-bar.md` drives. Map them before claiming a proof that touches them.

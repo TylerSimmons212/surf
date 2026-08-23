@@ -303,6 +303,57 @@ bytes for that reason. The listener spends most of what was left, which is why
 its reasoning lives in Swift comments around the string rather than in the
 string — comments in there ship to every site you visit.
 
+### Mini windows
+
+A link you have not committed to opens in a floating panel with the page in it
+and one button that keeps it: **Open in Surf**. Most links are read once and
+thrown away, and a browser that turns every one of them into a tab makes you
+tidy up after reading. Escape dismisses; the page never reaches the sidebar.
+
+The page fills the panel and the controls float on top of it as glass: closing
+at the top left, where a window's close button belongs, copy and **Open in
+Surf** at the top right. `.regular` glass rather than the `.clear` the pop-out
+uses: that one floats on moving video, where frosting would fog the picture,
+and this floats on a page. Copying shows a tick for a moment, because an action
+whose whole effect is invisible otherwise looks like one that failed.
+
+The top strip of the panel drags the window. A borderless panel has no title bar
+to grab, and `isMovableByWindowBackground` cannot help because the web view
+covers the background and takes the drag first, so the grab area is an explicit
+view above the page and below the buttons. It costs the page that strip — an
+AppKit view takes every click inside its frame — which is the same bargain a
+titled window makes, and the reason the strip is only as tall as the buttons.
+
+Closing puts you back in the window the link came from. Dismissing a mini window
+means "never mind", and never mind means going back rather than landing wherever
+AppKit decides to raise next.
+
+With one island the button reads **Open in Surf**, because there is nothing to
+choose and the useful thing to say is which app this floating window belongs to.
+With more than one it reads **Open in <island>** and grows a caret listing the
+others — the same rule as the tab and island menus, where the UI is a map of
+what exists rather than a fixed grid.
+
+Choosing a different island is not a re-filing. The tab's cookie jar came from
+the island it was browsing in, so carrying the live view across would put a page
+that browsed as one identity into another's list; instead the page is fetched
+again as the island you picked. That reload is the feature — "open this in Work"
+means load it as Work — and it is why the two cases are different code rather
+than one `append` with a different argument.
+
+The panel holds a real `Tab` — same cookie jar, same content rules, same theme,
+same page agent — that its island simply does not list. That absence is the
+whole mechanism. There is no ephemeral-tab flag for the rest of the app to
+remember to check: the sidebar draws `island.tabs`, and this is not in it.
+Promoting is `append`, dismissing is `teardown`, and neither reloads the page.
+
+It browses in the island that was current when it opened, and says which one in
+its chrome, because that is whose logins the page is seeing. Promotion files the
+tab back into *that* island rather than whatever is current now — the two come
+apart the moment someone switches islands with a panel open, and a page carrying
+one island's identity into another island's list is the confusion `openSplit`
+already refuses to create.
+
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content
@@ -705,9 +756,11 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
-- History and a back/forward menu on long-press
+- Registering as a browser, so links from other apps arrive — and land in a
+  mini window, which is the case that feature exists for
+- A back/forward menu on long-press
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
-- Tab reordering by drag, and ⌘⇧T to reopen a closed tab
-- Bookmarks
+- Moving a tab between islands, which nothing can do yet — it is what "Move to
+  Island" and "Open Link in New Island" are both waiting on
 - Cross-origin iframes, which are a separate document nothing in the page can
   reach into — theming one means running the whole pass inside it

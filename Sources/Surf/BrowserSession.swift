@@ -937,6 +937,50 @@ final class BrowserSession {
         return tab
     }
 
+    /// A tab in the current island that the island does not list.
+    ///
+    /// It has the island's cookie jar, its content rules and its theme — a tab
+    /// in every respect except that nothing draws it, because the sidebar draws
+    /// `island.tabs` and this is not in it. That absence is what makes a mini
+    /// window's page ephemeral: there is no flag to check and nothing to clean
+    /// up if it is thrown away.
+    func makeUnlistedTab() -> Tab {
+        let tab = currentIsland.makeTab()
+        tab.session = self
+        return tab
+    }
+
+    /// Files a previously unlisted tab into the island it was built against.
+    ///
+    /// The island is passed in rather than taken from `currentIsland`: someone
+    /// can switch islands while a mini window is open, and the tab's cookie jar
+    /// came from the island it was made in. Putting it anywhere else would be a
+    /// page browsing as one identity sitting in another identity's list.
+    func adopt(_ tab: Tab, into island: Island) {
+        island.append(tab)
+        if island !== currentIsland { select(island: island) }
+        setSelection(to: tab.id)
+        scheduleSave()
+    }
+
+    /// Opens a URL as a new tab in a given island, and goes there.
+    ///
+    /// This is how a mini window promotes into an island other than the one it
+    /// was browsing in. The page is fetched again rather than carried across,
+    /// and that is the point, not a shortcoming: the whole meaning of "open
+    /// this in Work" is to load it as Work, with Work's cookies. Moving the
+    /// live view would keep the identity it already had and only change which
+    /// list it appeared in.
+    func openTab(in island: Island, url: String) {
+        let tab = island.makeTab()
+        tab.session = self
+        island.append(tab)
+        if island !== currentIsland { select(island: island) }
+        setSelection(to: tab.id)
+        tab.submit(url)
+        scheduleSave()
+    }
+
     func close(_ tab: Tab) {
         guard let island = island(holding: tab), let index = island.index(of: tab) else { return }
 

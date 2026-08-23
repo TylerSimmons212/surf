@@ -497,6 +497,10 @@ final class Tab: NSObject, Identifiable {
                 else { return }
                 session.openSplit(with: opened, on: .trailing)
             })
+            items.append(ActionMenuItem("Open Link in Mini Window") { [weak self] in
+                guard let session = self?.session else { return }
+                MiniWindowController.shared.open(url, from: session)
+            })
             items.append(ActionMenuItem("Copy Link") { Tab.copyToPasteboard(link) })
         }
 
