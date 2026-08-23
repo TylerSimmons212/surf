@@ -57,6 +57,10 @@ struct VideoLensView: View {
             guard case .active = phase else { return }
             revealChrome()
         }
+        // Addressed to the staged element rather than the ranking's current
+        // pick, for the same reason the buttons are: a hover-preview can take
+        // the ranking mid-show, and the arrows must move the video on stage.
+        .transportKeys(skip: { tab.stagedSkip(by: $0) }, reveal: revealChrome)
         .animation(.easeOut(duration: 0.25), value: isChromeVisible)
         .onDisappear { chromeTimer?.cancel() }
     }

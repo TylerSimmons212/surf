@@ -87,7 +87,45 @@ top rides Surf's transport — one set of controls on every site, driven by
 the same agent methods as the now-playing strip — with chrome that fades
 when the pointer stops. The offer follows the evidence: the classifier for
 pages that are plainly a player, and live media state for embed hosts whose
-video lives in a frame the detector can't see.
+video lives in a frame the detector can't see. In either stage the arrow keys
+scrub five seconds, which is what every player on the web does; the cost is
+that the overlay holds keyboard focus while a stage is up, so the site's own
+shortcuts stop answering until you leave.
+
+A site can also have a lens of its own. The article, recipe and video lenses
+read whatever page they are handed; a site lens knows one site's data and one
+site's player, and in exchange it can offer what no general reader can.
+YouTube is the first. `⌘⇧F` on youtube.com replaces the site with a search
+field, a search with a grid of Surf's own cards, and a card with the video —
+its chapters listed beside the transport, its subtitle tracks and its speeds
+in it. There is no feed, which is the point: the front page of a focused
+YouTube is a field and nothing else.
+
+The grid is built from `ytInitialData` rather than from the DOM, because the
+DOM does not have it. A fresh results page holds one rendered result and
+loads the rest as you scroll, while the page's own payload carries the whole
+first page at once. Every judgement about that payload is Swift's, and tested
+against captures from the real site, because the shapes are filthy in
+specific ways: a live stream has no duration and counts viewers instead of
+views, an unaired premiere has neither, and the field that is `simpleText` on
+one video is `runs` on the next.
+
+Searching is a page load and so is playing, which makes this the one lens
+that expects to navigate. It survives its own loads and drops when the
+address leaves the site. Swapping the video in place without a load would be
+quicker and is wrong: the payloads are published once per document, so the
+second video would wear the first one's chapters.
+
+The stage pins `#movie_player` rather than the `<video>` inside it, and that
+is the whole difference between this and the generic theater. YouTube draws
+its subtitles into a sibling of the video's parent instead of into a
+`<track>`, so a stage that promotes the video alone lights the captions out
+along with everything else. Pinning the player keeps them, placed by the only
+code that knows where they go. The wrapper between the two has to be given a
+size on the way past — it is `position:relative` with no dimensions of its
+own and its only child is absolutely positioned, so its height collapses to
+zero, and a video sized against zero is a black screen with the subtitles
+still playing over it.
 
 The reader can also read aloud. Listen starts a narration with lyric mode:
 the sentence being spoken carries a faint wash, the word being spoken is lit
@@ -501,6 +539,7 @@ feature — and never an unverified download.
 | `⌘[` / `⌘]` | Back / forward |
 | `⌘R` | Reload |
 | `⌘⇧F` | Enter / leave Focus |
+| `←` / `→` | Scrub five seconds, on either video stage |
 | `⌘S` | Pin / unpin the sidebar |
 | `⌘,` | Settings |
 

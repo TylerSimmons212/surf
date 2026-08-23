@@ -54,6 +54,15 @@ public enum PageProtocol {
         case mediaUnstage = "media.unstage"
         case findCount = "find.count"
         case findClearSelection = "find.clearSelection"
+        // The YouTube lens reads `ytInitialData` and drives `#movie_player`,
+        // both of which are the site's own globals — so this domain lives in
+        // the page world, and is installed on demand rather than resident:
+        // only the tab that focuses YouTube ever pays for it.
+        case youtubePage = "youtube.page"
+        case youtubeStage = "youtube.stage"
+        case youtubeUnstage = "youtube.unstage"
+        case youtubeRate = "youtube.rate"
+        case youtubeCaptions = "youtube.captions"
 
         /// Which world the method has to run in. Getting this wrong is the
         /// failure that looks like the page simply not answering, so it is
@@ -68,7 +77,9 @@ public enum PageProtocol {
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,
                  .mediaStage, .mediaUnstage,
-                 .findCount, .findClearSelection:
+                 .findCount, .findClearSelection,
+                 .youtubePage, .youtubeStage, .youtubeUnstage,
+                 .youtubeRate, .youtubeCaptions:
                 return .page
             }
         }

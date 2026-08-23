@@ -14,8 +14,10 @@ struct FocusOverlay: View {
         ZStack {
             // Opaque, deliberately: the page underneath is exactly what the
             // reader exists to quiet down. Except for the video stage, where
-            // the page underneath *is* the show.
-            if !tab.focusVideoStage {
+            // the page underneath *is* the show — and for a site lens, which
+            // owns its own ground because it is opaque on two of its three
+            // screens and transparent on the third.
+            if !tab.focusVideoStage, tab.youtubeLens == nil {
                 Color(nsColor: .textBackgroundColor)
             }
 
@@ -40,6 +42,12 @@ struct FocusOverlay: View {
                 .padding(40)
 
             case .active:
+                // A site lens first: it is chosen by address rather than by
+                // classification, and on a site Surf knows it is always the
+                // better answer than what extraction would have made.
+                if let lens = tab.youtubeLens {
+                    YouTubeLensView(tab: tab, lens: lens)
+                } else
                 // Theater mode: the page's own video is the stage, so the
                 // overlay must be transparent chrome, not a reader.
                 if tab.focusVideoStage {
@@ -585,9 +593,15 @@ struct FocusPill: View {
             HStack(spacing: 6) {
                 // The pill says which lens it's offering: a recipe page gets
                 // the fork and a video page the screen, not a promise of prose.
-                Image(systemName: pillIcon)
-                    .font(.system(size: 11, weight: .semibold))
-                Text("Focus")
+                // A site lens says the site, because "Focus" on youtube.com
+                // promises a reader and delivers something else entirely.
+                if tab.focusOfferSite == .youtube {
+                    YouTubeMark(size: 12)
+                } else {
+                    Image(systemName: pillIcon)
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                Text(tab.focusOfferSite?.displayName ?? "Focus")
                     .font(Typeface.figtree(size: 12, weight: 600))
             }
             .padding(.horizontal, 12)
