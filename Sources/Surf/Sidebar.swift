@@ -1012,7 +1012,13 @@ final class TabDragContext {
     func noteMoved() { didMove = true }
 
     /// The group being dragged by its header, if that's what this drag is.
-    @ObservationIgnored private(set) var draggedGroupID: UUID?
+    ///
+    /// Observed, not ignored: the section header hides itself while it is the
+    /// one being carried, and this is the only thing it reads to know that.
+    /// Ignored, the header was never told the drag had ended and stayed at
+    /// opacity zero — a section that had just been moved came back with no
+    /// title, while its rows (which key off `draggedID`) reappeared.
+    private(set) var draggedGroupID: UUID?
 
     var isDraggingGroup: Bool { draggedGroupID != nil }
 
