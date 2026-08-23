@@ -68,22 +68,6 @@ public enum ContentRuleJSON {
         }
     }
 
-    /// The allowlist — what "pause on this site" actually is.
-    ///
-    /// `ignore-previous-rules` only cancels rules that precede it *within the
-    /// same compiled list*; it cannot reach across into another one. So these
-    /// can't live in a list of their own and must be appended to every list they
-    /// are meant to switch off, which is why they're generated separately from
-    /// the blocks rather than alongside them.
-    public static func allowlistRules(for sites: Set<String>) -> [String] {
-        sites.sorted().map { site in
-            """
-            {"trigger":{"url-filter":".*","if-domain":["*\(escapeJSON(site))"]},\
-            "action":{"type":"ignore-previous-rules"}}
-            """
-        }
-    }
-
     /// Matches a domain and everything under it, at any path.
     ///
     /// `([^:/?#]*\.)?` is the converter's own spelling of Adblock Plus's `||`,
@@ -95,34 +79,9 @@ public enum ContentRuleJSON {
         return "^https?://([^:/?#]*\\\\.)?\(escaped)"
     }
 
-    static func escapeJSON(_ value: String) -> String {
-        value.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-    }
-
     /// A complete rule list from a set of rule objects, or nil when there are
     /// none — WebKit rejects an empty list rather than compiling to a no-op.
     public static func list(_ rules: [String]) -> String? {
         rules.isEmpty ? nil : "[\(rules.joined(separator: ","))]"
-    }
-
-    /// Appends rules to an already-encoded list.
-    ///
-    /// Done as text rather than by decoding nine megabytes of EasyList into
-    /// model objects and re-encoding it: the payload is a JSON array, the rules
-    /// go at the end, and every byte the publisher sent should reach WebKit's
-    /// compiler exactly as sent.
-    public static func appending(_ rules: [String], to list: Data) -> Data {
-        guard !rules.isEmpty else { return list }
-        guard let text = String(data: list, encoding: .utf8) else { return list }
-
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("["), trimmed.hasSuffix("]") else { return list }
-
-        let body = trimmed.dropFirst().dropLast().trimmingCharacters(in: .whitespacesAndNewlines)
-        let joined = body.isEmpty
-            ? rules.joined(separator: ",")
-            : body + "," + rules.joined(separator: ",")
-        return Data("[\(joined)]".utf8)
     }
 }

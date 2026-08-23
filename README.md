@@ -534,12 +534,29 @@ the ad on it.
 Two lists are compiled rather than one, and the split is about time. EasyList is
 around forty-six thousand rules and compiling it costs seconds; your own rules
 are a handful and compile instantly. Sharing a list would mean recompiling
-EasyList to add one line, and the Block button would feel broken. The allowlist
-has to be in both, because `ignore-previous-rules` only cancels rules earlier in
-its own list and can't reach across into another — which is why pausing a site
-is the one action that pays the slow compile. Each compiled list is cached under
-a hash of the rules it was built from, so a list that hasn't changed since the
-last launch is never compiled twice.
+EasyList to add one line, and the Block button would feel broken. Each compiled
+list is cached under a hash of the rules it was built from, so a list that
+hasn't changed since the last launch is never compiled twice.
+
+Pausing a site compiles nothing. It used to: the exception lived inside the
+compiled lists as `ignore-previous-rules`, so flipping the switch meant
+rebuilding EasyList — tens of seconds, during which the page reloaded under the
+old rules and the switch appeared to do nothing. Flip it twice and the compiles
+queued behind each other. Now the decision is made per tab instead. Rule lists
+attach to a tab's content controller, so a paused site is a tab that simply has
+none: the lists and the counting script come off, the page reloads plain, and
+nothing is looking for anything — which is also why the shield says "off" rather
+than "paused", and shows no count. Resuming puts them back and reloads. The tab
+re-decides on every main-frame navigation, before the load's first request, so
+moving from a paused site to a blocked one in the same tab gets the right lists.
+Flipping the switch now reloads in a few milliseconds, and the compiled
+exception could not have stayed even in the background: lists already in memory
+carried it, so resuming would re-attach lists that didn't block until the next
+compile landed.
+
+The one shape this can't express is a window a page opened, which shares its
+opener's content controller: if the two sit on different sites and one is
+paused, whichever decided last decides for both.
 
 ### Privacy
 

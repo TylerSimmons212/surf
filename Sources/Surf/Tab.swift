@@ -225,8 +225,9 @@ final class Tab: NSObject, Identifiable {
 
         blockingObserver = NotificationCenter.default.addObserver(
             forName: .surfBlockingChanged, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.blockingRulesChanged() }
+        ) { [weak self] note in
+            let flipped = note.userInfo?[ContentBlocker.enabledChangedKey] as? Bool ?? false
+            MainActor.assumeIsolated { self?.blockingRulesChanged(settingFlipped: flipped) }
         }
 
         // Narration and a playing video are two voices in one room. The page
@@ -294,7 +295,9 @@ final class Tab: NSObject, Identifiable {
         // Before anything can be loaded into it. A view that starts a page load
         // and gains its rules afterwards has already let the first wave of
         // requests through, which is the wave the ads are in.
-        ContentBlocker.shared.apply(to: config)
+        blockingHost = nil
+        ContentBlocker.shared.apply(to: config, host: nil)
+        isBlocking = ContentBlocker.shared.isActive(for: nil)
 
         installAgents()
         reinstallUserScripts()
@@ -633,7 +636,7 @@ final class Tab: NSObject, Identifiable {
         PageScripts.install(
             on: live.configuration.userContentController,
             themePreflight: target,
-            blocking: ContentBlocker.isEnabled,
+            blocking: isBlocking,
             devTools: devToolsBridge?.isAttached == true
         )
         live.underPageBackgroundColor = target.map {
@@ -691,10 +694,46 @@ final class Tab: NSObject, Identifiable {
     /// setting that needs a reload to be believed reads as broken. The requests
     /// a page already made are already made — what changes is everything from
     /// here on, and a reload makes it total.
-    private func blockingRulesChanged() {
+    ///
+    /// When it was a switch — the setting, or this site's pause — and the
+    /// page's own state actually changed, the reload is done here, but only
+    /// for a tab someone is looking at. The shield's count was gathered under
+    /// the old rules and is emptied first; the reload is what fills it again —
+    /// or leaves it empty, which is the point. A background tab keeps its page
+    /// and picks the rules up on its next load; a sleeping one has no page to
+    /// reload, and waking it for this would cost a web content process each.
+    private func blockingRulesChanged(settingFlipped: Bool) {
         guard isLive else { return }
-        ContentBlocker.shared.apply(to: webView.configuration)
+        let changed = applyBlockingRules(for: blockingHost)
+        guard settingFlipped, changed else { return }
+        blockLog = BlockLog()
+        if isVisible || MiniWindowController.shared.tab === self { reload() }
+    }
+
+    /// Whether this tab's view currently holds the rule lists. The pause is
+    /// per site and the tab moves between sites, so this is re-decided on
+    /// every main-frame navigation and the answer is kept to know when it
+    /// moved.
+    @ObservationIgnored private var isBlocking = true
+
+    /// The host the lists were last decided for: the navigation's
+    /// destination, from the moment it is allowed. Not `webView.url`, which
+    /// still names the old page while the new one is provisional — and a
+    /// rule update landing in that gap would otherwise re-decide for the
+    /// page being left, stripping the lists from the one arriving.
+    @ObservationIgnored private var blockingHost: String?
+
+    /// Gives the view the lists a page on `host` should have, and the scripts
+    /// that go with them. Returns whether that was a change.
+    @discardableResult
+    private func applyBlockingRules(for host: String?) -> Bool {
+        let blocker = ContentBlocker.shared
+        let active = blocker.isActive(for: host)
+        blocker.apply(to: webView.configuration, host: host)
+        let changed = active != isBlocking
+        isBlocking = active
         reinstallUserScripts()
+        return changed
     }
 
     /// The page has changed under us — content revealed on scroll, a lazily
@@ -2058,6 +2097,29 @@ extension Tab: WKNavigationDelegate {
             debugLog("closed a window whose only load failed")
             session?.close(self)
         }
+    }
+
+    /// The one place a tab learns where it is going before any of the
+    /// page's requests go out: the lists for the destination are settled here,
+    /// so a tab leaving a paused site is blocked from its first subresource
+    /// and one arriving at a paused site isn't. `didStartProvisionalNavigation`
+    /// is too late — the main resource is already in flight by then.
+    ///
+    /// The download answer is what WebKit gives when no delegate answers at
+    /// all, kept so adding this changes nothing else.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences
+    ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let host = navigationAction.request.url?.host {
+            blockingHost = host
+            if ContentBlocker.shared.isActive(for: host) != isBlocking {
+                applyBlockingRules(for: host)
+            }
+        }
+        return (navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
 
     /// A navigation that turns out to be a download — an `<a download>` link,
