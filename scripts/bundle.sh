@@ -7,6 +7,17 @@ CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/Surf.app"
 
+# What a release stamps. A local build has no reason to care, and the default
+# keeps `./scripts/bundle.sh` doing exactly what it always did.
+VERSION="${SURF_VERSION:-0.1}"
+BUILD="${SURF_BUILD:-1}"
+
+# "-" is an ad-hoc signature, which is all a local build needs: unsigned
+# binaries can't spawn WebKit's XPC services, and nothing else here checks.
+# A release passes a Developer ID, and that is the one case that also needs
+# the hardened runtime — notarization refuses a bundle without it.
+IDENTITY="${SURF_SIGN_IDENTITY:--}"
+
 swift build -c "$CONFIG" --package-path "$ROOT"
 BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)/Surf"
 
@@ -96,7 +107,7 @@ else
     echo "warning: actool not found (needs Xcode) — the app will use a generic icon." >&2
 fi
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -108,19 +119,65 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIconName</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>ATSApplicationFontsPath</key><string>Fonts</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>Surf adds a recipe's remaining ingredients to your grocery list when you ask it to.</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+    <!-- Without this Surf is not a browser as far as macOS is concerned: it
+         never appears in the default-browser list, and no link ever reaches
+         it. The code half is \`onOpenURL\` in SurfApp. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>Web site URL</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>http</string><string>https</string></array>
+        </dict>
+    </array>
+    <!-- Alternate, not Owner: being the default browser is about http and
+         https. Taking every .html file on the disk away from whatever opens
+         them today is a separate decision, and not one an install should make
+         on someone's behalf. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>HTML document</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>public.html</string><string>public.xhtml</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Web location</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.url</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
 
-# Ad-hoc signature: unsigned binaries can't spawn WebKit's XPC services.
-codesign --force --sign - "$APP" >/dev/null 2>&1
+# Signing. Ad-hoc for a local build; a real identity gets the hardened runtime
+# and a timestamp, because those are what notarization checks for.
+#
+# The entitlements are not optional extras. WebKit's JavaScript JIT and the
+# dlopen of the downloaded Kokoro runtime are both things the hardened runtime
+# stops by default, and a signed build without them is an app whose pages
+# don't run scripts and whose enhanced voice never loads.
+if [ "$IDENTITY" = "-" ]; then
+    codesign --force --sign - "$APP" >/dev/null 2>&1
+else
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ROOT/scripts/Surf.entitlements" \
+        --sign "$IDENTITY" "$APP"
+    codesign --verify --strict --verbose=2 "$APP"
+fi
 
-echo "Built $APP"
+echo "Built $APP ($VERSION build $BUILD)"

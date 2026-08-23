@@ -1,3 +1,4 @@
+import AppKit
 import SurfCore
 import SwiftUI
 
@@ -257,6 +258,28 @@ struct GeneralSettingsView: View {
             }
 
             Section {
+                LabeledContent("Default browser") {
+                    if isDefaultBrowser {
+                        Text("Surf").foregroundStyle(.secondary)
+                    } else {
+                        Button("Make Surf the Default") { makeDefaultBrowser() }
+                    }
+                }
+                explain("""
+                Links clicked anywhere on the Mac open here. macOS will ask \
+                you to confirm, and you can change it back in System Settings \
+                whenever you like.
+                """)
+                if !isBundled {
+                    explain("""
+                    This build can't be the default browser: it was launched \
+                    from the command line rather than from Surf.app, and macOS \
+                    only offers apps it has registered.
+                    """, isCaveat: true)
+                }
+            }
+
+            Section {
                 LabeledContent("Version") {
                     Text(version).foregroundStyle(.secondary)
                 }
@@ -268,6 +291,44 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .fixedSize(horizontal: false, vertical: true)
+        .onAppear { refreshDefaultBrowser() }
+    }
+
+    /// Whether macOS currently opens links with us.
+    ///
+    /// Asked of LaunchServices each time the window appears rather than
+    /// remembered: System Settings can change this behind our back, and a
+    /// remembered answer would be wrong the moment it did.
+    @State private var isDefaultBrowser = false
+
+    /// A bare `swift run` has no bundle for LaunchServices to register, so the
+    /// button would fail silently. Better to say why.
+    private var isBundled: Bool {
+        Bundle.main.bundleIdentifier != nil
+            && Bundle.main.bundleURL.pathExtension == "app"
+    }
+
+    private func refreshDefaultBrowser() {
+        guard let probe = URL(string: "https://example.com"),
+              let handler = NSWorkspace.shared.urlForApplication(toOpen: probe)
+        else {
+            isDefaultBrowser = false
+            return
+        }
+        isDefaultBrowser =
+            handler.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
+    }
+
+    private func makeDefaultBrowser() {
+        // Both schemes. macOS tracks them separately, and a browser that owns
+        // http but not https is one that misses most of the links on the web.
+        for scheme in ["http", "https"] {
+            NSWorkspace.shared.setDefaultApplication(
+                at: Bundle.main.bundleURL, toOpenURLsWithScheme: scheme
+            ) { _ in
+                Task { @MainActor in refreshDefaultBrowser() }
+            }
+        }
     }
 
     private func explain(_ text: String, isCaveat: Bool = false) -> some View {

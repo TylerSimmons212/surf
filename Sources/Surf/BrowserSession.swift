@@ -887,6 +887,26 @@ final class BrowserSession {
         scheduleSave()
     }
 
+    /// An address handed to Surf by the rest of the Mac.
+    ///
+    /// A link clicked in Mail, `open -a Surf`, anything routed through
+    /// LaunchServices once Surf is the default browser. Reached from
+    /// `onOpenURL`, which is SwiftUI's spelling of the delegate callback and
+    /// only fires for the schemes the bundle declares it handles.
+    func openFromOutside(_ url: URL) {
+        // A launch caused by the link itself arrives at a single untouched
+        // home tab. Using that tab rather than opening beside it is the
+        // difference between clicking a link in Mail and getting one tab or
+        // getting two, one of them empty.
+        let target = tabs.count == 1 && selectedTab.mode == .home
+            ? selectedTab
+            : addTab()
+        target.submit(url.absoluteString)
+        scheduleSave()
+        // The click happened in another app, so Surf is behind it.
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     // MARK: - Lifecycle
 
     @discardableResult

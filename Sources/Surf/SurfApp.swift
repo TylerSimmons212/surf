@@ -35,6 +35,10 @@ struct SurfApp: App {
         WindowGroup("Surf") {
             ContentView(session: session)
                 .frame(minWidth: 720, minHeight: 480)
+                // Only fires for schemes `CFBundleURLTypes` claims, which is
+                // why being the default browser is a bundle change and a code
+                // change rather than either one alone.
+                .onOpenURL { session.openFromOutside($0) }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 640)

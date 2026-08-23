@@ -561,6 +561,47 @@ Tests:
 swift test
 ```
 
+## Shipping it to someone else
+
+```
+scripts/release.sh 0.2.0
+```
+
+That produces a signed, notarized `Surf-0.2.0.dmg`, which is the only kind of
+download another Mac will open without a fight. All three parts of that matter
+and none of them are optional. An ad-hoc signature means nothing off the
+machine that made it. The hardened runtime is what notarization requires. And
+notarization is what Gatekeeper checks: since Catalina an un-notarized download
+is refused, and since Sequoia the right-click-Open escape hatch is gone, so the
+person you sent it to would have to walk into System Settings to run it at all.
+
+The hardened runtime takes two things away that Surf needs back, which is what
+`scripts/Surf.entitlements` is for. WebKit's JavaScript JIT writes executable
+memory, and a signed Surf without `allow-jit` loads pages that never run a
+script. The enhanced voice is a dylib downloaded at runtime and signed by
+somebody else, and library validation refuses it unless it is switched off, so
+Kokoro would install and never load.
+
+Two things are needed once, on the machine that builds releases. A Developer ID
+Application certificate, which needs a paid Apple Developer Program membership
+(Xcode › Settings › Accounts › Manage Certificates). And a notary credential,
+which the release script reads by name from the keychain and never handles
+itself:
+
+```
+xcrun notarytool store-credentials "surf-notary" --apple-id "you@example.com" --team-id "YOURTEAMID" --password "app-specific-password"
+```
+
+The password there is an app-specific one from appleid.apple.com, not the Apple
+ID password.
+
+Whoever you send the image to drags Surf to Applications and opens it. Nothing
+else: no quarantine to strip, no security pane to visit. Surf declares itself a
+handler for `http` and `https`, so it appears in System Settings › Desktop &
+Dock › Default web browser, and Settings › General has a button that asks macOS
+the same question. It is `LSMinimumSystemVersion 26.0`, so a Mac on Sequoia or
+older can't run it at all.
+
 ## Layout
 
 Pure logic lives in `SurfCore` with no AppKit or WebKit imports, which is what
