@@ -57,6 +57,27 @@ MSG
 fi
 echo "Signing as: $IDENTITY"
 
+require_notary_profile() {
+    xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 && return 0
+    cat >&2 <<MSG
+
+error: no notary profile named "$PROFILE" in the keychain.
+
+Create it once. It stores the credential in your keychain, and nothing else
+here or in this repo ever reads it:
+
+  xcrun notarytool store-credentials "$PROFILE" \\
+      --apple-id "<your Apple ID>" \\
+      --team-id "$(echo "$IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\)/\1/')" \\
+      --password "<an app-specific password>"
+
+The password is not your Apple ID password. Make one at
+appleid.apple.com › Sign-In and Security › App-Specific Passwords.
+
+MSG
+    exit 1
+}
+
 # ---- The gates -------------------------------------------------------------
 #
 # A release is the worst possible moment to find out the JavaScript contract
@@ -118,26 +139,6 @@ if [ "${SURF_SKIP_NOTARIZE:-}" = "1" ]; then
     exit 0
 fi
 
-require_notary_profile() {
-    xcrun notarytool history --keychain-profile "$PROFILE" >/dev/null 2>&1 && return 0
-    cat >&2 <<MSG
-
-error: no notary profile named "$PROFILE" in the keychain.
-
-Create it once. It stores the credential in your keychain, and nothing else
-here or in this repo ever reads it:
-
-  xcrun notarytool store-credentials "$PROFILE" \\
-      --apple-id "<your Apple ID>" \\
-      --team-id "$(echo "$IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\)/\1/')" \\
-      --password "<an app-specific password>"
-
-The password is not your Apple ID password. Make one at
-appleid.apple.com › Sign-In and Security › App-Specific Passwords.
-
-MSG
-    exit 1
-}
 
 echo "Notarizing the image…"
 xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
