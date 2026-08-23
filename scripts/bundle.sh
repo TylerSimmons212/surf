@@ -240,12 +240,19 @@ else
     # through and notarization refuses them ten minutes into a release. Asking
     # here turns that into a failure at the point the mistake was made.
     TEAM="$(echo "$IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\)$/\1/')"
+    # Captured, not piped into `grep -q`. Under `pipefail` that pipeline
+    # reports a failure whenever grep exits on its match before codesign has
+    # finished writing — codesign takes a SIGPIPE, and a correctly signed
+    # bundle gets reported as an unsigned one, intermittently and with no
+    # pattern to it.
     while IFS= read -r NESTED; do
-        if ! codesign -dv "$NESTED" 2>&1 | grep -q "TeamIdentifier=$TEAM"; then
-            echo "error: $NESTED is not signed by team $TEAM." >&2
-            echo "       Notarization would reject it. Sign it before the bundle that holds it." >&2
-            exit 1
-        fi
+        INFO="$(codesign -dv "$NESTED" 2>&1 || true)"
+        case "$INFO" in
+        *"TeamIdentifier=$TEAM"*) continue ;;
+        esac
+        echo "error: $NESTED is not signed by team $TEAM." >&2
+        echo "       Notarization would reject it. Sign it before the bundle that holds it." >&2
+        exit 1
     done < <(find "$APP" \( -name "*.xpc" -o -name "*.app" -o -name "*.framework" \) -print)
 fi
 
