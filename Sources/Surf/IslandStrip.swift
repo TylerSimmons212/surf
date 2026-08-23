@@ -26,6 +26,11 @@ struct IslandStrip: View {
                     deleteTitle: session.deleteTitle(for: island),
                     onSelect: { session.select(island: island) },
                     onEdit: { session.beginEditing(island) },
+                    onNewTab: {
+                        session.select(island: island)
+                        session.openNewTabAndPrompt()
+                    },
+                    onNewIsland: { session.createIslandAndEdit() },
                     onDelete: island.isHome ? nil : { session.requestDeleteIsland(island) }
                 )
             }
@@ -65,6 +70,10 @@ private struct IslandChip: View {
     let deleteTitle: String
     let onSelect: () -> Void
     let onEdit: () -> Void
+    /// Closures, not session reads: the strip is allowed to *do* things to an
+    /// island without becoming an observer of one. See the note on `IslandStrip`.
+    let onNewTab: () -> Void
+    let onNewIsland: () -> Void
     let onDelete: (() -> Void)?
 
     @State private var isHovering = false
@@ -115,7 +124,18 @@ private struct IslandChip: View {
         .onHover { isHovering = $0 }
         .help(helpText)
         .contextMenu {
-            Button("Rename…", action: onEdit)
+            Button("New Tab in This Island", action: onNewTab)
+
+            // "Edit Island…", matching the menu bar. The same editor sets the
+            // name, the symbol, the tint and what the island keeps — so
+            // "Rename…" undersold it in one of the two places it is offered,
+            // and named the same action two different things.
+            Button("Edit Island…", action: onEdit)
+
+            Divider()
+
+            Button("New Island", action: onNewIsland)
+
             if let onDelete {
                 Divider()
                 // Named for what it actually does. Deleting an island that owns

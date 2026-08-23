@@ -272,6 +272,37 @@ isolated world that is invisible either way; in the page world a fixed name is
 a reliable way for a site to tell which browser it is being read in. Dev tools'
 instances keep fixed names, which is only defensible because they exist solely
 while a panel is attached — a page being inspected is already being watched.
+
+### The page's context menu
+
+Right-clicking a page gets WebKit's own menu with Surf's items on the front of
+it: open a link in a new tab or a split, copy a link or an image address, pop a
+video out, enter Focus, take a screenshot, block the site's domain. WebKit's
+half is kept rather than replaced — Look Up, Services, spelling and the editing
+verbs are all things Surf would only reimplement worse.
+
+Knowing what was right-clicked is the hard part, and the reason is a process
+boundary. The DOM `contextmenu` event is dispatched in the web process; the menu
+is built in the UI process, synchronously, inside `willOpenMenu`. There is no
+round trip to be had at the moment it is needed, so the page pushes what was
+under the pointer on every right-click and Surf holds the answer before the
+question. Measured on this machine the push lands 20–60ms ahead of the menu.
+
+It is still a race, so it is arranged to fail safe. The held hit is cleared when
+the menu closes, which means a payload can only ever describe the click its menu
+belongs to; losing the race costs items, never accuracy. The listener never
+calls `preventDefault`, so a lost race is still a working stock menu.
+
+The selection is only reported when the click lands inside it. Without that
+check a right-click on an image offers to search for whatever sentence was
+highlighted somewhere else on the page, because the selection outlives the click
+that made it.
+
+`page.js` is injected into every page and `check-js.sh` budgets it at 3000
+bytes for that reason. The listener spends most of what was left, which is why
+its reasoning lives in Swift comments around the string rather than in the
+string — comments in there ship to every site you visit.
+
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content

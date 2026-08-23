@@ -874,7 +874,14 @@ final class BrowserSession {
             select(existing)
             return
         }
+        openInNewTab(sticker)
+    }
 
+    /// Opens a sticker into a new tab whether or not one is already on it —
+    /// "another one of these", where `open(_:)` means "take me to this" and
+    /// reuses the tab it finds.
+    @discardableResult
+    func openInNewTab(_ sticker: Sticker) -> Tab {
         let island = currentIsland
         let tab = island.makeTab()
         tab.session = self
@@ -885,6 +892,23 @@ final class BrowserSession {
         setSelection(to: tab.id)
         tab.submit(sticker.url)
         scheduleSave()
+        return tab
+    }
+
+    /// The sticker's page beside the one already on screen.
+    func openInSplit(_ sticker: Sticker) {
+        if let existing = tab(for: sticker) {
+            openSplit(with: existing, on: .trailing)
+            return
+        }
+        // `openInNewTab` selects what it makes, which would leave the split
+        // being asked for between the new tab and itself — a no-op. The anchor
+        // is the page that was on screen when the user asked, which is the one
+        // they mean by "beside".
+        let anchor = selectedTabID
+        let tab = openInNewTab(sticker)
+        setSelection(to: anchor)
+        openSplit(with: tab, on: .trailing)
     }
 
     // MARK: - Lifecycle
@@ -993,6 +1017,42 @@ final class BrowserSession {
 
     func closeSelectedTab() { close(selectedTab) }
 
+    /// A second tab on the same page.
+    ///
+    /// A fresh tab pointed at the same address rather than a copy of the web
+    /// view: WebKit has no public way to clone one, and the back/forward list
+    /// behind this page is not something anyone asked to duplicate.
+    @discardableResult
+    func duplicate(_ tab: Tab) -> Tab? {
+        guard let url = tab.currentURL, !url.isEmpty else { return nil }
+        let copy = addTab()
+        copy.submit(url)
+        return copy
+    }
+
+    /// The tabs below this one in the sidebar's order.
+    func tabsBelow(_ tab: Tab) -> [Tab] {
+        guard let island = island(holding: tab), let index = island.index(of: tab) else { return [] }
+        return Array(island.tabs.dropFirst(index + 1))
+    }
+
+    /// Close everything in this island except `tab`.
+    ///
+    /// The survivor is passed in rather than assumed to be the selection: the
+    /// menu that asks for this hangs off a row, and the row you right-click is
+    /// often not the row you are looking at.
+    ///
+    /// `island.tabs` is an array, so the loop iterates a snapshot taken before
+    /// the first close — which is what makes closing while iterating safe here.
+    func closeTabs(besides tab: Tab) {
+        guard let island = island(holding: tab) else { return }
+        for other in island.tabs where other.id != tab.id { close(other) }
+    }
+
+    func closeTabsBelow(_ tab: Tab) {
+        for other in tabsBelow(tab) { close(other) }
+    }
+
     /// Back's exit from a page-opened tab: close it and land on its opener.
     ///
     /// Selection moves first, while both tabs are live — `close` on a
@@ -1030,16 +1090,27 @@ final class BrowserSession {
     /// Focus follows the drop: you just put this tab there, so the address bar,
     /// find bar and title should be about it rather than about the page it
     /// landed next to.
-    func openSplit(with tab: Tab, on side: SplitPanes.Side) {
-        // Same island only. The pair is drawn from the list the sidebar is
-        // showing, and a pane holding a tab from another island would be a page
-        // on screen with no row anywhere to close it from — plus two cookie
-        // jars side by side with nothing saying which is which.
-        guard currentIsland.contains(tab) else { return }
+    /// The tab that would end up on the *other* side of a split opened on
+    /// `side` — the current pane there, or the selection when nothing is split.
+    private func splitPartner(for side: SplitPanes.Side) -> Tab.ID {
+        split.map { $0.tab(on: side == .leading ? .trailing : .leading) } ?? selectedTabID
+    }
 
-        let other = split.map { $0.tab(on: side == .leading ? .trailing : .leading) }
-            ?? selectedTabID
-        guard tab.id != other else { return }
+    /// Whether `openSplit(with:on:)` would actually do anything. The same
+    /// question that method's own guards answer, asked ahead of time so a menu
+    /// can grey the item out rather than offer a no-op.
+    ///
+    /// Same island only. The pair is drawn from the list the sidebar is
+    /// showing, and a pane holding a tab from another island would be a page on
+    /// screen with no row anywhere to close it from — plus two cookie jars side
+    /// by side with nothing saying which is which.
+    func canOpenSplit(with tab: Tab, on side: SplitPanes.Side = .trailing) -> Bool {
+        currentIsland.contains(tab) && tab.id != splitPartner(for: side)
+    }
+
+    func openSplit(with tab: Tab, on side: SplitPanes.Side) {
+        guard canOpenSplit(with: tab, on: side) else { return }
+        let other = splitPartner(for: side)
 
         let panes = side == .leading
             ? SplitPanes(leading: tab.id, trailing: other)

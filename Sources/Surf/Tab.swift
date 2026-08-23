@@ -264,7 +264,9 @@ final class Tab: NSObject, Identifiable {
         }
         providedConfiguration = nil
 
-        let created = WKWebView(frame: .zero, configuration: config)
+        let created = SurfWebView(frame: .zero, configuration: config)
+        // Lazy, so `self` is fully formed by the time this runs.
+        created.tab = self
         created.allowsBackForwardNavigationGestures = true
         created.allowsMagnification = true
         created.navigationDelegate = self
@@ -442,6 +444,122 @@ final class Tab: NSObject, Identifiable {
     // MARK: - The page agent
 
     /// Claims both worlds' channels and injects the agent into every page.
+    // MARK: - Context menu
+
+    /// What the page last reported was under the pointer at a right-click, and
+    /// when it said so. Cleared when the menu closes, so a payload can only
+    /// ever describe the click the open menu belongs to — losing the race
+    /// costs items, never accuracy.
+    @ObservationIgnored private(set) var contextHit: ContextHit?
+    @ObservationIgnored private var contextHitAt: Date?
+
+    private func handleContextEvent(_ event: String, _ data: Data) {
+        guard event == "hit",
+              let decoded = try? JSONDecoder().decode(
+                  PageProtocol.Event<ContextHit>.self, from: data
+              )
+        else { return }
+        contextHit = decoded.payload
+        contextHitAt = Date()
+        debugLog("context: hit \(decoded.payload.summary)")
+    }
+
+    /// WebKit is about to show its page menu; Surf's items go on the front of
+    /// it.
+    ///
+    /// WebKit's own items are kept rather than replaced. Look Up, Services,
+    /// spelling and the editing verbs are all things Surf would otherwise have
+    /// to reimplement worse, and a page menu that lost them to gain "Enter
+    /// Focus" would be a bad trade.
+    func willOpenContextMenu(_ menu: NSMenu, with event: NSEvent) {
+        let age = contextHitAt.map { Date().timeIntervalSince($0) * 1000 }
+        debugLog(
+            "context: menu — "
+                + (age.map { String(format: "hit %.0fms old", $0) } ?? "no hit in hand")
+        )
+
+        // No hit means the push lost its race with the menu. The stock menu is
+        // still correct, just smaller — which is the whole reason this degrades
+        // by dropping items rather than by guessing at them.
+        guard let hit = contextHit else { return }
+        // In a text field WebKit's menu is already the right one, and Surf has
+        // nothing to add to typing.
+        guard !hit.editable else { return }
+
+        var items: [NSMenuItem] = []
+
+        if let link = hit.linkURL, let url = URL(string: link) {
+            items.append(ActionMenuItem("Open Link in New Tab") { [weak self] in
+                self?.openInNewTab(url, select: false)
+            })
+            items.append(ActionMenuItem("Open Link in Split") { [weak self] in
+                guard let self, let session, let opened = openInNewTab(url, select: false)
+                else { return }
+                session.openSplit(with: opened, on: .trailing)
+            })
+            items.append(ActionMenuItem("Copy Link") { Tab.copyToPasteboard(link) })
+        }
+
+        if let image = hit.imageURL {
+            if let url = URL(string: image) {
+                items.append(ActionMenuItem("Open Image in New Tab") { [weak self] in
+                    self?.openInNewTab(url, select: false)
+                })
+            }
+            // The address, not the pixels — WebKit's own "Copy Image" already
+            // covers the pixels, and the two are different things to want.
+            items.append(ActionMenuItem("Copy Image Address") { Tab.copyToPasteboard(image) })
+        }
+
+        // Gated on the media report rather than on what was clicked: pop-out
+        // stages the element that report found, and offering it for a video
+        // the report hasn't seen would be an item that does nothing.
+        if hit.mediaIsVideo, media?.hasVideo == true {
+            items.append(ActionMenuItem("Pop Out Video") { [weak self] in
+                guard let self else { return }
+                PopOutController.shared.toggle(self)
+            })
+        }
+
+        if !items.isEmpty { items.append(.separator()) }
+
+        items.append(ActionMenuItem(isFocusActive ? "Leave Focus" : "Enter Focus") {
+            [weak self] in self?.toggleFocus()
+        })
+        items.append(ActionMenuItem("Screenshot Area…") { [weak self] in
+            self?.beginAreaCapture()
+        })
+
+        if let host = currentURL.flatMap(URL.init(string:))?.host,
+           !ContentBlocker.shared.isUserBlocked(domain: host) {
+            items.append(ActionMenuItem("Block Content From \(host)") {
+                ContentBlocker.shared.block(domain: host)
+            })
+        }
+
+        for (offset, item) in items.enumerated() { menu.insertItem(item, at: offset) }
+        menu.insertItem(.separator(), at: items.count)
+    }
+
+    /// A new tab in this tab's own island, on `url`.
+    @discardableResult
+    private func openInNewTab(_ url: URL, select: Bool) -> Tab? {
+        guard let session else { return nil }
+        let opened = session.addTab(select: select)
+        opened.submit(url.absoluteString)
+        return opened
+    }
+
+    private static func copyToPasteboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    func contextMenuDidClose() {
+        contextHit = nil
+        contextHitAt = nil
+    }
+
     private func installAgents() {
         let controller = webView.configuration.userContentController
         // Both agent channels, and the events each world reports on its own.
@@ -455,6 +573,8 @@ final class Tab: NSObject, Identifiable {
                 if header.event == "mutated" { pageDidMutate() }
             case "capture":
                 handleCaptureEvent(header.event, data)
+            case "context":
+                handleContextEvent(header.event, data)
             default:
                 break
             }

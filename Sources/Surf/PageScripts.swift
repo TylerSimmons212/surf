@@ -6,6 +6,22 @@ import WebKit
 /// particular. Isolated world, like everything else that only observes.
 enum PageDomain {
 
+    /// The always-resident page domain.
+    ///
+    /// It also carries the right-click listener, which has to be resident:
+    /// `capture.js` is injected lazily on first use, and a menu that only
+    /// worked after you had already taken a screenshot would be worse than
+    /// none. The listener pushes what was under the pointer rather than
+    /// waiting to be asked, because WebKit builds its context menu in the UI
+    /// process, synchronously, while the DOM event is dispatched over here —
+    /// there is no round trip to be had at the moment the menu is built.
+    ///
+    /// It never calls `preventDefault`: WebKit's own menu still opens exactly
+    /// as it would have, and this only says what it opened on.
+    ///
+    /// The comments here are terse on purpose. This string is injected into
+    /// every page Surf loads and is budgeted by `check-js.sh` for that reason,
+    /// so the reasoning lives out here where it ships to nobody.
     static var domainScript: String {
         """
         (function () {
@@ -55,6 +71,26 @@ enum PageDomain {
             Array.from(document.querySelectorAll('link[rel~="icon" i]'))
               .map((l) => ({ href: l.href || '', sizes: l.getAttribute('sizes') || '' }))
           );
+          // Right-click target, pushed. See the note above `domainScript`.
+          window.addEventListener('contextmenu', (event) => {
+            const el = document.elementFromPoint(event.clientX, event.clientY);
+            const near = (sel) => (el && el.closest ? el.closest(sel) : null);
+            const link = near('a[href]');
+            const image = near('img');
+            const media = near('video, audio');
+            const sel = window.getSelection();
+            const inSel = sel && !sel.isCollapsed && el && sel.containsNode(el, true);
+            agent.emit('context', 'hit', {
+              linkURL: link ? link.href : null,
+              linkText: link ? (link.textContent || '').trim().slice(0, 120) : null,
+              imageURL: image ? (image.currentSrc || image.src || null) : null,
+              mediaURL: media ? (media.currentSrc || media.src || null) : null,
+              mediaIsVideo: media ? media.tagName === 'VIDEO' : false,
+              selection: inSel ? String(sel).trim().slice(0, 500) : '',
+              editable: !!near('input, textarea, [contenteditable=""], [contenteditable="true"]')
+            });
+          }, { capture: true, passive: true });
+
         })();
         """
     }
