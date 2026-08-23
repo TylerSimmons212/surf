@@ -490,19 +490,41 @@ feature — and never an unverified download.
 
 ### Shortcuts
 
+The menu bar is the nine menus a Mac browser is expected to have, with Islands
+standing where Bookmarks would be — which is the honest arrangement, since a
+sticker belongs to an island rather than to the app.
+
 | | |
 |---|---|
 | `⌘T` | New tab |
 | `⌘W` | Close tab (the last one is replaced by a fresh tab) |
+| `⌘⇧T` | Reopen closed tab |
 | `⌘⇧]` / `⌘⇧[` | Next / previous tab |
 | `⌘1`–`⌘8` | Select tab by position |
-| `⌘9` | Select last tab |
+| `⌘9` | Select the last tab, once there are more than eight of them |
 | `⌘L` | Open the floating address bar |
 | `⌘[` / `⌘]` | Back / forward |
 | `⌘R` | Reload |
+| `⌘⇧D` | Split with the next tab, and close the split again |
 | `⌘⇧F` | Enter / leave Focus |
-| `⌘S` | Pin / unpin the sidebar |
+| `⌘⇧L` | Pin / unpin the sidebar |
+| `⌘D` | Add a sticker |
+| `⌥⌘←` / `⌥⌘→` | Previous / next island |
+| `⌥⌘1`–`⌥⌘9` | Select island |
 | `⌘,` | Settings |
+
+Three of these moved off keys they had no business holding. The sidebar was on
+`⌘S`, which is Save everywhere else on the Mac; the split was on `⌘D`, which is
+bookmarking everywhere else, and now carries Surf's equivalent. Swapping the
+split's two sides was on `⌘⌥D` — the system's Dock-hiding shortcut, which never
+reaches an app — so it is menu-only rather than given a third awkward chord.
+
+There is no `⌘N`, and no New Window item for it to belong to. Surf is one
+window by construction: a single session, and every tab owns one `WKWebView`,
+which can live in one view hierarchy at a time. The stock item SwiftUI adds to
+a `WindowGroup` would open a second window over the same tabs, and the two
+would then steal each page from each other whenever either showed it. Closing
+the window quits the app, which is the other half of the same fact.
 
 ## Run
 
