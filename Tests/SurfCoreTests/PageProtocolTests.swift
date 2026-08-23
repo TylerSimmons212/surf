@@ -93,14 +93,17 @@ struct PageProtocolTests {
 
     /// Media and find both need the site's own `navigator` and selection, so
     /// they cannot run anywhere but the page world; the theme cannot run in
-    /// it. Asserting the split here means a new method can't quietly pick the
-    /// wrong one.
+    /// it. YouTube joins them for the same reason: `ytInitialData` and the
+    /// player's own methods are the site's globals, and an isolated world
+    /// has neither. Asserting the split here means a new method can't
+    /// quietly pick the wrong one.
     @Test("Worlds are assigned by domain, not case by case")
     func worldsFollowDomain() {
+        let pageWorldDomains: Set<Substring> = ["media", "find", "youtube"]
         for method in PageProtocol.Method.allCases {
             let domain = method.rawValue.split(separator: ".")[0]
             let expected: PageProtocol.World =
-                (domain == "media" || domain == "find") ? .page : .isolated
+                pageWorldDomains.contains(domain) ? .page : .isolated
             #expect(method.world == expected, "\(method.rawValue) is in the wrong world")
         }
     }

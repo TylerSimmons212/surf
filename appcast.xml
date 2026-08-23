@@ -1,0 +1,16 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Surf</title>
+        <item>
+            <title>0.3.0</title>
+            <pubDate>Sun, 23 Aug 2026 03:47:34 -0700</pubDate>
+            <link>https://github.com/TylerSimmons212/surf</link>
+            <sparkle:version>1787481937</sparkle:version>
+            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.3.0/Surf-0.3.0.dmg" length="8995120" type="application/octet-stream" sparkle:edSignature="+bhYjCl+XlLk29omFrxjVyii1Cwe6Bhbmnq0iNdIjCHvqodFoIaE4tPC0wA0vnXSdX5hlKuEITCR3trrplDRAw=="/>
+        </item>
+    </channel>
+</rss>

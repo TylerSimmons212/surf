@@ -5,6 +5,22 @@ A web browser for macOS, built in Swift + SwiftUI.
 Requires macOS 26 or later — the chrome uses the current SF Symbols effects
 (`rotate`, `drawOn`) with no fallbacks.
 
+## Download
+
+[**Download Surf**](https://github.com/TylerSimmons212/surf/releases/latest) —
+open the `.dmg` and drag Surf to Applications.
+
+It is signed and notarized by Apple, so it opens like any other app. No
+right-clicking, no quarantine to strip, no trip to System Settings to talk it
+into running. macOS 26 or later only; on anything older it will not launch.
+
+To make it your browser: Settings (`⌘,`) has a **Make Surf the Default** button,
+or use System Settings › Desktop & Dock › Default web browser. Either way macOS
+asks you to confirm, and you can change it back the same way.
+
+Nothing Surf knows about you leaves your Mac. History is off unless you turn it
+on, and there is no account, no sync, and no telemetry of any kind.
+
 ## Status
 
 Working tabbed browser: type a search or an address on the home screen and it
@@ -97,7 +113,45 @@ top rides Surf's transport — one set of controls on every site, driven by
 the same agent methods as the now-playing strip — with chrome that fades
 when the pointer stops. The offer follows the evidence: the classifier for
 pages that are plainly a player, and live media state for embed hosts whose
-video lives in a frame the detector can't see.
+video lives in a frame the detector can't see. In either stage the arrow keys
+scrub five seconds, which is what every player on the web does; the cost is
+that the overlay holds keyboard focus while a stage is up, so the site's own
+shortcuts stop answering until you leave.
+
+A site can also have a lens of its own. The article, recipe and video lenses
+read whatever page they are handed; a site lens knows one site's data and one
+site's player, and in exchange it can offer what no general reader can.
+YouTube is the first. `⌘⇧F` on youtube.com replaces the site with a search
+field, a search with a grid of Surf's own cards, and a card with the video —
+its chapters listed beside the transport, its subtitle tracks and its speeds
+in it. There is no feed, which is the point: the front page of a focused
+YouTube is a field and nothing else.
+
+The grid is built from `ytInitialData` rather than from the DOM, because the
+DOM does not have it. A fresh results page holds one rendered result and
+loads the rest as you scroll, while the page's own payload carries the whole
+first page at once. Every judgement about that payload is Swift's, and tested
+against captures from the real site, because the shapes are filthy in
+specific ways: a live stream has no duration and counts viewers instead of
+views, an unaired premiere has neither, and the field that is `simpleText` on
+one video is `runs` on the next.
+
+Searching is a page load and so is playing, which makes this the one lens
+that expects to navigate. It survives its own loads and drops when the
+address leaves the site. Swapping the video in place without a load would be
+quicker and is wrong: the payloads are published once per document, so the
+second video would wear the first one's chapters.
+
+The stage pins `#movie_player` rather than the `<video>` inside it, and that
+is the whole difference between this and the generic theater. YouTube draws
+its subtitles into a sibling of the video's parent instead of into a
+`<track>`, so a stage that promotes the video alone lights the captions out
+along with everything else. Pinning the player keeps them, placed by the only
+code that knows where they go. The wrapper between the two has to be given a
+size on the way past — it is `position:relative` with no dimensions of its
+own and its only child is absolutely positioned, so its height collapses to
+zero, and a video sized against zero is a black screen with the subtitles
+still playing over it.
 
 The reader can also read aloud. Listen starts a narration with lyric mode:
 the sentence being spoken carries a faint wash, the word being spoken is lit
@@ -366,22 +420,21 @@ already refuses to create.
 
 Links from other applications are the case this is really for. `bundle.sh`
 declares `http` and `https` in `CFBundleURLTypes`, which is what puts Surf in the
-default-browser list and what makes macOS hand it links at all; the app delegate
-receives them and `ExternalLinks` routes them. Settings has the switch for
-whether they arrive as a mini window or straight as a tab, and the button that
-asks macOS to make Surf the default — a request, not a change, since the system
-puts up its own confirmation.
+default-browser list and what makes macOS hand it links at all. They arrive
+through `onOpenURL` on the window's content — SwiftUI's spelling of the
+delegate callback, and the better one here, because the view that receives
+them already holds the session; an app-delegate method would have needed a
+static way back to it. Settings › Links has the switch for whether they arrive
+as a mini window or straight as a tab, and the button that asks macOS to make
+Surf the default — a request, not a change, since the system puts up its own
+confirmation. When a link is what launched the app and the choice is a tab, it
+goes into the single untouched home tab rather than beside it: one tab from a
+click in Mail, not two with one of them empty.
 
 Only a real bundle can be a browser. Run from `swift run` there is nothing for
 Launch Services to point at, so Settings says so rather than offering a button
 that would fail quietly.
 
-`ExternalLinks` holds a queue and `BrowserSession` a static `current`, both for
-the same reason: the app delegate is the one place in Surf with no owner to hand
-it a session. Every other AppKit entry point is reached from a view or a tab
-that already has one. macOS delivers these URLs with no context, and can deliver
-them before there is a session at all — opening a link is one of the ways the
-app gets launched.
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content
@@ -640,6 +693,7 @@ sticker belongs to an island rather than to the app.
 | `⌘R` | Reload |
 | `⌘⇧D` | Split with the next tab, and close the split again |
 | `⌘⇧F` | Enter / leave Focus |
+| `←` / `→` | Scrub five seconds, on either video stage |
 | `⌘⇧L` | Pin / unpin the sidebar |
 | `⌘D` | Add a sticker |
 | `⌥⌘←` / `⌥⌘→` | Previous / next island |
@@ -676,6 +730,67 @@ Tests:
 ```
 swift test
 ```
+
+### Updating itself
+
+Surf checks one address for one file listing the current version, and installs
+what it finds only after the download's signature verifies against a key built
+into the app. Nothing about the machine goes with the question: system
+profiling is off in the bundle and off on the updater, so the request has no
+query string and says nothing except which file it wants.
+
+That is the only dependency in the project. The rule the rest of the code
+follows is to write it yourself, and the reason this is the exception is that
+replacing a running signed application is a genuinely hard job with a lot of
+ways to leave somebody holding a broken app: verify, stage beside the original,
+swap a bundle whose code is executing, relaunch, survive losing power halfway.
+Sparkle is the implementation the rest of the Mac already trusts with it.
+
+The signing key is not the Developer ID. It is a separate EdDSA pair whose
+private half lives in the keychain of whoever cuts releases, which is what
+makes a tampered download — or one served by something that isn't us —
+refusable by a copy that is already installed.
+
+## Shipping it to someone else
+
+```
+scripts/release.sh 0.2.0
+```
+
+That produces a signed, notarized `Surf-0.2.0.dmg`, which is the only kind of
+download another Mac will open without a fight. All three parts of that matter
+and none of them are optional. An ad-hoc signature means nothing off the
+machine that made it. The hardened runtime is what notarization requires. And
+notarization is what Gatekeeper checks: since Catalina an un-notarized download
+is refused, and since Sequoia the right-click-Open escape hatch is gone, so the
+person you sent it to would have to walk into System Settings to run it at all.
+
+The hardened runtime takes two things away that Surf needs back, which is what
+`scripts/Surf.entitlements` is for. WebKit's JavaScript JIT writes executable
+memory, and a signed Surf without `allow-jit` loads pages that never run a
+script. The enhanced voice is a dylib downloaded at runtime and signed by
+somebody else, and library validation refuses it unless it is switched off, so
+Kokoro would install and never load.
+
+Two things are needed once, on the machine that builds releases. A Developer ID
+Application certificate, which needs a paid Apple Developer Program membership
+(Xcode › Settings › Accounts › Manage Certificates). And a notary credential,
+which the release script reads by name from the keychain and never handles
+itself:
+
+```
+xcrun notarytool store-credentials "surf-notary" --apple-id "you@example.com" --team-id "YOURTEAMID" --password "app-specific-password"
+```
+
+The password there is an app-specific one from appleid.apple.com, not the Apple
+ID password.
+
+Whoever you send the image to drags Surf to Applications and opens it. Nothing
+else: no quarantine to strip, no security pane to visit. Surf declares itself a
+handler for `http` and `https`, so it appears in System Settings › Desktop &
+Dock › Default web browser, and Settings › Links has a button that asks macOS
+the same question. It is `LSMinimumSystemVersion 26.0`, so a Mac on Sequoia or
+older can't run it at all.
 
 ## Layout
 

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- WebKit's JavaScript JIT writes executable memory. Without this a
+         signed Surf launches and then fails to run script on any page. -->
+    <key>com.apple.security.cs.allow-jit</key><true/>
+
+    <!-- Surf dlopens libsherpa-onnx-c-api.dylib, downloaded at runtime into
+         Application Support and signed by someone who is not us. Library
+         validation refuses a dylib signed by another team, so the enhanced
+         voice would install and never load. -->
+    <key>com.apple.security.cs.disable-library-validation</key><true/>
+</dict>
+</plist>

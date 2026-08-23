@@ -35,10 +35,23 @@ struct SurfApp: App {
         WindowGroup("Surf") {
             ContentView(session: session)
                 .frame(minWidth: 720, minHeight: 480)
+                // Only fires for schemes `CFBundleURLTypes` claims, which is
+                // why being the default browser is a bundle change and a code
+                // change rather than either one alone.
+                .onOpenURL { session.openFromOutside($0) }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 980, height: 640)
-        .commands { tabCommands }
+        .commands {
+            tabCommands
+            CommandGroup(after: .appInfo) {
+                // Where every Mac app keeps it, directly under About.
+                Button("Check for Updates\u{2026}") {
+                    SoftwareUpdater.shared.checkForUpdates()
+                }
+                .disabled(!SoftwareUpdater.shared.canCheck)
+            }
+        }
 
         Settings {
             SettingsView()
@@ -461,15 +474,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Returns immediately unless a week has passed, and never blocks
         // anything the user can see.
         UpdateManager.shared.checkIfDue()
-    }
-
-    /// Links from other applications, once Surf is the default browser.
-    ///
-    /// This can arrive before `applicationDidFinishLaunching` — opening a link
-    /// is one of the ways the app gets launched — so `ExternalLinks` queues
-    /// anything that turns up before there is a session to give it to.
-    func application(_ application: NSApplication, open urls: [URL]) {
-        ExternalLinks.receive(urls)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -1,3 +1,4 @@
+import AppKit
 import SurfCore
 import SwiftUI
 
@@ -114,6 +115,8 @@ struct GeneralSettingsView: View {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1"
     }
 
+    private var updater: SoftwareUpdater { SoftwareUpdater.shared }
+
     var body: some View {
         Form {
             Section("Appearance") {
@@ -166,14 +169,41 @@ struct GeneralSettingsView: View {
                 }
             }
 
-            Section {
+            Section("Updates") {
                 LabeledContent {
-                    Text(version).foregroundStyle(.secondary)
+                    HStack(spacing: 10) {
+                        Text(version).foregroundStyle(.secondary)
+                        if updater.isAvailable {
+                            Button("Check Now") { updater.checkForUpdates() }
+                                .disabled(!updater.canCheck)
+                        }
+                    }
                 } label: {
                     TipLabel("Version", tip: """
-                    Surf keeps itself current in the background. There is \
-                    nothing to install and nothing to check.
+                    Surf asks one address for one file listing the current \
+                    version. It sends nothing about you or your Mac along \
+                    with the question, and an update is only installed after \
+                    its signature is checked against a key built into this app.
                     """)
+                }
+
+                if updater.isAvailable {
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { updater.checksAutomatically },
+                        set: { updater.checksAutomatically = $0 }
+                    ))
+                    if let last = updater.lastCheck {
+                        Text("Last checked \(last.formatted(.relative(presentation: .named))).")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    // Only in the state it explains, and an instruction rather
+                    // than a description — the same bar the Links pane sets.
+                    Text("This build can't update itself: updating replaces an "
+                         + "app bundle, and this one was launched from the command line.")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
                 }
             }
         }

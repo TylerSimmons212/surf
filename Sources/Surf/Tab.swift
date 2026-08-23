@@ -1590,6 +1590,98 @@ final class Tab: NSObject, Identifiable {
     /// True makes the overlay a transparent transport instead of a reader.
     private(set) var focusVideoStage = false
 
+    // MARK: - Site lenses
+
+    /// The site lens this tab is in, if any.
+    ///
+    /// Held apart from `focusPhase` because it is the one lens that navigates
+    /// on purpose. Searching is a load and so is playing, so a lens torn down
+    /// by its own navigation would not survive its first keystroke — which is
+    /// why `resetFocus` takes an instruction to leave it standing.
+    private(set) var focusSite: SiteFocusSite?
+
+    /// The YouTube lens's state, alive only while that lens is up.
+    private(set) var youtubeLens: YouTubeLens?
+
+    /// The site lens on offer here, if this address has one.
+    ///
+    /// Asked before the classifier: on a site Surf knows, its own lens beats
+    /// whatever prose the page happens to carry — a YouTube watch page reads
+    /// as an article often enough to lose the argument otherwise.
+    var focusOfferSite: SiteFocusSite? {
+        guard mode == .browsing, focusPhase == .inactive else { return nil }
+        return SiteFocusSite.matching(liveWebView?.url)
+    }
+
+    func enterSiteFocus() {
+        guard mode == .browsing, focusPhase == .inactive,
+              let site = SiteFocusSite.matching(webView.url)
+        else { return }
+        narrator.stop()
+        // A detection already in flight would land after the lens is up and
+        // spend the extractor's content walk on a verdict nothing will read.
+        focusDetectionTask?.cancel()
+        focusDetection = nil
+        focusPrevalidated = nil
+        focusSite = site
+        let lens = YouTubeLens(tab: self)
+        youtubeLens = lens
+        focusPhase = .active
+        // Whatever is already on screen is the lens's first screen: opening
+        // it on a video should land on that video, not on a blank field.
+        lens.documentDidLoad()
+        debugLog("focus: \(site.displayName) lens")
+    }
+
+    func exitSiteFocus() {
+        guard focusSite != nil else { return }
+        // By hand rather than by navigation, so the page is still there and
+        // still wearing the stage — it has to be handed back as it was.
+        youtubeLens?.tearDown()
+        youtubeLens = nil
+        focusSite = nil
+        focusPhase = .inactive
+    }
+
+    /// The address the site lens is standing on.
+    var currentSiteLensURL: URL? { liveWebView?.url }
+
+    /// A navigation the lens made itself. Distinct from `submit` because it
+    /// carries no address-bar intent and must not disturb the dive.
+    func loadInSiteLens(_ url: URL) {
+        hasNavigatedExplicitly = true
+        lastError = nil
+        webView.load(URLRequest(url: url))
+    }
+
+    /// Installs the YouTube domain and reads the page. Installation is
+    /// idempotent and costs nothing after the first call on a document, so
+    /// every read can carry it and no caller has to remember to.
+    func youtubeRead() async -> YouTubePageReply? {
+        _ = try? await webView.callAsyncJavaScript(
+            YouTubeBridge.installScript, arguments: [:],
+            in: nil, contentWorld: PageProtocol.World.page.contentWorld
+        )
+        return await pageAgent.value(.youtubePage, as: YouTubePageReply.self)
+    }
+
+    /// Raises the stage. False when the player isn't there to raise it on.
+    func youtubeStage() async -> Bool {
+        await pageAgent.value(.youtubeStage, as: Bool.self) ?? false
+    }
+
+    func youtubeUnstage() {
+        pageAgent.send(.youtubeUnstage)
+    }
+
+    func youtubeSetRate(_ rate: Double) {
+        pageAgent.send(.youtubeRate, ["rate": rate])
+    }
+
+    func youtubeSetCaptions(_ language: String) {
+        pageAgent.send(.youtubeCaptions, ["language": language])
+    }
+
     /// The element the stage was applied to, pinned at entry. The ranking
     /// keeps running — a hover-preview or an advert can win it mid-show —
     /// but the transport must describe and command the video on the stage,
@@ -1742,6 +1834,9 @@ final class Tab: NSObject, Identifiable {
     /// can't render yet would be a button that lies.
     var canOfferFocus: Bool {
         guard focusPhase == .inactive else { return false }
+        // A site Surf has a lens for is offered on sight — no classification
+        // to wait for, because the address is already the evidence.
+        if focusOfferSite != nil { return true }
         if let detection = focusDetection,
            detection.confidence >= FocusClassification.offerThreshold {
             switch detection.kind {
@@ -1841,6 +1936,14 @@ final class Tab: NSObject, Identifiable {
     func enterFocus() {
         guard mode == .browsing, focusPhase == .inactive else { return }
 
+        // A site with a lens of its own gets it. Ahead of extraction, not
+        // after it: a YouTube watch page carries enough prose to extract, and
+        // the reader is the wrong answer on every one of them.
+        if focusOfferSite != nil {
+            enterSiteFocus()
+            return
+        }
+
         // A video page gets the stage, not the reader: no extraction — the
         // page's own element is the content, promoted in place.
         if offersVideoStage || focusDetection?.kind == .video {
@@ -1916,6 +2019,12 @@ final class Tab: NSObject, Identifiable {
     ///   its scroll position happened to be.
     func exitFocus(revealingBlock blockIndex: Int? = nil) {
         guard focusPhase != .inactive else { return }
+        // A site lens has a page underneath it that is still live and still
+        // staged; handing it back is its own business.
+        if focusSite != nil {
+            exitSiteFocus()
+            return
+        }
         narrator.stop()
         if focusVideoStage {
             // Back exactly as the page drew it.
@@ -1943,6 +2052,16 @@ final class Tab: NSObject, Identifiable {
     /// opens the reader instantly.
     private func scheduleFocusDetection() {
         focusDetectionTask?.cancel()
+        // A site lens is already the answer for this page, whether or not it
+        // is open yet: the pill offers it from the address alone, and
+        // `enterFocus` routes to it before extraction is considered. So
+        // nothing on a site Surf has a lens for ever reads the classifier's
+        // verdict — and on a watch page it would spend the extractor's
+        // content walk, the most expensive thing Focus runs anywhere, to
+        // produce it.
+        guard focusSite == nil,
+              SiteFocusSite.matching(liveWebView?.url) == nil
+        else { return }
         focusDetectionTask = Task { @MainActor in
             for delay in [700, 2400] {
                 try? await Task.sleep(for: .milliseconds(delay))
@@ -1999,14 +2118,17 @@ final class Tab: NSObject, Identifiable {
 
     /// The page under the reader is gone or changing; nothing about the old
     /// one may survive onto the new.
-    private func resetFocus() {
+    /// - Parameter keepingSiteLens: a site lens navigating on its own behalf.
+    ///   Everything belonging to the *old document* still goes — the pin, the
+    ///   detection, the extraction — but the lens itself stays up, because
+    ///   the load it is surviving is one it asked for.
+    private func resetFocus(keepingSiteLens: Bool = false) {
         narrator.stop()
         focusDetectionTask?.cancel()
         focusDetection = nil
         focusPrevalidated = nil
         // Not exitFocus(): there is no page position worth revealing, and the
         // agent may already be unreachable.
-        focusPhase = .inactive
         focusArticle = nil
         focusRecipe = nil
         focusPrefersArticle = false
@@ -2017,6 +2139,12 @@ final class Tab: NSObject, Identifiable {
         focusVideoStage = false
         stagedElementID = nil
         stagedFrame = nil
+        guard !keepingSiteLens else { return }
+        // No unstage here either, and for the same reason: this path is a
+        // document that has already gone. Leaving by hand is `exitSiteFocus`.
+        youtubeLens = nil
+        focusSite = nil
+        focusPhase = .inactive
     }
 
     /// Returns to the search screen without tearing down the web view, so the
@@ -2059,8 +2187,12 @@ extension Tab: WKNavigationDelegate {
         emptyPopupWatchdog?.cancel()
         if !blockLog.isEmpty { blockLog = BlockLog() }
         // A new document: the reader would otherwise sit over a page it no
-        // longer describes.
-        resetFocus()
+        // longer describes. A site lens is the exception — the load is one it
+        // asked for — but only while the address still belongs to its site, so
+        // a link out of YouTube closes the lens rather than framing the web.
+        let lensSurvives = focusSite?.claims(webView.url) == true
+        if lensSurvives { youtubeLens?.documentWillChange() }
+        resetFocus(keepingSiteLens: lensSurvives)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -2077,6 +2209,10 @@ extension Tab: WKNavigationDelegate {
         }
         scheduleAINaming()
         scheduleFocusDetection()
+        // The lens reads the page it just asked for. After `scheduleFocus-
+        // Detection` deliberately: the two never both run, because a tab in a
+        // site lens is not `.inactive` and the detector's work is discarded.
+        youtubeLens?.documentDidLoad()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 

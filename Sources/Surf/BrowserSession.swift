@@ -173,21 +173,7 @@ final class BrowserSession {
             // for.
             MainActor.assumeIsolated { self.saveNow(blocking: true) }
         }
-
-        // Last, once there is something worth handing a link to.
-        Self.current = self
-        ExternalLinks.flushPending()
     }
-
-    /// The session, for the one caller that cannot be handed it.
-    ///
-    /// Everything else in Surf reaches a session through a view or a tab that
-    /// already holds one. `NSApplicationDelegate` does not: macOS hands it URLs
-    /// from other applications with no context at all, and the app delegate is
-    /// built by SwiftUI before `SurfApp` has made anything. Weak, and never
-    /// read from inside the session itself — this exists for `ExternalLinks`
-    /// and should stay that way.
-    private(set) static weak var current: BrowserSession?
 
     /// Honours "Reopen tabs on launch" — with it off, the file isn't even read.
     private static func restorableSession() -> PersistedSession? {
@@ -923,6 +909,36 @@ final class BrowserSession {
         let tab = openInNewTab(sticker)
         setSelection(to: anchor)
         openSplit(with: tab, on: .trailing)
+    }
+
+    /// An address handed to Surf by the rest of the Mac.
+    ///
+    /// A link clicked in Mail, `open -a Surf`, anything routed through
+    /// LaunchServices once Surf is the default browser. Reached from
+    /// `onOpenURL`, which is SwiftUI's spelling of the delegate callback and
+    /// only fires for the schemes the bundle declares it handles.
+    func openFromOutside(_ url: URL) {
+        guard url.scheme == "http" || url.scheme == "https" else { return }
+        // A link from elsewhere is a question before it is a tab, so by
+        // default it opens in a mini window — which also defers the question
+        // of which island it belongs to until the moment it is kept.
+        if LinkPreferences.externalUseMiniWindow {
+            debugLog("external: \(url.absoluteString) → mini window")
+            MiniWindowController.shared.open(url, from: self)
+            return
+        }
+        debugLog("external: \(url.absoluteString) → tab")
+        // A launch caused by the link itself arrives at a single untouched
+        // home tab. Using that tab rather than opening beside it is the
+        // difference between clicking a link in Mail and getting one tab or
+        // getting two, one of them empty.
+        let target = tabs.count == 1 && selectedTab.mode == .home
+            ? selectedTab
+            : addTab()
+        target.submit(url.absoluteString)
+        scheduleSave()
+        // The click happened in another app, so Surf is behind it.
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Lifecycle
