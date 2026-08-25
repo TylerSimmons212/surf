@@ -374,19 +374,51 @@ and one button that keeps it: **Open in Surf**. Most links are read once and
 thrown away, and a browser that turns every one of them into a tab makes you
 tidy up after reading. Escape dismisses; the page never reaches the sidebar.
 
-The page fills the panel and the controls float on top of it as glass: closing
-at the top left, where a window's close button belongs, copy and **Open in
-Surf** at the top right. `.regular` glass rather than the `.clear` the pop-out
-uses: that one floats on moving video, where frosting would fog the picture,
-and this floats on a page. Copying shows a tick for a moment, because an action
-whose whole effect is invisible otherwise looks like one that failed.
+One bar across the top, and the page below it: a close button, the address, copy
+and **Open in Surf**. No traffic lights — a mini window has exactly one thing you
+can do to it that isn't promoting it, and that is make it go away.
 
-The top strip of the panel drags the window. A borderless panel has no title bar
-to grab, and `isMovableByWindowBackground` cannot help because the web view
-covers the background and takes the drag first, so the grab area is an explicit
-view above the page and below the buttons. It costs the page that strip — an
-AppKit view takes every click inside its frame — which is the same bargain a
-titled window makes, and the reason the strip is only as tall as the buttons.
+The address is a real field. The panel opens on a link somebody sent, but what it
+holds is a real `Tab`, and a page you have followed two links into should not
+still claim to be at the address it arrived on. It edits `addressText`, the same
+property the main window's palette edits and the same one navigation writes back
+to, so nothing has to keep the two in step.
+
+The controls take their hover, focus and press behaviour from the system rather
+than from `.onHover` into a flag into a tint, which is what they did before and
+which was maintaining an impression of a button rather than having one. Three
+things had to be true for that to work, and none of them were obvious:
+
+- The panel is no longer a `.nonactivatingPanel`. That flag stops a click in the
+  panel making Surf the active app, and **an inactive app draws every control in
+  its inactive state** — a whole row of buttons that do not answer the pointer,
+  because as far as AppKit is concerned nobody is looking at them.
+- No `GlassEffectContainer` around them. That coordinates `.glassEffect`
+  modifiers into one sampling pass; `.buttonStyle(.glass)` brings its own, so the
+  container was put in charge of a pass it had no controls to draw.
+- `.pointerStyle(.link)`, because a Mac button never changes the cursor. That is
+  right on a form and wrong on chrome floating over a web page, where it reads as
+  nothing being there at all.
+
+The field is a `SurfTextField` and not SwiftUI's `TextField`, which was tried and
+silently does not work: a `TextField` inside an `NSHostingView` mounted as a
+*subview* of a borderless panel never takes focus. Clicking does nothing, setting
+`@FocusState` by hand does nothing, and typing goes wherever it was already
+going. `SurfTextField` makes itself first responder explicitly, which is the step
+the plain one is missing.
+
+The bar drags the window. A borderless panel has no title bar to grab, and
+`isMovableByWindowBackground` cannot help because the web view covers the
+background and takes the drag first, so the grab area is a view behind the bar's
+own controls. That used to cost the page its top strip — an AppKit view takes
+every click inside its frame — and now costs nothing, because the page starts
+below the bar and there is no page up there to deaden.
+
+The size comes from `MiniWindowSizing`: about 55% of the display's usable
+rectangle, floored at 820×560 and capped at 1180×800. It was a flat 1000×680,
+which is two thirds of a laptop screen and a quarter of a 6K one — the same
+window reading as almost the whole desktop in one place and a postage stamp in
+the other.
 
 Closing puts you back in the window the link came from. Dismissing a mini window
 means "never mind", and never mind means going back rather than landing wherever

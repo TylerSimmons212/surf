@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import SurfCore
 import SwiftUI
 
 /// A floating window holding one page you have not committed to yet.
@@ -34,15 +35,14 @@ final class MiniWindowController: NSObject, NSWindowDelegate {
     /// dismissing is "never mind", and never mind means going back.
     private weak var opener: NSWindow?
 
-    /// A browser window's proportions. The panel is a page you are reading,
-    /// not a phone-shaped preview, and a portrait window reflows most sites
-    /// into their mobile layout — which is not what the link looked like where
-    /// it was sent from.
-    private static let defaultSize = NSSize(width: 1000, height: 680)
-    private static let controlInset: CGFloat = 8
-    /// Tall enough to cover the buttons, which is what "the top area" means to
-    /// anyone trying to drag the window by it.
-    private static let dragStripHeight: CGFloat = 52
+    /// A browser window's proportions, at a size that suits the display it
+    /// lands on — see `MiniWindowSizing`. It was a flat 1000×680, which is two
+    /// thirds of a laptop screen and a quarter of a 6K one.
+    private static func defaultSize(near mouse: NSPoint) -> NSSize {
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+        guard let visible = screen?.visibleFrame else { return MiniWindowSizing.minimum }
+        return MiniWindowSizing.size(forVisible: visible)
+    }
 
     private override init() { super.init() }
 
@@ -67,10 +67,17 @@ final class MiniWindowController: NSObject, NSWindowDelegate {
     }
 
     private func present(_ tab: Tab, in island: Island, session: BrowserSession) {
-        let size = Self.defaultSize
+        let mouse = NSEvent.mouseLocation
+        let size = Self.defaultSize(near: mouse)
         let panel = MiniWindowPanel(
             contentRect: NSRect(origin: .zero, size: size),
-            styleMask: [.borderless, .resizable, .nonactivatingPanel],
+            // No `.nonactivatingPanel`. It stops a click in the panel making
+            // Surf the active app, and an inactive app draws every control in
+            // its inactive state — which is a row of buttons that do not
+            // answer the pointer, because as far as AppKit is concerned nobody
+            // is looking at them. The panel takes key on its own line below, so
+            // it was never buying the restraint it looked like it was buying.
+            styleMask: [.borderless, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -80,6 +87,7 @@ final class MiniWindowController: NSObject, NSWindowDelegate {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.acceptsMouseMovedEvents = true
         panel.contentMinSize = NSSize(width: 520, height: 380)
         panel.delegate = self
         panel.onCancel = { [weak self] in self?.dismiss() }
@@ -87,43 +95,22 @@ final class MiniWindowController: NSObject, NSWindowDelegate {
         let root = MiniWindowRootView(frame: NSRect(origin: .zero, size: size))
         root.autoresizingMask = [.width, .height]
 
-        // Full bleed: the controls float over the page rather than sitting
-        // above it, so the web view gets the whole panel.
+        // The page starts below the bar rather than running under it. That is
+        // the whole reason the bar can be one full-width view: an AppKit view
+        // takes every click inside its frame, and there is no page up here to
+        // take them from.
+        let barHeight = MiniWindowBar.height
         let web = tab.webView
-        web.frame = NSRect(origin: .zero, size: size)
+        web.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height - barHeight)
         web.autoresizingMask = [.width, .height]
         root.addSubview(web)
 
-        // Two hosting views rather than one strip. A hosting view is a real
-        // AppKit view and takes every click inside its frame — the same rule
-        // that makes chrome drawn over the page in the main window steal
-        // clicks — so a full-width bar would deaden the page's whole top edge
-        // even where it drew nothing. Sized to their contents, these deaden
-        // only themselves.
-        // Above the page, below the buttons: the buttons are added after, so
-        // they take their own clicks and the strip takes everything else.
-        let strip = MiniWindowDragStrip(
-            frame: NSRect(
-                x: 0,
-                y: size.height - Self.dragStripHeight,
-                width: size.width,
-                height: Self.dragStripHeight
-            )
-        )
-        strip.autoresizingMask = [.width, .minYMargin]
-        root.addSubview(strip)
-
-        let leading = NSHostingView(
-            rootView: MiniWindowLeadingControls(
-                onClose: { [weak self] in self?.dismiss() }
-            )
-        )
-        place(leading, in: root, size: size, pinnedTo: .leading)
-
-        let trailing = NSHostingView(
-            rootView: MiniWindowTrailingControls(
+        let bar = NSHostingView(
+            rootView: MiniWindowBar(
+                tab: tab,
                 session: session,
                 destination: island,
+                onClose: { [weak self] in self?.dismiss() },
                 onCopyLink: { [weak tab] in
                     guard let url = tab?.currentURL, !url.isEmpty else { return }
                     NSPasteboard.general.clearContents()
@@ -133,44 +120,23 @@ final class MiniWindowController: NSObject, NSWindowDelegate {
                 onPromoteInto: { [weak self] island in self?.promote(into: island) }
             )
         )
-        place(trailing, in: root, size: size, pinnedTo: .trailing)
+        bar.frame = NSRect(
+            x: 0, y: size.height - barHeight, width: size.width, height: barHeight
+        )
+        // Glued to the top edge at a fixed height: the flexible margin is the
+        // one below it, which is the page's to grow into.
+        bar.autoresizingMask = [.width, .minYMargin]
+        root.addSubview(bar)
 
         panel.contentView = root
-        positionNearPointer(panel, size: size)
+        positionNearPointer(panel, near: mouse, size: size)
         panel.makeKeyAndOrderFront(nil)
         self.panel = panel
     }
 
-    private enum ControlSide { case leading, trailing }
-
-    /// Pins a control cluster to a top corner, at whatever size SwiftUI says it
-    /// wants. The autoresizing masks name the *flexible* margins, so a cluster
-    /// keeps its corner as the panel is resized.
-    private func place(
-        _ view: NSView,
-        in root: NSView,
-        size: NSSize,
-        pinnedTo side: ControlSide
-    ) {
-        let fitted = view.fittingSize
-        let inset = Self.controlInset
-        let x = side == .leading ? inset : size.width - inset - fitted.width
-        view.frame = NSRect(
-            x: x,
-            y: size.height - inset - fitted.height,
-            width: fitted.width,
-            height: fitted.height
-        )
-        view.autoresizingMask = side == .leading
-            ? [.maxXMargin, .minYMargin]
-            : [.minXMargin, .minYMargin]
-        root.addSubview(view)
-    }
-
     /// Where the pointer is, nudged fully on screen. A window answering a click
     /// belongs near the click, not in a corner the eye has to go find.
-    private func positionNearPointer(_ panel: NSPanel, size: NSSize) {
-        let mouse = NSEvent.mouseLocation
+    private func positionNearPointer(_ panel: NSPanel, near mouse: NSPoint, size: NSSize) {
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         guard let visible = screen?.visibleFrame else {
             panel.center()

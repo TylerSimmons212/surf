@@ -1,157 +1,102 @@
 import AppKit
+import SurfCore
 import SwiftUI
 
-/// One round glass button. Bigger than the pop-out's, because these float over
-/// a page rather than over video the user is already looking at, and they are
-/// the only chrome the window has.
+/// The mini window's chrome: one bar across the top, above the page.
 ///
-/// `.regular` glass, not the `.clear` the pop-out uses: that one sits on moving
-/// video, where frosting would fog the picture. This sits on a page, where what
-/// is *on* the glass has to stay legible.
-private struct GlassCircleButton: View {
-    let symbol: String
-    let help: String
-    /// Swaps the glyph for a tick and tints it, for actions whose effect is
-    /// invisible — a copy that says nothing looks like a copy that failed.
-    var isConfirming = false
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: isConfirming ? "checkmark" : symbol)
-                .font(.system(size: 14, weight: .bold))
-                // `.primary`, not white: this floats over whatever the page is,
-                // and a white glyph vanishes on a light one.
-                .foregroundStyle(isConfirming ? Color.green : Color.primary)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: 36, height: 36)
-                // Hover tints the glass; nothing moves. A `scaleEffect` here
-                // transformed the label but not the glass shape — that is
-                // drawn by the container's own pass — so the glyph slid around
-                // inside its own circle instead of the button growing. Tint is
-                // part of the glass's own configuration rather than a filter
-                // laid over it, so it is the one lever that reaches the shape.
-                .glassEffect(
-                    isHovering
-                        ? .regular.tint(.accentColor.opacity(0.38)).interactive()
-                        : .regular.interactive(),
-                    in: Circle()
-                )
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .animation(.easeOut(duration: 0.16), value: isHovering)
-        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: isConfirming)
-        .onHover { isHovering = $0 }
-        .help(help)
-    }
-}
-
-/// Copy, and say so. The tick holds long enough to be read and then puts itself
-/// away, so nothing has to be dismissed.
-private struct CopyLinkButton: View {
-    let onCopy: () -> Void
-
-    @State private var hasCopied = false
-
-    var body: some View {
-        GlassCircleButton(
-            symbol: "link",
-            help: hasCopied ? "Copied" : "Copy link",
-            isConfirming: hasCopied
-        ) {
-            onCopy()
-            hasCopied = true
-            Task {
-                try? await Task.sleep(for: .seconds(1.4))
-                hasCopied = false
-            }
-        }
-    }
-}
-
-/// Top-left: dismissing, where a window's close button belongs.
-struct MiniWindowLeadingControls: View {
-    let onClose: () -> Void
-
-    var body: some View {
-        GlassCircleButton(
-            symbol: "xmark",
-            help: "Close, and go back to the window this came from",
-            action: onClose
-        )
-        .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
-        // Room for the shadow, which `fittingSize` would otherwise clip.
-        .padding(8)
-    }
-}
-
-/// Top-right: copy the link, or keep the page.
-struct MiniWindowTrailingControls: View {
+/// It used to be two clusters of round glass buttons floating *over* the page,
+/// which is why the panel needed a separate invisible strip behind them to be
+/// draggable, and why the clusters were mounted as two hosting views rather
+/// than one — an AppKit view takes every click inside its frame, so a full
+/// width bar would have deadened the page's whole top edge even where it drew
+/// nothing. A real bar has no such problem: the page starts underneath it, so
+/// there is no page up here to deaden.
+///
+/// No traffic lights. A mini window has one thing you can do to it that isn't
+/// promoting it, and that is make it go away.
+struct MiniWindowBar: View {
+    @Bindable var tab: Tab
     let session: BrowserSession
     /// Where a plain click sends the page — the island it has been browsing in,
     /// which is not necessarily the one the main window is showing by now.
     let destination: Island
+    let onClose: () -> Void
     let onCopyLink: () -> Void
     let onPromote: () -> Void
     let onPromoteInto: (Island) -> Void
 
-    @State private var isHoveringPromote = false
+    static let height: CGFloat = 46
+    /// Every control in the bar, so nothing sits a point off its neighbour.
+    fileprivate static let controlHeight: CGFloat = 30
+
+    var body: some View {
+        // No `GlassEffectContainer`. That coordinates `.glassEffect` modifiers
+        // into one sampling pass, and these are `.buttonStyle(.glass)` buttons
+        // — the system's own glass, which brings its own. Wrapping them in it
+        // put the container in charge of a pass it had no controls to draw.
+        Group {
+            HStack(spacing: 8) {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonBorderShape(.circle)
+                .help("Close, and go back to the window this came from")
+                .pointerStyle(.link)
+
+                MiniWindowAddressField(tab: tab)
+
+                CopyLinkButton(onCopy: onCopyLink)
+
+                Button(hasChoice ? "Open in \(destination.name)" : "Open in Surf",
+                       action: onPromote)
+                    .buttonStyle(.glassProminent)
+                    .help("Keep this page as a tab in \(destination.name)")
+                    .pointerStyle(.link)
+
+                if hasChoice { islandMenu }
+            }
+            // Every control in the row takes its size and its hover, focus and
+            // press behaviour from the system. This was all hand-rolled —
+            // `.onHover` into a `@State` flag into a tint on the glass — which
+            // meant maintaining an impression of a button rather than having
+            // one, and it drifted from the real thing in both directions: no
+            // focus ring, no keyboard activation, and a hover tint no other
+            // control in the app used.
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .padding(.horizontal, 10)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.height)
+        // Behind the controls, so it takes the clicks they don't. This is the
+        // whole drag affordance now — there is no title bar to grab, and
+        // `isMovableByWindowBackground` is no use because the web view covers
+        // the background and takes the drag first.
+        .background { WindowDragArea() }
+        .background {
+            // `.behindWindow` blur, not a SwiftUI material: the panel is
+            // transparent and the page stops at the bar's bottom edge, so
+            // there is nothing behind this but the desktop.
+            VisualEffectBackground(material: .headerView)
+        }
+        .overlay(alignment: .bottom) { Divider().opacity(0.6) }
+    }
 
     /// With one island there is nothing to choose, so the button says which app
     /// this floating window belongs to instead — which is the more useful thing
     /// to know when it arrived from Slack. A caret offering a single
-    /// destination would be the pill mistake again: a control that cannot do
-    /// anything, sitting in a row of controls that can.
+    /// destination would be a control that cannot do anything, sitting in a row
+    /// of controls that can.
     private var hasChoice: Bool { session.islands.count > 1 }
-
-    var body: some View {
-        // One container so neighbouring glass merges into a single sampling
-        // pass instead of each shape carrying its own slab.
-        GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 10) {
-                CopyLinkButton(onCopy: onCopyLink)
-
-                Button(action: onPromote) {
-                    Text(hasChoice ? "Open in \(destination.name)" : "Open in Surf")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .frame(height: 36)
-                        // Built from `.glassEffect` rather than
-                        // `.buttonStyle(.glassProminent)`. The stock prominent
-                        // style renders its fill in the glass pass, which no
-                        // modifier layered afterwards can reach — brightness
-                        // and scale both went nowhere. Tinting the glass
-                        // itself is the only lever that touches the shape, and
-                        // reaching for it means owning the shape.
-                        .glassEffect(
-                            .regular
-                                .tint(.accentColor.opacity(isHoveringPromote ? 1 : 0.75))
-                                .interactive(),
-                            in: Capsule()
-                        )
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .animation(.easeOut(duration: 0.16), value: isHoveringPromote)
-                .onHover { isHoveringPromote = $0 }
-                .help("Keep this page as a tab in \(destination.name)")
-
-                if hasChoice {
-                    islandMenu
-                }
-            }
-        }
-        .shadow(color: .black.opacity(0.2), radius: 10, y: 3)
-        .padding(8)
-    }
 
     /// Somewhere else to put it. Its own shape beside the button rather than a
     /// split control: a `Menu` styles its own label, and glass is not something
     /// to hand to a style that has opinions about chrome.
+    ///
+    /// `.button` rather than `.borderlessButton` for the same reason the
+    /// sidebar's screenshot menu takes it: it is the menu style that lets the
+    /// row's `.buttonStyle` reach the label, so this wears the same glass and
+    /// answers the pointer the same way as its neighbours.
     private var islandMenu: some View {
         Menu {
             ForEach(session.islands) { island in
@@ -170,30 +115,98 @@ struct MiniWindowTrailingControls: View {
             }
         } label: {
             Image(systemName: "chevron.down")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 32, height: 36)
-                .glassEffect(.regular.interactive(), in: Capsule())
-                .contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
         .menuIndicator(.hidden)
-        .frame(width: 32, height: 36)
+        .fixedSize()
         .help("Open in another island")
+        .pointerStyle(.link)
     }
 }
 
-/// The strip along the top of the panel that drags the window.
+/// The address, and somewhere to type a new one.
 ///
-/// A borderless panel has no title bar to grab, and
-/// `isMovableByWindowBackground` is no use here because the web view covers the
-/// whole background and takes the drag first. So the grab area is an explicit
-/// view, mounted above the page and below the buttons.
+/// A mini window opens on a link somebody sent, but it is a real `Tab` and
+/// there is no reason a page you have followed two links into should still
+/// claim to be at the address it arrived on. Bound straight to `addressText`,
+/// which is the same property the main window's palette edits and the same one
+/// navigation writes back to, so the field says where the page is without
+/// anything having to keep the two in step.
 ///
-/// It does cost the page its top strip: a real AppKit view takes every click
-/// inside its frame, so the page no longer sees clicks up here. That is the
-/// trade for being able to move the window, and it is the bargain every
-/// titled window already makes.
+/// An `NSTextField` by way of `SurfTextField`, and not SwiftUI's own
+/// `TextField`, which was tried here and does not work: a `TextField` inside an
+/// `NSHostingView` mounted as a *subview* of a borderless panel never takes
+/// focus. Clicking it does nothing, `@FocusState` set by hand does nothing, and
+/// typing goes wherever it was already going — proven by typing an address into
+/// it and watching the page not navigate. `SurfTextField` makes itself first
+/// responder explicitly, which is exactly the step the plain one is missing.
+private struct MiniWindowAddressField: View {
+    @Bindable var tab: Tab
+
+    var body: some View {
+        SurfTextField(
+            text: $tab.addressText,
+            placeholder: "Search or enter address",
+            font: .systemFont(ofSize: 12, weight: .medium),
+            // The address arrived from somewhere else and is the thing being
+            // read, not something to be replaced on the first keystroke.
+            selectsAllOnFocus: false,
+            onSubmit: { tab.submit(tab.addressText) }
+        )
+        .padding(.horizontal, 12)
+        .frame(height: MiniWindowBar.controlHeight)
+        .frame(maxWidth: .infinity)
+        // `.interactive()` is the glass answering the pointer itself, rather
+        // than a tint swapped in behind a hover flag.
+        .glassEffect(.regular.interactive(), in: Capsule())
+        .contentShape(Capsule())
+        // The capsule is bigger than the text in it; an I-beam over all of it
+        // is what says the whole pill is the field.
+        .pointerStyle(.horizontalText)
+    }
+}
+
+/// Copy, and say so. The tick holds long enough to be read and then puts itself
+/// away, so nothing has to be dismissed — a copy that says nothing looks like a
+/// copy that failed.
+private struct CopyLinkButton: View {
+    let onCopy: () -> Void
+
+    @State private var hasCopied = false
+
+    var body: some View {
+        Button {
+            onCopy()
+            hasCopied = true
+            Task {
+                try? await Task.sleep(for: .seconds(1.4))
+                hasCopied = false
+            }
+        } label: {
+            Image(systemName: hasCopied ? "checkmark" : "link")
+                .foregroundStyle(hasCopied ? Color.green : Color.primary)
+                .contentTransition(.symbolEffect(.replace))
+        }
+        .buttonBorderShape(.circle)
+        .animation(.spring(response: 0.3, dampingFraction: 0.55), value: hasCopied)
+        .help(hasCopied ? "Copied" : "Copy link")
+        // A Mac button does not normally change the cursor, and in a row of
+        // chrome floating over a web page that reads as nothing being there.
+        // `.pointerStyle` is the system's own way to say otherwise.
+        .pointerStyle(.link)
+    }
+}
+
+/// A patch of window you can pick the window up by.
+///
+/// Mounted as the bar's background so SwiftUI's own controls sit above it and
+/// keep their clicks; everything they don't take lands here.
+private struct WindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> MiniWindowDragStrip { MiniWindowDragStrip() }
+    func updateNSView(_ view: MiniWindowDragStrip, context: Context) {}
+}
+
+/// Drags the window it is in.
 final class MiniWindowDragStrip: NSView {
     override func mouseDown(with event: NSEvent) {
         // Runs its own event loop until the mouse comes up, which is what makes
@@ -201,11 +214,12 @@ final class MiniWindowDragStrip: NSView {
         window?.performDrag(with: event)
     }
 
-    /// Nothing to draw — the page shows through.
+    /// Nothing to draw — the bar's blur shows through.
     override var isOpaque: Bool { false }
 }
 
-/// Rounds the panel's corners and clips the page to them.
+/// Rounds the panel's corners and clips its contents to them. A borderless
+/// window gets no rounding from AppKit, so this is where it comes from.
 final class MiniWindowRootView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -220,7 +234,8 @@ final class MiniWindowRootView: NSView {
 }
 
 /// Borderless windows can't become key by default, which would leave the page
-/// unable to take clicks or typing.
+/// unable to take clicks or typing — and now the address field unable to take
+/// any either.
 final class MiniWindowPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 

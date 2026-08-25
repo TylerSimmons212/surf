@@ -66,7 +66,7 @@ struct ContentView: View {
         ZStack {
             // One glass surface behind everything, so a pinned sidebar and the
             // page read as the same material.
-            VisualEffectBackground(material: .underWindowBackground)
+            WindowGround(material: .underWindowBackground)
 
             ZStack(alignment: .leading) {
                 HStack(spacing: 0) {
