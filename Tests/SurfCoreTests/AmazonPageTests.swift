@@ -236,3 +236,31 @@ struct SiteFocusAmazonTests {
         }
     }
 }
+
+@Suite("Amazon cart addresses")
+struct AmazonCartAddressTests {
+
+    @Test("The readable cart is recognised", arguments: [
+        "https://www.amazon.com/gp/cart/view.html",
+        "https://www.amazon.com/cart",
+        "https://www.amazon.com/cart/view",
+    ])
+    func recognisesTheCart(address: String) {
+        #expect(AmazonPage.of(URL(string: address)) == .cart)
+    }
+
+    /// Where Amazon sends you the moment you add something. It is a
+    /// confirmation screen with recommendations on it and none of the cart's
+    /// own rows, so reading it as the cart reports an empty cart to somebody
+    /// who has just filled one — which is exactly what happened.
+    @Test("The post-add interstitial is not the cart")
+    func smartWagonIsNotTheCart() {
+        let url = URL(string: "https://www.amazon.com/cart/smart-wagon?newItems=7c5ad2ee,2&ref_=sw_refresh")
+        #expect(AmazonPage.of(url) != .cart)
+    }
+
+    @Test("An unmet page under /cart/ is not assumed to be readable")
+    func unknownCartPathsAreNotTheCart() {
+        #expect(AmazonPage.of(URL(string: "https://www.amazon.com/cart/localmarket")) != .cart)
+    }
+}

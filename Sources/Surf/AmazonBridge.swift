@@ -300,6 +300,12 @@ enum AmazonBridge {
               reviews: one(document, sel.productReviews),
               availability: one(document, sel.productAvailability),
               delivery: one(document, sel.productDelivery),
+              // The same cell's own attributes. A token beats the sentence:
+              // "FREE delivery" reads identically whether it is free because
+              // of Prime or free because the order cleared $35.
+              deliveryProgram: one(document, sel.productDeliveryProgram),
+              deliveryPrice: one(document, sel.productDeliveryPrice),
+              deliveryTime: one(document, sel.productDeliveryTime),
               seller: one(document, sel.productSeller),
               shipsFrom: one(document, sel.productShipsFrom),
               returns: one(document, sel.productReturns),
@@ -375,6 +381,86 @@ enum AmazonBridge {
             if (!button) { return false; }
             button.click();
             return true;
+          });
+
+          // The cart, copied attribute by attribute. Nothing here parses a
+          // price, decides what is active, or works out a total — the rows are
+          // already tagged with everything, which is why this is the shortest
+          // reader in the file.
+          agent.define('amazon.cart', (params) => {
+            const sel = (params && params.selectors) || {};
+            const tally = {};
+            const rows = nodes(document, sel.cartItem, tally, 'cartItem');
+            return {
+              items: rows.map((row) => ({
+                id: one(row, sel.cartItemID),
+                asin: one(row, sel.cartItemASIN),
+                title: one(row, sel.cartItemTitle),
+                price: one(row, sel.cartItemPrice),
+                quantity: one(row, sel.cartItemQuantity),
+                minQuantity: one(row, sel.cartItemMinQuantity),
+                outOfStock: one(row, sel.cartItemOutOfStock),
+                prime: one(row, sel.cartItemPrime),
+                image: one(row, sel.cartItemImage),
+                canDecrement: has(row, sel.cartDecrement),
+                canRemove: has(row, sel.cartRemove)
+              })),
+              subtotal: one(document, sel.cartSubtotal),
+              subtotalLabel: one(document, sel.cartSubtotalLabel),
+              cartCount: one(document, sel.navCart),
+              matched: tally
+            };
+          });
+
+          // One write against one line, and the same rule as add-to-cart: it
+          // presses Amazon's own control and never builds a request.
+          //
+          // The line is found by Amazon's own item id and nothing else. Not by
+          // ASIN — one product in two variations is two rows sharing one — and
+          // not by position, because the row order changes under a write that
+          // is still landing.
+          //
+          // `decrement` deliberately has no fallback. Its selector is the
+          // label Amazon puts on a real decrease control, so at the quantity
+          // floor there is nothing to match: Amazon has replaced that button
+          // with a delete. Falling back to "the first button in the stepper"
+          // is exactly the bug this shape exists to make impossible.
+          agent.define('amazon.cartWrite', (params) => {
+            const sel = (params && params.selectors) || {};
+            const id = params && params.itemID;
+            const action = params && params.action;
+            if (!id || !action) { return 'bad-request'; }
+
+            // Why this reports which step failed rather than just failing: a
+            // row that is no longer in the document and a row whose control
+            // has moved are different bugs with the same symptom, and one
+            // afternoon was spent proving they are not the same thing.
+            let row = null;
+            for (const entry of sel.cartItem || []) {
+              try {
+                row = [...document.querySelectorAll(entry)].find(
+                  (candidate) => candidate.getAttribute('data-itemid') === id
+                ) || null;
+              } catch (e) { continue; }
+              if (row) { break; }
+            }
+            if (!row) { return 'no-row'; }
+
+            const list = action === 'increment' ? sel.cartIncrement
+              : action === 'decrement' ? sel.cartDecrement
+              : action === 'remove' ? sel.cartRemove
+              : null;
+            if (!list) { return 'bad-request'; }
+
+            let control = null;
+            for (const entry of list) {
+              try { control = row.querySelector(entry); }
+              catch (e) { continue; }
+              if (control) { break; }
+            }
+            if (!control) { return 'no-control'; }
+            control.click();
+            return 'pressed';
           });
         })();
         """

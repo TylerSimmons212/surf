@@ -139,6 +139,24 @@ public enum AmazonSelectors {
         "#deliveryBlockMessage",
         "#delivery-block-message",
     ]
+    /// The same cell, read as data instead of as a sentence.
+    ///
+    /// Amazon stamps the delivery element with what it means before rendering
+    /// what it says: `data-csa-c-delivery-price="FREE"`,
+    /// `data-csa-c-delivery-time="Sunday, August 30"`,
+    /// `data-csa-c-delivery-benefit-program-id="cfs"`. Measured on a live
+    /// product page — the whole set is there, and every one of them is a token
+    /// or a date rather than prose that would need a grammar.
+    ///
+    /// The programme id is the only honest answer to "is this Prime". The
+    /// sentence says "FREE delivery" either way, and the difference between
+    /// free-because-Prime and free-because-you-spent-$35 is the entire question.
+    private static let deliveryCell = "[data-csa-c-content-id=\"DEXUnifiedCXPDM\"]"
+    public static let productDeliveryProgram = [
+        deliveryCell + "@data-csa-c-delivery-benefit-program-id"
+    ]
+    public static let productDeliveryPrice = [deliveryCell + "@data-csa-c-delivery-price"]
+    public static let productDeliveryTime = [deliveryCell + "@data-csa-c-delivery-time"]
     /// Who takes the money. `.offer-display-feature-text-message` is the one
     /// node holding only the value: the block around it repeats the label and
     /// the value three times over, so a text walk of the whole thing returns
@@ -305,6 +323,56 @@ public enum AmazonSelectors {
         "#cm_cr_dp_d_rating_histogram ul li",
     ]
 
+    // MARK: - The cart
+
+    /// Active lines only.
+    ///
+    /// A cart page also holds "Saved for later" and "Buy it again", which are
+    /// the same shape and are not the cart. `data-itemtype="active"` is
+    /// Amazon's own word for the difference, and a live cart had a saved
+    /// section sitting right underneath.
+    public static let cartItem = [".sc-list-item[data-itemtype=\"active\"]"]
+
+    /// Everything about a line is an attribute on the line. A bare
+    /// `@attribute` reads the row's own, which is what makes the cart the one
+    /// screen in this lens where nothing has to be read out of prose.
+    public static let cartItemID = ["@data-itemid"]
+    public static let cartItemASIN = ["@data-asin"]
+    public static let cartItemTitle = ["@data-producttitle"]
+    public static let cartItemPrice = ["@data-price", "@data-displayprice"]
+    public static let cartItemQuantity = ["@data-quantity"]
+    public static let cartItemMinQuantity = ["@data-minquantity"]
+    public static let cartItemOutOfStock = ["@data-outofstock"]
+    public static let cartItemPrime = ["@data-isprimeasin"]
+    /// The row holds four images — a hidden spinner, the product, an SVG
+    /// ornament and a badge. Only one carries a class worth naming, and its
+    /// `src` has a size token `AmazonImage` can rewrite upward.
+    public static let cartItemImage = ["img.sc-product-image@src"]
+
+    /// Amazon's own subtotal and its label. Never summed from the lines — see
+    /// `AmazonCart.subtotal`.
+    public static let cartSubtotal = ["#sc-subtotal-amount-activecart"]
+    public static let cartSubtotalLabel = ["#sc-subtotal-label-activecart"]
+
+    /// The controls a write drives, addressed by their labels and not by their
+    /// position — which is the whole safety story.
+    ///
+    /// Amazon's stepper is two `button.a-declarative` side by side, and the
+    /// first one is not a minus. At the quantity floor it *is the delete
+    /// button*: measured on a live cart, its `aria-label` reads "Delete Anker
+    /// USB C to USB C Cable…" and not "Decrease quantity". A stepper wired to
+    /// "click the first button" removes the line and reports a decrement.
+    ///
+    /// Selecting decrement by the label Amazon gives the real decrement means
+    /// that at the floor this selector matches nothing, and the write cannot
+    /// happen even if every guard above it failed. `AmazonCartItem` refuses it
+    /// too. Two locks on one door, because money is downstream of both.
+    public static let cartIncrement = ["button[aria-label^=\"Increase quantity\"]"]
+    public static let cartDecrement = ["button[aria-label^=\"Decrease quantity\"]"]
+    /// The name carries the line's own id, so this is only ever used scoped to
+    /// one row.
+    public static let cartRemove = ["input[name^=\"submit.delete-active.\"]"]
+
     /// The whole table, in the shape the page script consumes. Crossing as a
     /// call argument rather than being baked into the script is what keeps
     /// every piece of site knowledge on this side of the bridge.
@@ -335,6 +403,24 @@ public enum AmazonSelectors {
             "productReviews": productReviews,
             "productAvailability": productAvailability,
             "productDelivery": productDelivery,
+            "cartItem": cartItem,
+            "cartItemID": cartItemID,
+            "cartItemASIN": cartItemASIN,
+            "cartItemTitle": cartItemTitle,
+            "cartItemPrice": cartItemPrice,
+            "cartItemQuantity": cartItemQuantity,
+            "cartItemMinQuantity": cartItemMinQuantity,
+            "cartItemOutOfStock": cartItemOutOfStock,
+            "cartItemPrime": cartItemPrime,
+            "cartItemImage": cartItemImage,
+            "cartSubtotal": cartSubtotal,
+            "cartSubtotalLabel": cartSubtotalLabel,
+            "cartIncrement": cartIncrement,
+            "cartDecrement": cartDecrement,
+            "cartRemove": cartRemove,
+            "productDeliveryProgram": productDeliveryProgram,
+            "productDeliveryPrice": productDeliveryPrice,
+            "productDeliveryTime": productDeliveryTime,
             "productSeller": productSeller,
             "productImages": productImages,
             "productBullets": productBullets,

@@ -61,7 +61,20 @@ public enum AmazonPage: Equatable, Sendable {
             || lower.hasPrefix("/gp/your-account/order") {
             return .orders
         }
-        if lower.hasPrefix("/gp/cart") || lower == "/cart" || lower.hasPrefix("/cart/") {
+        // The readable cart only.
+        //
+        // `/cart/smart-wagon` is not it: Amazon sends you there straight after
+        // an add, and it is a confirmation screen carrying recommendations
+        // rather than a cart. It holds none of the `.sc-list-item` rows the
+        // sidebar reads, so treating it as the cart meant opening the sidebar
+        // right after adding something and being told the cart was empty —
+        // while the badge beside it said three.
+        //
+        // So the prefix match is gone and the paths are named. Anything else
+        // under `/cart/` is some interstitial we have not met, and `.other`
+        // sends the lens to the real cart rather than reading a stranger.
+        if lower.hasPrefix("/gp/cart") || lower == "/cart" || lower == "/cart/"
+            || lower == "/cart/view" || lower == "/cart/view.html" {
             return .cart
         }
 
@@ -136,6 +149,10 @@ public enum AmazonPage: Equatable, Sendable {
         guard isValidASIN(id) else { return nil }
         return URL(string: "https://www.amazon.com/dp/\(id)")
     }
+
+    /// Whether this address is the cart. The one question a cart write has to
+    /// answer before it presses anything.
+    public var isCart: Bool { self == .cart }
 
     public static var cartURL: URL? {
         URL(string: "https://www.amazon.com/gp/cart/view.html")
