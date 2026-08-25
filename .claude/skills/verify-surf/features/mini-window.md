@@ -3,17 +3,29 @@
 A floating panel holding one page nobody has committed to, with **Open in Surf**
 to keep it. `MiniWindowController` owns the panel; the tab inside is a real
 `Tab` that its island does not list, so promoting is `append` and dismissing is
-`teardown`.
+`teardown`. Its chrome is one bar across the top — close, address, copy, Open in
+— with the page starting below it.
 
 ## Driving it
 
 No environment driver — it opens from the page context menu. Use
-`testpages/context-demo.html`, whose link sits at page y≈140:
+`testpages/context-demo.html`, whose link sits at page (550, 140), i.e. screen
+(550, 173) with the window filling a 1512×949 visible frame:
 
 1. Right-click the link (`CGEvent`, see [menu-bar.md](menu-bar.md)).
 2. `key code 125` ×3, then `key code 36` — "Open Link in Mini Window" is the
    third item for a link hit. **Count the items before trusting that number**;
    the list is built per hit kind.
+
+**Move the pointer along a path into the link before right-clicking.** The
+page's hit report is pushed from pointer movement, so a right-click at a spot
+the pointer is already sitting on reports the *previous* hit — which shows up as
+`context: hit bare` and a stock WebKit menu with none of Surf's items in it.
+Teleporting the pointer straight to the target is not enough either; post a
+handful of intermediate `mouseMoved` events. Expect this to be flaky regardless:
+in one session every hit came back `bare` including over the image block, with
+no change to the page or the window. Confirm `context: hit link=…` in the log
+before reading a menu result as anything.
 
 ## What proves it
 
@@ -22,24 +34,19 @@ No environment driver — it opens from the page context menu. Use
 
 | Check | Oracle |
 |---|---|
-| the panel exists | process window count goes 1 → 2 |
-| Escape dismisses | count back to 1, one `dismissed` line |
+| the panel exists | a second CoreGraphics window for the pid, at layer 3 |
+| it opens the right size | `MiniWindowSizing.size(forVisible:)` — 832×560 on a 1512×949 visible frame |
+| Escape dismisses | window count back to 1, one `dismissed` line |
 | promotion keeps the page | the Window menu's tab list gains the page's title |
+| the bar drags the window | the panel's CG origin moves by **exactly** the drag delta |
+| the address field works | type an address, `key code 36`, and a `loaded <url>` line follows |
 
 The panel's own controls are not readable — like every other window here it is
-one opaque `AXGroup` — so click them by coordinate. The panel is 1000x680; find
-it by size rather than assuming it is `window 1`, because the ordering changes
-and the main window answers happily in its place.
-
-Measured, relative to the panel's frame:
-
-| Control | Where | Oracle |
-|---|---|---|
-| Close | (left+34, top+34) | window count drops, `mini: dismissed` |
-| Copy link | (right-150, top+34) — (right-184) with a caret | `pbpaste` — prime a sentinel first |
-| Open in Surf / Open in <island> | (right-60, top+34); **(right-103) once a caret appears** | `mini: promoted`, tab list grows |
-| Island caret | (right-24, top+34), only with 2+ islands | menu opens; Down/Return picks |
-| Drag strip | anywhere in the top 52pt clear of the buttons | panel `position` moves by the drag delta |
+one opaque `AXGroup` — so click them by coordinate, measured from the panel's CG
+bounds. The bar is 46pt tall at the top of the panel; its controls are 30pt and
+centred, which leaves an 8pt strip along the top and bottom of the bar that
+belongs to the drag area rather than to any control. That strip is where a drag
+test should start.
 
 **Sweeping for a button can destroy its own subject.** Open in Surf is wide; a
 sweep that starts near the right edge promotes on its first step and every later
@@ -52,7 +59,7 @@ missed entirely.
 
 Escape dismisses, and focus should return to the opener — check with
 `get size of (value of attribute "AXFocusedWindow")`, which goes from the
-panel's 1000x680 to the main window's size.
+panel's size to the main window's.
 
 ## A second island
 
@@ -98,6 +105,9 @@ A link arriving *before* the session exists, which `ExternalLinks` queues for.
 `SurfApp.init` builds the session very early, so this may be unreachable in
 practice; the `link(s) queued` log line is how you would know it ever fired.
 
-Nothing about how any of it *looks* — the glass, the hover growth, the copy
-tick — has been seen. `screencapture` needs Screen Recording granted to the
-terminal, and without it every check here is geometry and behaviour only.
+Nothing about how any of it *looks* — the glass, the hover and focus states, the
+copy tick — has been seen. `screencapture` needs Screen Recording granted to the
+terminal, and without it every check here is geometry and behaviour only. This is
+not a small gap: the bar's controls once had hover events arriving correctly and
+drew no hover at all, because the panel was non-activating and AppKit was
+rendering the whole row inactive. Every log line said it was working.

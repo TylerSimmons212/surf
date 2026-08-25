@@ -58,7 +58,7 @@ struct IslandStrip: View {
 /// One island, as a chip.
 ///
 /// Only the current island spells its name out. Six chips each carrying a word
-/// would wrap the strip onto a second line at the sidebar's 264pt, and the
+/// would wrap the strip onto a second line at the sidebar's width, and the
 /// name is only ever a reminder of which one you're in — the emoji and the
 /// tint are what you actually navigate by.
 private struct IslandChip: View {
