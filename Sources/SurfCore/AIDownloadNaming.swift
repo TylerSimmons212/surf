@@ -57,6 +57,72 @@ public enum AIDownloadNaming {
         hyphenatedExtensions.contains(fileExtension.lowercased()) ? .hyphenated : .spaced
     }
 
+    /// Whether the file already has a name worth keeping.
+    ///
+    /// The renamer exists for `dl_88213.pdf` and
+    /// `0ff75097-ae7f-4219-bb76.dmg`, not for names somebody chose on purpose.
+    /// `Surf-0.5.0.dmg` came off a release page already saying what it is and
+    /// which version it is, and rewriting it lost fidelity to what the
+    /// publisher called the file for no gain at all — which is how a `.dmg`
+    /// ended up with a space in it and an afternoon went into finding out that
+    /// was not the problem.
+    ///
+    /// Skipping is worth more than the CLI call it saves: it is the difference
+    /// between a feature that tidies up junk and one that has an opinion about
+    /// every file you download.
+    public static func isAlreadyWellNamed(_ filename: String) -> Bool {
+        let base = (filename as NSString).deletingPathExtension
+        guard !base.isEmpty, base.count <= maxBaseNameLength else { return false }
+
+        let lowered = base.lowercased()
+
+        // Names that say nothing. Checked against the whole base and against
+        // its first word, so `download (3)` and `attachment-final` both go.
+        let placeholders: Set<String> = [
+            "download", "downloads", "file", "files", "attachment", "attachments",
+            "untitled", "unnamed", "document", "doc", "index", "output", "export",
+            "tmp", "temp", "data", "new", "copy", "final", "image", "img", "video",
+            "audio", "archive", "backup", "dl", "get", "view", "content", "asset",
+        ]
+        if placeholders.contains(lowered) { return false }
+        let words = lowered.split(whereSeparator: { " -_.()[]".contains($0) })
+        if let first = words.first, words.count <= 2, placeholders.contains(String(first)) {
+            return false
+        }
+
+        // Has to actually be words. A name that is mostly digits and
+        // punctuation is an identifier wearing a filename.
+        let letters = base.filter(\.isLetter).count
+        guard letters >= 3, Double(letters) / Double(base.count) >= 0.35 else { return false }
+
+        // A machine-generated identifier: a long run of hex that contains at
+        // least one digit. The digit is what keeps ordinary words out of it —
+        // eight hex letters in a row that spell something are vanishingly
+        // rare, and `0ff75097` is not.
+        if hasIdentifierRun(base) { return false }
+
+        return true
+    }
+
+    /// A run of eight or more hex characters including at least one digit,
+    /// which is what a random identifier looks like and what a version string,
+    /// a date, and an English word do not.
+    private static func hasIdentifierRun(_ text: String) -> Bool {
+        var run = 0
+        var sawDigit = false
+        for character in text {
+            if character.isHexDigit {
+                run += 1
+                if character.isNumber { sawDigit = true }
+                if run >= 8, sawDigit { return true }
+            } else {
+                run = 0
+                sawDigit = false
+            }
+        }
+        return false
+    }
+
     /// Builds the prompt for one finished download.
     ///
     /// Filenames and URLs are the site's words — untrusted input riding into

@@ -970,7 +970,10 @@ makes it unit-testable — the UI targets can't be.
   (`Surf-0.5.0.dmg`), because a space in a name you type means quoting it every
   time and forgetting to means two arguments where one was meant. The prompt
   asks for the right shape and the sanitiser enforces it, so a model that
-  ignores the instruction still cannot put a space where one must not be
+  ignores the instruction still cannot put a space where one must not be.
+  A file whose name somebody already chose on purpose is skipped before the
+  CLI is even woken: the renamer is for `dl_88213.pdf`, not for
+  `Surf-0.5.0.dmg`
 - `Sources/SurfCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
 - `Sources/SurfCore/OKLCH.swift` — the perceptual colour space and hue-preserving
   gamut mapping

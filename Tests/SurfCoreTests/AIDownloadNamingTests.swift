@@ -41,6 +41,64 @@ struct AIDownloadNamingTests {
         )
     }
 
+    // MARK: - Leaving a good name alone
+
+    /// The one that prompted the rule. It came off a release page already
+    /// saying what it is and which version it is.
+    @Test(
+        "A name somebody chose on purpose is left alone",
+        arguments: [
+            "Surf-0.5.0.dmg",
+            "Q3 Revenue Report.pdf",
+            "annual-report-2024.pdf",
+            "node-v22.11.0-darwin-arm64.tar.gz",
+            "Invoice 4471.pdf",
+            "CLAUDE.md",
+            "Screenshot 2026-08-25 at 14.03.11.png",
+        ]
+    )
+    func keepsAGoodName(filename: String) {
+        #expect(AIDownloadNaming.isAlreadyWellNamed(filename), "\(filename) should be kept")
+    }
+
+    @Test(
+        "A name that says nothing, or is an identifier, gets renamed",
+        arguments: [
+            "dl_88213.pdf",
+            "download.pdf",
+            "download (3).zip",
+            "attachment.pdf",
+            "untitled.docx",
+            "file.txt",
+            "0ff75097-ae7f-4219-bb76-780748f5d825.dmg",
+            "a1b2c3d4e5f6.zip",
+            "8f3c1e2b9d.pdf",
+            "1234567890.csv",
+            "___.png",
+            "",
+        ]
+    )
+    func renamesAJunkName(filename: String) {
+        #expect(!AIDownloadNaming.isAlreadyWellNamed(filename), "\(filename) should be renamed")
+    }
+
+    /// The identifier test keys on a long hex run *containing a digit*, so it
+    /// can't mistake a version, a date, or an ordinary word for a random id.
+    @Test("Versions, dates and words are not mistaken for identifiers")
+    func versionsAreNotIdentifiers() {
+        #expect(AIDownloadNaming.isAlreadyWellNamed("Surf-0.5.0.dmg"))
+        #expect(AIDownloadNaming.isAlreadyWellNamed("backup-2026-08-25.tar"))
+        #expect(AIDownloadNaming.isAlreadyWellNamed("Deadbeef Cafe Menu.pdf"))
+    }
+
+    /// A name longer than the renamer would ever produce is junk by
+    /// construction — the model is capped at the same length.
+    @Test("An absurdly long name is not a name")
+    func longNamesAreRenamed() {
+        let long = String(repeating: "report-", count: 20) + ".pdf"
+        #expect(!AIDownloadNaming.isAlreadyWellNamed(long))
+    }
+
     // MARK: - Naming conventions
 
     /// The case that started this: a release artifact downloaded through Surf
