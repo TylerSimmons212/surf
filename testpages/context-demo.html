@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Context menu targets</title>
+<style>
+  body { margin: 0; font: 16px/1.4 system-ui; background: #101418; color: #e8eef4; }
+  .target { position: absolute; left: 200px; width: 700px; display: grid;
+            place-items: center; border-radius: 12px; }
+  #link  { top: 60px;  height: 160px; background: #1d3a5c; }
+  #link a { color: #9ecbff; font-size: 28px; }
+  #pic   { top: 250px; height: 200px; background: #2a1d3a; }
+  #pic img { max-height: 180px; }
+  #clip  { top: 480px; height: 200px; background: #1d3a2a; }
+  #words { top: 700px; height: 120px; background: #3a2a1d; padding: 0 24px;
+           width: 652px; }
+</style>
+<div class="target" id="link"><a href="https://example.com/deep/page?q=1">A link to right-click</a></div>
+<div class="target" id="pic"><img src="tide.png" alt="tide"></div>
+<div class="target" id="clip"><video src="does-not-load.mp4" controls width="600"></video></div>
+<div class="target" id="words"><p>Some selectable prose sitting on the page, for the selection case.</p></div>

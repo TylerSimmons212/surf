@@ -1,7 +1,7 @@
 import SurfCore
 import SwiftUI
 
-/// The home screen: the name, and the thing you type into.
+/// The home screen: the water, and the thing you type into.
 ///
 /// This used to be a backdrop — a button shaped like the palette, which opened
 /// the palette on top of it. Clicking a text field and being handed a second
@@ -32,13 +32,7 @@ struct EmptyTabView: View {
 
     var body: some View {
         ZStack {
-            // Over the mark, so the water washes across its bottom half.
-            // The mark lives inside the water's canvas, not behind it: the
-            // layers are translucent, so anything merely behind them ghosts
-            // through. The water erases the mark with its own wave shapes
-            // instead, and the letters' bottom edge becomes the crest line.
-            WaterBackground(surface: waterline, diveStartedAt: tab.diveStartedAt,
-                            mark: Self.markPath)
+            WaterBackground(surface: waterline, diveStartedAt: tab.diveStartedAt)
                 .ignoresSafeArea()
 
             // On the water, at its own surface.
@@ -54,7 +48,7 @@ struct EmptyTabView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-            // The board goes under as the water comes up — slipping below the
+            // The field goes under as the water comes up — slipping below the
             // rising surface rather than blinking out, which is the one wrong
             // note a disappearing control could hit here.
             .offset(y: tab.isDiving ? 130 : 0)
@@ -81,48 +75,32 @@ struct EmptyTabView: View {
         }
     }
 
-    /// Where the surface sits. The board is centred, so this is where the two
+    /// Where the surface sits. The field is centred, so this is where the two
     /// meet — a fraction rather than a point, because the window resizes and a
-    /// board floating above its own waterline is the one thing that would give
+    /// field floating above its own waterline is the one thing that would give
     /// the whole idea away.
     private let waterline = 0.5
 
-    /// The mark, placed for a given window size — cached, because the water
-    /// asks thirty times a second and the outlines only change when the window
-    /// does. An outline face rather than a stroked one: stroking Outfit works
-    /// until the line is heavy enough to see across a room, and then the R and
-    /// the F run into each other. Sunk so its last fifth starts below the
-    /// waterline, where the waves now decide what shows.
-    private static let mark = GlyphOutline(text: "SURF", family: "Bungee Outline", tracking: 2)
-    private static let markAspect = mark.aspect()
-    private static var markCache: (size: CGSize, path: Path)?
-
-    private static func markPath(for size: CGSize) -> Path {
-        if let cached = markCache, cached.size == size { return cached.path }
-        let width = size.width - 60
-        let height = width / max(markAspect, 0.001)
-        let centerY = size.height * 0.5 + size.height * 0.06 - height / 2
-        let path = mark.path(in: CGRect(
-            x: (size.width - width) / 2, y: centerY - height / 2,
-            width: width, height: height
-        ))
-        markCache = (size, path)
-        return path
-    }
+    /// The glass's tint: the water's own deep, from the dive's underlayer in
+    /// `WaterBackground`, so the pill reads as a darker patch of the same sea
+    /// rather than a foreign grey. Deliberate, after a glass pane was rejected
+    /// once for letting the water read straight through it: the tint is what
+    /// keeps bold white text legible when a bright crest passes underneath.
+    private static let glassTint = Color(red: 0.10, green: 0.30, blue: 0.56).opacity(0.38)
 
     private var field: some View {
         HStack(spacing: 14) {
             Image(systemName: "magnifyingglass")
-                .font(Typeface.figtree(size: 17, weight: 500))
-                .foregroundStyle(Color(red: 0.10, green: 0.22, blue: 0.34).opacity(0.55))
+                .font(Typeface.figtree(size: 17, weight: 600))
+                .foregroundStyle(.white.opacity(0.85))
 
             SurfTextField(
                 text: $text,
                 placeholder: "Search or enter address",
-                font: .systemFont(ofSize: 19, weight: .regular),
-                // The board sets its own surface, so the ink is chosen against
-                // that rather than against the window's appearance.
-                textColor: NSColor(red: 0.06, green: 0.15, blue: 0.24, alpha: 1),
+                font: .systemFont(ofSize: 19, weight: .bold),
+                // White on tinted glass over the sea, whatever the window's
+                // appearance says; the placeholder is the same ink at 45%.
+                textColor: .white,
                 focusToken: focusToken,
                 onSubmit: submit,
                 onMove: { direction in
@@ -142,53 +120,28 @@ struct EmptyTabView: View {
                 focusToken = new
             }
         }
-        // Asymmetric, because the shape is. The tail end is blunt and needs
-        // little; the nose runs out for the last third and is down to half
-        // height by x=576 of 620, so text ending where a capsule's would end
-        // would sit outside the board.
-        .padding(.leading, 40)
-        .padding(.trailing, 100)
+        .padding(.horizontal, 26)
         .padding(.vertical, 17)
         .frame(width: barWidth)
-        // A real board, not a pane of glass: white, opaque, catching a little
-        // more light along the top than the bottom. Glass let the water read
-        // straight through it, which put the thing meant to be riding the wave
-        // somewhere behind it.
-        .background {
-            SurfboardShape()
-                .fill(
-                    LinearGradient(
-                        colors: [Color(white: 0.99), Color(white: 0.90)],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                )
-        }
-        .overlay(alignment: .trailing) {
-            // The stringer, kept to the nose run. Full length is what a board
-            // actually has and it drew a line straight through the placeholder;
-            // typed text can reach x=520 of 620, so this starts at 536 and
-            // there is nothing for it to cross.
-            Capsule()
-                .fill(Color(red: 0.10, green: 0.22, blue: 0.34).opacity(0.18))
-                .frame(width: 48, height: 1.5)
-                .padding(.trailing, 36)
-                .allowsHitTesting(false)
-        }
-        .overlay {
-            SurfboardShape()
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [.white, Color(red: 0.55, green: 0.68, blue: 0.78)],
-                        startPoint: .top, endPoint: .bottom
-                    ),
-                    lineWidth: 1
-                )
-                .allowsHitTesting(false)
-        }
-        .contentShape(SurfboardShape())
+        // A glass pill on the water. Glass was tried here once and rejected
+        // because the sea read straight through it; it is back by choice, and
+        // the tint is what makes it sit *on* the wave rather than behind it.
+        // Hover lives in the tint as well as the shadow: a brightness or scale
+        // layered after `.glassEffect` never reaches the glass pass (see
+        // MiniWindowChrome), so the material itself has to answer.
+        .glassEffect(
+            .regular
+                .tint(Self.glassTint.opacity(isHovering ? 0.5 : 0.38))
+                .interactive(),
+            in: Capsule()
+        )
+        .contentShape(Capsule())
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: text.isEmpty)
+        // The lift off the surface — and the dark halo that keeps the rim
+        // readable where a crest would otherwise wash it out.
         .shadow(color: Color(red: 0.02, green: 0.10, blue: 0.20)
             .opacity(isHovering ? 0.42 : 0.32), radius: isHovering ? 26 : 18, y: 10)
+        // On the whole field, glass and label together, so the two can't part.
         .scaleEffect(isHovering ? 1.008 : 1)
         .animation(.spring(response: 0.3, dampingFraction: 0.75), value: isHovering)
         .onHover { isHovering = $0 }

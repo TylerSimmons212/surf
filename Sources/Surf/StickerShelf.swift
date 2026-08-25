@@ -46,6 +46,8 @@ struct StickerShelf: View {
                     isShowing: showing.contains(sticker.id),
                     isDragged: drag.draggedID == sticker.id,
                     onOpen: { session.open(sticker) },
+                    onOpenInNewTab: { session.openInNewTab(sticker) },
+                    onOpenInSplit: { session.openInSplit(sticker) },
                     onPeel: {
                         withAnimation(Self.peel) {
                             session.removeSticker(sticker, from: island)
@@ -160,6 +162,8 @@ private struct StickerTile: View {
     /// the gap it will drop into.
     let isDragged: Bool
     let onOpen: () -> Void
+    let onOpenInNewTab: () -> Void
+    let onOpenInSplit: () -> Void
     let onPeel: () -> Void
 
     @State private var isHovering = false
@@ -256,6 +260,11 @@ private struct StickerTile: View {
         .animation(.easeOut(duration: 0.6), value: press)
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button("Open in New Tab", action: onOpenInNewTab)
+            Button("Open in Split", action: onOpenInSplit)
+
+            Divider()
+
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(sticker.url, forType: .string)

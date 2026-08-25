@@ -95,7 +95,7 @@ cp -R "$FRAMEWORK" "$APP/Contents/Frameworks/"
 
 # Surf's two faces. `ATSApplicationFontsPath` is what registers them at launch —
 # no CTFontManager call anywhere — which also means they exist only in a built
-# app: `swift run` gets the system font and a wordmark that looks a size off.
+# app: `swift run` gets the system font instead.
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT"/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
 # The licence travels with the fonts; OFL requires it be distributed alongside.
@@ -213,6 +213,13 @@ sign() {
         codesign --force --options runtime --timestamp --sign "$IDENTITY" "$@"
     fi
 }
+# The XPC services first, and they are the ones easy to miss: they arrive
+# already signed by the Sparkle project, so `codesign --verify --deep` is
+# perfectly happy with them and Apple is not. A valid signature belonging to
+# somebody else is exactly what notarization exists to reject.
+for XPC in "$SPARKLE/Versions/B/XPCServices/"*.xpc; do
+    [ -e "$XPC" ] && sign "$XPC"
+done
 sign "$SPARKLE/Versions/B/Updater.app"
 sign "$SPARKLE/Versions/B/Autoupdate"
 sign "$SPARKLE"
@@ -226,6 +233,27 @@ else
     # --deep, only to verify: it walks the nested code the plain check skips,
     # which is exactly where a mis-ordered signature would still be hiding.
     codesign --verify --deep --strict --verbose=2 "$APP"
+
+    # And then the question --deep does not ask: is every nested piece signed
+    # by *us*? Sparkle's XPC services ship with the Sparkle project's own
+    # signature, which is valid, which is why the check above waves them
+    # through and notarization refuses them ten minutes into a release. Asking
+    # here turns that into a failure at the point the mistake was made.
+    TEAM="$(echo "$IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\)$/\1/')"
+    # Captured, not piped into `grep -q`. Under `pipefail` that pipeline
+    # reports a failure whenever grep exits on its match before codesign has
+    # finished writing — codesign takes a SIGPIPE, and a correctly signed
+    # bundle gets reported as an unsigned one, intermittently and with no
+    # pattern to it.
+    while IFS= read -r NESTED; do
+        INFO="$(codesign -dv "$NESTED" 2>&1 || true)"
+        case "$INFO" in
+        *"TeamIdentifier=$TEAM"*) continue ;;
+        esac
+        echo "error: $NESTED is not signed by team $TEAM." >&2
+        echo "       Notarization would reject it. Sign it before the bundle that holds it." >&2
+        exit 1
+    done < <(find "$APP" \( -name "*.xpc" -o -name "*.app" -o -name "*.framework" \) -print)
 fi
 
 echo "Built $APP ($VERSION build $BUILD)"

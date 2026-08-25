@@ -74,6 +74,16 @@ is injected only when Focus is entered, so only pages you focus pay for it.
 The menu item works on any page and lets extraction be the judge; when a page
 has no article to give, Focus says so instead of rendering the attempt.
 
+Escape leaves Focus, and it cancels an armed screenshot pick first — the thing
+started last goes first. The key is caught by the same local `NSEvent` monitor
+that handles ⌃⇥, not by a SwiftUI shortcut: Escape is a focus key, so whichever
+view is first responder eats it before a menu or a hidden button would see it,
+and the web view in particular never passes a plain key down on. The monitor
+runs before the responder chain and consumes the key only when it did
+something; an Escape aimed at a text field (the address palette, the find bar)
+or at a mini window is left alone, so those close themselves and the reader
+stays.
+
 A recipe page gets its own lens. Recipe SEO guarantees the page carries
 `schema.org/Recipe` JSON-LD, and the lens renders what that data says the
 recipe *is* — not the essay above it. Ingredients check off as you gather
@@ -326,6 +336,105 @@ isolated world that is invisible either way; in the page world a fixed name is
 a reliable way for a site to tell which browser it is being read in. Dev tools'
 instances keep fixed names, which is only defensible because they exist solely
 while a panel is attached — a page being inspected is already being watched.
+
+### The page's context menu
+
+Right-clicking a page gets WebKit's own menu with Surf's items on the front of
+it: open a link in a new tab or a split, copy a link or an image address, pop a
+video out, enter Focus, take a screenshot, block the site's domain. WebKit's
+half is kept rather than replaced — Look Up, Services, spelling and the editing
+verbs are all things Surf would only reimplement worse.
+
+Knowing what was right-clicked is the hard part, and the reason is a process
+boundary. The DOM `contextmenu` event is dispatched in the web process; the menu
+is built in the UI process, synchronously, inside `willOpenMenu`. There is no
+round trip to be had at the moment it is needed, so the page pushes what was
+under the pointer on every right-click and Surf holds the answer before the
+question. Measured on this machine the push lands 20–60ms ahead of the menu.
+
+It is still a race, so it is arranged to fail safe. The held hit is cleared when
+the menu closes, which means a payload can only ever describe the click its menu
+belongs to; losing the race costs items, never accuracy. The listener never
+calls `preventDefault`, so a lost race is still a working stock menu.
+
+The selection is only reported when the click lands inside it. Without that
+check a right-click on an image offers to search for whatever sentence was
+highlighted somewhere else on the page, because the selection outlives the click
+that made it.
+
+`page.js` is injected into every page and `check-js.sh` budgets it at 3000
+bytes for that reason. The listener spends most of what was left, which is why
+its reasoning lives in Swift comments around the string rather than in the
+string — comments in there ship to every site you visit.
+
+### Mini windows
+
+A link you have not committed to opens in a floating panel with the page in it
+and one button that keeps it: **Open in Surf**. Most links are read once and
+thrown away, and a browser that turns every one of them into a tab makes you
+tidy up after reading. Escape dismisses; the page never reaches the sidebar.
+
+The page fills the panel and the controls float on top of it as glass: closing
+at the top left, where a window's close button belongs, copy and **Open in
+Surf** at the top right. `.regular` glass rather than the `.clear` the pop-out
+uses: that one floats on moving video, where frosting would fog the picture,
+and this floats on a page. Copying shows a tick for a moment, because an action
+whose whole effect is invisible otherwise looks like one that failed.
+
+The top strip of the panel drags the window. A borderless panel has no title bar
+to grab, and `isMovableByWindowBackground` cannot help because the web view
+covers the background and takes the drag first, so the grab area is an explicit
+view above the page and below the buttons. It costs the page that strip — an
+AppKit view takes every click inside its frame — which is the same bargain a
+titled window makes, and the reason the strip is only as tall as the buttons.
+
+Closing puts you back in the window the link came from. Dismissing a mini window
+means "never mind", and never mind means going back rather than landing wherever
+AppKit decides to raise next.
+
+With one island the button reads **Open in Surf**, because there is nothing to
+choose and the useful thing to say is which app this floating window belongs to.
+With more than one it reads **Open in <island>** and grows a caret listing the
+others — the same rule as the tab and island menus, where the UI is a map of
+what exists rather than a fixed grid.
+
+Choosing a different island is not a re-filing. The tab's cookie jar came from
+the island it was browsing in, so carrying the live view across would put a page
+that browsed as one identity into another's list; instead the page is fetched
+again as the island you picked. That reload is the feature — "open this in Work"
+means load it as Work — and it is why the two cases are different code rather
+than one `append` with a different argument.
+
+The panel holds a real `Tab` — same cookie jar, same content rules, same theme,
+same page agent — that its island simply does not list. That absence is the
+whole mechanism. There is no ephemeral-tab flag for the rest of the app to
+remember to check: the sidebar draws `island.tabs`, and this is not in it.
+Promoting is `append`, dismissing is `teardown`, and neither reloads the page.
+
+It browses in the island that was current when it opened, and says which one in
+its chrome, because that is whose logins the page is seeing. Promotion files the
+tab back into *that* island rather than whatever is current now — the two come
+apart the moment someone switches islands with a panel open, and a page carrying
+one island's identity into another island's list is the confusion `openSplit`
+already refuses to create.
+
+Links from other applications are the case this is really for. `bundle.sh`
+declares `http` and `https` in `CFBundleURLTypes`, which is what puts Surf in the
+default-browser list and what makes macOS hand it links at all. They arrive
+through `onOpenURL` on the window's content — SwiftUI's spelling of the
+delegate callback, and the better one here, because the view that receives
+them already holds the session; an app-delegate method would have needed a
+static way back to it. Settings › Links has the switch for whether they arrive
+as a mini window or straight as a tab, and the button that asks macOS to make
+Surf the default — a request, not a change, since the system puts up its own
+confirmation. When a link is what launched the app and the choice is a tab, it
+goes into the single untouched home tab rather than beside it: one tab from a
+click in Mail, not two with one of them empty.
+
+Only a real bundle can be a browser. Run from `swift run` there is nothing for
+Launch Services to point at, so Settings says so rather than offering a button
+that would fail quietly.
+
 ### Blocking
 
 Ads and trackers are blocked by default. The rules are WebKit's own content
@@ -478,17 +587,34 @@ the ad on it.
 Two lists are compiled rather than one, and the split is about time. EasyList is
 around forty-six thousand rules and compiling it costs seconds; your own rules
 are a handful and compile instantly. Sharing a list would mean recompiling
-EasyList to add one line, and the Block button would feel broken. The allowlist
-has to be in both, because `ignore-previous-rules` only cancels rules earlier in
-its own list and can't reach across into another — which is why pausing a site
-is the one action that pays the slow compile. Each compiled list is cached under
-a hash of the rules it was built from, so a list that hasn't changed since the
-last launch is never compiled twice.
+EasyList to add one line, and the Block button would feel broken. Each compiled
+list is cached under a hash of the rules it was built from, so a list that
+hasn't changed since the last launch is never compiled twice.
+
+Pausing a site compiles nothing. It used to: the exception lived inside the
+compiled lists as `ignore-previous-rules`, so flipping the switch meant
+rebuilding EasyList — tens of seconds, during which the page reloaded under the
+old rules and the switch appeared to do nothing. Flip it twice and the compiles
+queued behind each other. Now the decision is made per tab instead. Rule lists
+attach to a tab's content controller, so a paused site is a tab that simply has
+none: the lists and the counting script come off, the page reloads plain, and
+nothing is looking for anything — which is also why the shield says "off" rather
+than "paused", and shows no count. Resuming puts them back and reloads. The tab
+re-decides on every main-frame navigation, before the load's first request, so
+moving from a paused site to a blocked one in the same tab gets the right lists.
+Flipping the switch now reloads in a few milliseconds, and the compiled
+exception could not have stayed even in the background: lists already in memory
+carried it, so resuming would re-attach lists that didn't block until the next
+compile landed.
+
+The one shape this can't express is a window a page opened, which shares its
+opener's content controller: if the two sit on different sites and one is
+paused, whichever decided last decides for both.
 
 ### Privacy
 
-Surf is private by default and keeps no browsing history. Settings (`⌘,`) has
-four switches:
+Surf is private by default and keeps no browsing history. Settings (`⌘,`) has a
+Privacy pane, with four switches at the heart of it:
 
 | Setting | Default | Effect |
 |---|---|---|
@@ -500,6 +626,12 @@ four switches:
 The guarantee is that caches and cookies are independent: clearing where you
 went never signs you out. `PrivacyPolicy` encodes that rule and the tests
 enforce it.
+
+Each switch still explains itself, but behind an ⓘ rather than in a paragraph
+underneath. Printed under every row at once — which is how this started — the
+window grew taller than the screen and became something to scroll past rather
+than read, which is its own way of going unread. Settings is one pane per
+subject now: General, Privacy, Links, Reader, AI.
 
 ### Helpers
 
@@ -544,20 +676,42 @@ feature — and never an unverified download.
 
 ### Shortcuts
 
+The menu bar is the nine menus a Mac browser is expected to have, with Islands
+standing where Bookmarks would be — which is the honest arrangement, since a
+sticker belongs to an island rather than to the app.
+
 | | |
 |---|---|
 | `⌘T` | New tab |
 | `⌘W` | Close tab (the last one is replaced by a fresh tab) |
+| `⌘⇧T` | Reopen closed tab |
 | `⌘⇧]` / `⌘⇧[` | Next / previous tab |
 | `⌘1`–`⌘8` | Select tab by position |
-| `⌘9` | Select last tab |
+| `⌘9` | Select the last tab, once there are more than eight of them |
 | `⌘L` | Open the floating address bar |
 | `⌘[` / `⌘]` | Back / forward |
 | `⌘R` | Reload |
+| `⌘⇧D` | Split with the next tab, and close the split again |
 | `⌘⇧F` | Enter / leave Focus |
 | `←` / `→` | Scrub five seconds, on either video stage |
-| `⌘S` | Pin / unpin the sidebar |
+| `⌘⇧L` | Pin / unpin the sidebar |
+| `⌘D` | Add a sticker |
+| `⌥⌘←` / `⌥⌘→` | Previous / next island |
+| `⌥⌘1`–`⌥⌘9` | Select island |
 | `⌘,` | Settings |
+
+Three of these moved off keys they had no business holding. The sidebar was on
+`⌘S`, which is Save everywhere else on the Mac; the split was on `⌘D`, which is
+bookmarking everywhere else, and now carries Surf's equivalent. Swapping the
+split's two sides was on `⌘⌥D` — the system's Dock-hiding shortcut, which never
+reaches an app — so it is menu-only rather than given a third awkward chord.
+
+There is no `⌘N`, and no New Window item for it to belong to. Surf is one
+window by construction: a single session, and every tab owns one `WKWebView`,
+which can live in one view hierarchy at a time. The stock item SwiftUI adds to
+a `WindowGroup` would open a second window over the same tabs, and the two
+would then steal each page from each other whenever either showed it. Closing
+the window quits the app, which is the other half of the same fact.
 
 ## Run
 
@@ -634,7 +788,7 @@ ID password.
 Whoever you send the image to drags Surf to Applications and opens it. Nothing
 else: no quarantine to strip, no security pane to visit. Surf declares itself a
 handler for `http` and `https`, so it appears in System Settings › Desktop &
-Dock › Default web browser, and Settings › General has a button that asks macOS
+Dock › Default web browser, and Settings › Links has a button that asks macOS
 the same question. It is `LSMinimumSystemVersion 26.0`, so a Mac on Sequoia or
 older can't run it at all.
 
@@ -768,9 +922,11 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
-- History and a back/forward menu on long-press
+- Registering as a browser, so links from other apps arrive — and land in a
+  mini window, which is the case that feature exists for
+- A back/forward menu on long-press
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
-- Tab reordering by drag, and ⌘⇧T to reopen a closed tab
-- Bookmarks
+- Moving a tab between islands, which nothing can do yet — it is what "Move to
+  Island" and "Open Link in New Island" are both waiting on
 - Cross-origin iframes, which are a separate document nothing in the page can
   reach into — theming one means running the whole pass inside it

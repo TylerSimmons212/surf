@@ -42,7 +42,7 @@ struct BlockButton: View {
     }
 
     private var helpText: String {
-        if isPaused { return "Blocking paused on this site" }
+        if isPaused { return "Ad blocking off on this site" }
         let count = tab.blockLog.blockedCount
         return count == 0 ? "Nothing blocked on this page" : "\(count) blocked"
     }
@@ -132,16 +132,17 @@ struct BlockList: View {
                 Toggle("", isOn: Binding(
                     get: { !blocker.isPaused(on: pageHost) },
                     set: { isOn in
+                        // The tab reloads itself once the lists are stripped
+                        // or restored, which is immediate — see `setPaused`.
                         blocker.setPaused(!isOn, on: pageHost)
-                        tab.reload()
                     }
                 ))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
                 .help(blocker.isPaused(on: pageHost)
-                      ? "Resume blocking on this site"
-                      : "Pause blocking on this site")
+                      ? "Turn ad blocking on for this site"
+                      : "Turn ad blocking off for this site")
             }
         }
         .padding(.horizontal, 12)
@@ -153,7 +154,7 @@ struct BlockList: View {
             let count = tab.blockLog.blockedCount
             return count == 0 ? "Nothing blocked" : "\(count) blocked on this page"
         }
-        return "Paused on this site"
+        return "Ad blocking off on this site"
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -165,10 +166,13 @@ struct BlockList: View {
             .padding(.bottom, 3)
     }
 
-    /// Two different silences, and they mean opposite things: a page that
-    /// contacted nobody, and a panel that hasn't been told anything yet.
+    /// Three different silences, and they mean different things: a site
+    /// where nothing is watching, a panel that hasn't been told anything
+    /// yet, and a page that contacted nobody.
     private var emptyState: some View {
-        Text(blocker.isPreparing
+        Text(pageHost.map { blocker.isPaused(on: $0) } == true
+             ? "Nothing is blocked or counted here."
+             : blocker.isPreparing
              ? "Preparing the filter list…"
              : "This page hasn't contacted anyone else.")
             .font(.system(size: 11))
