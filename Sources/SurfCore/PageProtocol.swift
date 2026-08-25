@@ -70,6 +70,8 @@ public enum PageProtocol {
         case amazonPage = "amazon.page"
         case amazonNav = "amazon.nav"
         case amazonAddToCart = "amazon.addToCart"
+        case amazonCart = "amazon.cart"
+        case amazonCartWrite = "amazon.cartWrite"
 
         /// Which world the method has to run in. Getting this wrong is the
         /// failure that looks like the page simply not answering, so it is
@@ -87,7 +89,8 @@ public enum PageProtocol {
                  .findCount, .findClearSelection,
                  .youtubePage, .youtubeStage, .youtubeUnstage,
                  .youtubeRate, .youtubeCaptions,
-                 .amazonPage, .amazonNav, .amazonAddToCart:
+                 .amazonPage, .amazonNav, .amazonAddToCart,
+                 .amazonCart, .amazonCartWrite:
                 return .page
             }
         }

@@ -46,6 +46,29 @@ public struct AmazonPrice: Equatable, Sendable {
         self.isRange = isRange
     }
 
+    /// A `Decimal` back into money.
+    ///
+    /// The only place the lens *computes* a price rather than copying one, and
+    /// it exists for exactly one number: a cart line's total, which Amazon
+    /// states nowhere — `data-price` is the price of one. Everything else on
+    /// screen is Amazon's own string, and that is deliberate; a total we
+    /// calculate cannot know about a coupon, a subscription discount or
+    /// quantity pricing, which is why the cart's *subtotal* is never computed
+    /// and this is used only per line.
+    ///
+    /// Two fraction digits always, because `19.98` and `20` are both correct
+    /// decimals and only one of them is a price.
+    public static func format(_ amount: Decimal, currency: String) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        formatter.usesGroupingSeparator = true
+        let number = NSDecimalNumber(decimal: amount)
+        let text = formatter.string(from: number) ?? number.stringValue
+        return (currency.isEmpty ? "$" : currency) + text
+    }
+
     /// Reads one price string.
     ///
     /// Returns nil only when there is no price here at all. A string with a
@@ -325,11 +348,23 @@ public enum AmazonRating {
         guard text.range(of: "out of", options: .caseInsensitive) == nil
         else { return nil }
 
+        // The suffix has to be *attached to the number*.
+        //
+        // This read "K" or "M" anywhere in the string, which is fine for
+        // "16.1K ratings" and catastrophic for any sentence containing the
+        // letter: "Subtotal (3 items):" has an M in "items", and three became
+        // three million in a cart header. The same class of mistake as the
+        // "out of" guard above, found the same way — by looking at it.
         let multiplier: Decimal
-        let upper = text.uppercased()
-        if upper.contains("K") { multiplier = 1_000 }
-        else if upper.contains("M") { multiplier = 1_000_000 }
-        else { multiplier = 1 }
+        if let suffix = text.range(
+            // No space, and no letter after: "16.1K" and "10K+" are compact
+            // numbers, "3 monthly payments" and "3 items" are sentences.
+            of: "[0-9](\\.[0-9]+)?[KkMm](?![A-Za-z])", options: .regularExpression
+        ), let letter = text[suffix].last {
+            multiplier = (letter == "M" || letter == "m") ? 1_000_000 : 1_000
+        } else {
+            multiplier = 1
+        }
 
         guard var value = AmazonPrice.amounts(in: text).first else { return nil }
         if multiplier > 1 {

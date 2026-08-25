@@ -59,6 +59,25 @@ final class AmazonLens {
     /// lands a second or two later — and two adds is a bug that costs money.
     private(set) var addingToCart: String?
 
+    // MARK: - The cart
+
+    /// The cart's contents, held here rather than in `phase` for the same
+    /// reason the results are: closing the sidebar must not cost a read, and
+    /// reopening it should show what was there while the fresh one loads.
+    private(set) var cartContents: AmazonCart?
+    private(set) var isCartOpen = false
+    private(set) var isReadingCart = false
+    /// The line a write is in flight against. One at a time, and named rather
+    /// than a bool so the row that is changing can say so and the others stay
+    /// pressable.
+    private(set) var writingLine: String?
+    /// Where to go back to when the sidebar closes. The cart is a real
+    /// navigation — Amazon's cart lives at a URL like everything else — so
+    /// opening it leaves the page the user was on, and closing it has to
+    /// return them.
+    private var whereWeWere: URL?
+    private var cartReadTask: Task<Void, Never>?
+
     /// The variation being navigated to, if one is.
     ///
     /// A swatch is a page load, not a toggle, and pretending otherwise leaves
@@ -202,6 +221,150 @@ final class AmazonLens {
         }
     }
 
+    /// Opens the cart, which means going to it.
+    ///
+    /// The lens renders natively, so what the web view is showing underneath
+    /// does not have to match what is on screen — but the cart can only be
+    /// *read* from the cart page, and reading it is the whole point. So the
+    /// sidebar opens over whatever native screen is up, the document navigates
+    /// behind it, and closing puts the document back.
+    func openCart() {
+        guard let tab, !isCartOpen else { return }
+        isCartOpen = true
+        whereWeWere = tab.currentSiteLensURL
+        loadCart(navigating: true)
+    }
+
+    func closeCart() {
+        guard isCartOpen else { return }
+        isCartOpen = false
+        cartReadTask?.cancel()
+        isReadingCart = false
+        // Back where they were. A cart you close should not leave you standing
+        // somewhere you did not ask to be.
+        if let tab, let back = whereWeWere,
+           AmazonPage.of(tab.currentSiteLensURL).isCart {
+            tab.loadInSiteLens(back)
+        }
+        whereWeWere = nil
+    }
+
+    /// Reads the cart, navigating there first when we are not already on it.
+    private func loadCart(navigating: Bool) {
+        guard let tab else { return }
+        cartReadTask?.cancel()
+        isReadingCart = true
+        cartReadTask = Task { @MainActor in
+            if navigating, !AmazonPage.of(tab.currentSiteLensURL).isCart {
+                guard let destination = AmazonPage.cartURL else { return }
+                tab.loadInSiteLens(destination)
+                // The read waits for the document. `documentDidLoad` will call
+                // back in when it arrives; this ladder is for the case where
+                // the page was already there or the load resolves quickly.
+            }
+            for delay in [0, 400, 1000, 2000] {
+                if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+                guard !Task.isCancelled else { return }
+                guard AmazonPage.of(tab.currentSiteLensURL).isCart else { continue }
+                guard let reply = await tab.amazonCart() else { continue }
+                guard !Task.isCancelled else { return }
+                let parsed = reply.parsed
+                // An empty read while Amazon's own badge says otherwise is a
+                // page that has not finished drawing, not an empty cart. Taken
+                // at face value it ends the ladder on nothing — which it did,
+                // and only `documentDidLoad` firing afterwards rescued it.
+                // A cart that really is empty has a badge saying zero and
+                // still lands here.
+                if parsed.isEmpty, let badge = AmazonRating.count(reply.cartCount ?? ""),
+                   badge > 0, delay != 2000 {
+                    continue
+                }
+                cartContents = parsed
+                cart = cart.observing(reply.cartCount)
+                isReadingCart = false
+                debugLog("""
+                    amazon: cart \(parsed.items.count) lines, \
+                    \(parsed.countedUnits) units, \
+                    subtotal \(parsed.subtotal?.display ?? "—")
+                    """)
+                return
+            }
+            guard !Task.isCancelled else { return }
+            isReadingCart = false
+        }
+    }
+
+    /// Changes one line's quantity, or takes it out, by pressing Amazon's own
+    /// control.
+    ///
+    /// Every guard here answers a specific way this costs somebody money.
+    ///
+    /// The line has to be one we are currently showing, addressed by Amazon's
+    /// own item id — never by ASIN, because one product in two variations is
+    /// two lines sharing one, and a write addressed by ASIN changes whichever
+    /// came back first.
+    ///
+    /// Only one write at a time, because a click returns long before the
+    /// request lands and an impatient second press is a second change.
+    ///
+    /// The document has to still be the cart. The contents are cached for the
+    /// sidebar and the document is not, so a stale line addressed against a
+    /// page that has moved on is a write into the dark.
+    ///
+    /// And decrement is refused at the floor, which is the one that is not
+    /// obvious: Amazon replaces its own minus with a *delete* once the
+    /// quantity reaches the minimum. Wired straight through, "one less" would
+    /// remove the line. `AmazonSelectors.cartDecrement` refuses it a second
+    /// time by matching only a real decrease control, which does not exist
+    /// there to be matched.
+    func changeLine(_ item: AmazonCartItem, _ action: AmazonCartAction) {
+        guard let tab, writingLine == nil else { return }
+        guard cartContents?.item(id: item.id) != nil else { return }
+        guard AmazonPage.of(tab.currentSiteLensURL).isCart else {
+            debugLog("amazon: refusing a cart write — the page is elsewhere")
+            return
+        }
+        if action == .decrement, !item.canDecrement {
+            debugLog("amazon: refusing to decrement \(item.id) at its floor — that button deletes")
+            return
+        }
+
+        writingLine = item.id
+        cartReadTask?.cancel()
+        cartReadTask = Task { @MainActor in
+            let pressed = await tab.amazonCartWrite(itemID: item.id, action: action.rawValue)
+            guard !Task.isCancelled else { return }
+            guard pressed else {
+                writingLine = nil
+                debugLog("amazon: no \(action.rawValue) control on \(item.id)")
+                return
+            }
+            // Observed, never assumed. Amazon rewrites the row asynchronously,
+            // so the cart is read again until it disagrees with what it said
+            // before — which is what "the write landed" actually looks like.
+            let before = cartContents
+            for delay in [500, 1100, 2000] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                guard !Task.isCancelled else { return }
+                guard let reply = await tab.amazonCart() else { continue }
+                let parsed = reply.parsed
+                if parsed != before {
+                    cartContents = parsed
+                    cart = cart.observing(reply.cartCount)
+                    writingLine = nil
+                    debugLog("amazon: \(action.rawValue) landed — \(parsed.countedUnits) units")
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            // The page never changed. Re-read once so the sidebar shows what
+            // Amazon actually holds rather than what we hoped for.
+            if let reply = await tab.amazonCart() { cartContents = reply.parsed }
+            writingLine = nil
+            debugLog("amazon: \(action.rawValue) on \(item.id) never showed up")
+        }
+    }
+
     // MARK: - What the tab tells it
 
     func documentWillChange() {
@@ -209,6 +372,13 @@ final class AmazonLens {
     }
 
     func documentDidLoad() {
+        // The cart arriving is not a change of screen. The sidebar is over
+        // whatever was already up, and reconciling would move the lens off it
+        // — so the cart is read and the phase is left alone.
+        if isCartOpen, AmazonPage.of(tab?.currentSiteLensURL).isCart {
+            loadCart(navigating: false)
+            return
+        }
         readTask?.cancel()
         let destination = expectation
         readTask = Task { @MainActor in
@@ -221,6 +391,10 @@ final class AmazonLens {
         readTask = nil
         cartTask?.cancel()
         cartTask = nil
+        cartReadTask?.cancel()
+        cartReadTask = nil
+        isCartOpen = false
+        writingLine = nil
     }
 
     /// Where the lens believes it is going, for the reconciler to compare

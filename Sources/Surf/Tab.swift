@@ -1749,6 +1749,39 @@ final class Tab: NSObject, Identifiable {
         ) ?? false
     }
 
+    /// Reads the cart page. Only meaningful on one — everywhere else the
+    /// rows simply are not there, and an empty reply is indistinguishable
+    /// from an empty cart, which is why the lens navigates first and asks
+    /// second.
+    func amazonCart() async -> AmazonCartReply? {
+        _ = try? await webView.callAsyncJavaScript(
+            AmazonBridge.installScript, arguments: [:],
+            in: nil, contentWorld: PageProtocol.World.page.contentWorld
+        )
+        return await pageAgent.value(
+            .amazonCart, ["selectors": AmazonSelectors.payload],
+            as: AmazonCartReply.self
+        )
+    }
+
+    /// Presses one of Amazon's own cart controls on one line.
+    ///
+    /// True only means there was a control to press. Whether the cart changed
+    /// is observed afterwards by reading it again — the same split as
+    /// `amazonAddToCart`, and for the same reason: the click resolves at once
+    /// and the request behind it lands a second or two later.
+    func amazonCartWrite(itemID: String, action: String) async -> Bool {
+        await pageAgent.value(
+            .amazonCartWrite,
+            [
+                "selectors": AmazonSelectors.payload,
+                "itemID": itemID,
+                "action": action,
+            ],
+            as: Bool.self
+        ) ?? false
+    }
+
     /// The element the stage was applied to, pinned at entry. The ranking
     /// keeps running — a hover-preview or an advert can win it mid-show —
     /// but the transport must describe and command the video on the stage,

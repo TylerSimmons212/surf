@@ -38,6 +38,17 @@ struct AmazonLensView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: lens.phase)
+        // Over every screen rather than inside one. A cart is something you
+        // glance at on the way to deciding something else, and a screen of its
+        // own would mean leaving the product to look at it.
+        .overlay {
+            if lens.isCartOpen {
+                AmazonCartSidebar(lens: lens)
+                    .transition(.opacity)
+                    .zIndex(20)
+            }
+        }
+        .animation(.easeOut(duration: 0.22), value: lens.isCartOpen)
     }
 
     // MARK: - The opening: one field, and no deals rail
@@ -175,9 +186,7 @@ struct AmazonLensView: View {
     /// a password, and this lens hands those back rather than framing them.
     private var corner: some View {
         HStack(spacing: 6) {
-            AmazonCartBadge(cart: lens.cart) {
-                lens.handBack(to: AmazonPage.cartURL)
-            }
+            AmazonCartBadge(cart: lens.cart) { lens.openCart() }
             IconButton(
                 systemName: "xmark",
                 size: 11, weight: .bold, width: 26, height: 26, cornerRadius: 8,

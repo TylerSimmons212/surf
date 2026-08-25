@@ -326,7 +326,10 @@ check_size focus.js               3000
 check_size focus-extract.js      16000
 # Not resident either — evaluated only on the tab that focuses YouTube.
 check_size youtube.js            12000
-check_size amazon.js            14000
+# Raised from 14000 when the cart landed (15231 bytes at the time): reading a
+# cart and driving one of its controls are two more methods, and neither is
+# resident — amazon.js is evaluated only on the tab that focuses Amazon.
+check_size amazon.js            17000
 # Only while dev tools are attached — never on ordinary pages, so this one
 # budgets feature growth rather than per-page cost. Raised from 70000 when
 # the elements-pane work landed (74683 bytes at the time).

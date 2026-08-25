@@ -599,6 +599,49 @@ public enum AmazonReconcile {
 /// The rule it exists to enforce: a number that is confidently wrong about
 /// someone's cart is the worst output this feature can produce, so when the
 /// two disagree past the point of waiting, the badge stops claiming to know.
+/// One cart line, as the script copied it. Every field is a string because
+/// every field was an attribute.
+public struct AmazonCartItemWire: Decodable, Sendable {
+    public var id: String?
+    public var asin: String?
+    public var title: String?
+    public var price: String?
+    public var quantity: String?
+    public var minQuantity: String?
+    public var outOfStock: String?
+    public var prime: String?
+    public var image: String?
+    /// Whether Amazon rendered a real decrease control on this row. At the
+    /// quantity floor it does not — it renders a delete in that position — so
+    /// this is the page's own answer to "may this be decremented", checked
+    /// against `AmazonCartItem.canDecrement` rather than trusted alone.
+    public var canDecrement: Bool?
+}
+
+public struct AmazonCartReply: Decodable, Sendable {
+    public var items: [AmazonCartItemWire]?
+    public var subtotal: String?
+    public var subtotalLabel: String?
+    public var cartCount: String?
+    public var matched: [String: Int]?
+
+    /// The cart, decided here rather than in the page.
+    public var parsed: AmazonCart {
+        let lines = (items ?? []).compactMap { wire in
+            AmazonCartParse.item(
+                id: wire.id, asin: wire.asin, title: wire.title, price: wire.price,
+                quantity: wire.quantity, minQuantity: wire.minQuantity,
+                outOfStock: wire.outOfStock, prime: wire.prime, image: wire.image
+            )
+        }
+        return AmazonCart(
+            items: lines,
+            subtotal: AmazonPrice.parse(subtotal ?? ""),
+            unitCount: AmazonCartParse.unitCount(fromLabel: subtotalLabel ?? "")
+        )
+    }
+}
+
 public struct CartBadge: Equatable, Sendable {
     public enum Confidence: Equatable, Sendable {
         /// Read from a document Amazon served.
