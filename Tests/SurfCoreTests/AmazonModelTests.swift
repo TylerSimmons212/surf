@@ -903,3 +903,58 @@ struct AmazonSwatchPriceTests {
         #expect(parsed.allSatisfy { $0.price == nil })
     }
 }
+
+@Suite("Amazon former prices")
+struct AmazonFormerPriceTests {
+
+    private func product(price: String, listPrice: String?) -> AmazonProduct? {
+        AmazonPageReply(product: AmazonProductWire(
+            asin: "/dp/B088NRLMPV", title: "Anker cable",
+            prices: [price], priceText: price, listPrice: listPrice
+        )).parsedProduct
+    }
+
+    /// The regression, from a product with no discount at all. The selector
+    /// matched `.a-text-price`, which the per-unit value also uses, and the
+    /// lens recorded a $9.99 cable as having been $5.00. Nothing wrong was
+    /// drawn — savings need the former price to be larger — but a product
+    /// whose rate exceeded its price would have invented a discount.
+    @Test("A number smaller than the price is not a former price")
+    func refusesTheUnitPriceAsAFormerPrice() throws {
+        let p = try #require(product(price: "$9.99", listPrice: "$5.00"))
+        #expect(p.listPrice == nil)
+        #expect(p.savingsPercent == nil)
+        #expect(p.savingsAmount == nil)
+    }
+
+    /// Verified against a live limited-time deal.
+    @Test("A genuine former price survives, with both discount frames")
+    func keepsARealFormerPrice() throws {
+        let p = try #require(product(price: "$39.99", listPrice: "$69.99"))
+        #expect(try #require(p.listPrice).amount == Decimal(string: "69.99"))
+        #expect(p.savingsPercent == 43)
+        #expect(try #require(p.savingsAmount).display == "$30.00")
+    }
+
+    @Test("A former price equal to the price is not a discount")
+    func refusesEqualPrices() throws {
+        #expect(try #require(product(price: "$9.99", listPrice: "$9.99")).listPrice == nil)
+    }
+
+    @Test("No former price at all is fine")
+    func toleratesAbsence() throws {
+        #expect(try #require(product(price: "$9.99", listPrice: nil)).listPrice == nil)
+        #expect(try #require(product(price: "$9.99", listPrice: "")).listPrice == nil)
+    }
+
+    /// With no price to compare against, the page's word is all there is.
+    @Test("An unreadable price leaves the former price alone")
+    func keepsListPriceWithoutAComparison() throws {
+        let p = try #require(AmazonPageReply(product: AmazonProductWire(
+            asin: "/dp/B088NRLMPV", title: "x", listPrice: "$69.99",
+            availability: "Currently unavailable"
+        )).parsedProduct)
+        #expect(p.price == nil)
+        #expect(try #require(p.listPrice).amount == Decimal(string: "69.99"))
+    }
+}

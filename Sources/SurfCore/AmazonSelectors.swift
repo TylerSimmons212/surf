@@ -104,9 +104,21 @@ public enum AmazonSelectors {
         "#corePriceDisplay_desktop_feature_div",
         "#corePrice_feature_div",
     ]
+    /// The struck-through price, and only when the page actually struck one
+    /// through.
+    ///
+    /// `.a-text-price` on its own is not that signal: the per-unit value
+    /// carries the same class ("a-price a-text-price apex-priceperunit-value"),
+    /// so on a product with no discount this read the rate as the former
+    /// price — "$9.99, was $5.00". Nothing wrong was drawn, because savings
+    /// only render when the former price is the larger one, but a product
+    /// whose per-unit rate exceeds its item price would have manufactured a
+    /// discount out of nothing. Amazon marks a real strikethrough with
+    /// `data-a-strike`, and `.basisPrice` exists only when there is one.
     public static let productListPrice = [
-        "#corePriceDisplay_desktop_feature_div .a-text-price .a-offscreen",
+        "#corePriceDisplay_desktop_feature_div [data-a-strike=\"true\"] .a-offscreen",
         ".basisPrice .a-offscreen",
+        "#corePriceDisplay_desktop_feature_div .a-text-price[data-a-strike=\"true\"] .a-offscreen",
     ]
     public static let productRating = [
         "#acrPopover@title",

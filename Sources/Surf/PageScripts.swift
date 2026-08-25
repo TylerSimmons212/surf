@@ -270,7 +270,7 @@ extension PageScripts {
             // Not resident either — the site lens installs it when it opens.
             // In the dump so the contract check sees its registrations.
             "youtube.js": YouTubeBridge.installScript,
-        "amazon.js": AmazonBridge.installScript,
+            "amazon.js": AmazonBridge.installScript,
             "preflight.js": ThemeBridge.preflightScript(for: .dark),
             // Not agent domains, but `install` owns them too — and a dump that
             // showed only half of what goes into a page would be worse than none.

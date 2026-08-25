@@ -309,7 +309,7 @@ public struct AmazonPageReply: Decodable, Sendable, Equatable {
             brand: AmazonDelivery.brand(wire.byline ?? ""),
             price: split.item,
             unitPrice: split.unit,
-            listPrice: AmazonPrice.parse(wire.listPrice ?? ""),
+            listPrice: Self.formerPrice(wire.listPrice, comparedTo: split.item),
             stars: AmazonRating.stars(wire.rating ?? ""),
             reviewCount: AmazonRating.count(wire.reviews ?? ""),
             availability: AmazonText.tidy(wire.availability ?? ""),
@@ -330,6 +330,21 @@ public struct AmazonPageReply: Decodable, Sendable, Equatable {
             quantityMax: min(max(wire.quantityMax ?? 30, 1), 99),
             gallery: AmazonGallery.parse(blob: wire.gallery ?? "")
         )
+    }
+
+    /// A former price, kept only when it is actually former.
+    ///
+    /// Belt and braces over the selector. Anything not strictly larger than
+    /// what the item costs today is not a price it used to be — it is some
+    /// other number that happened to be struck through, and carrying it
+    /// invites a later reader to compute a saving from it.
+    static func formerPrice(
+        _ raw: String?, comparedTo price: AmazonPrice?
+    ) -> AmazonPrice? {
+        guard let listed = AmazonPrice.parse(raw ?? "") else { return nil }
+        // With nothing to compare against, the page's word is all there is.
+        guard let now = price?.amount, let was = listed.amount else { return listed }
+        return was > now ? listed : nil
     }
 
     /// Whether a string is a swatch's name rather than something swept up
