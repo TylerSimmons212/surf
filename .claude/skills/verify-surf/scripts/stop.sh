@@ -20,6 +20,23 @@ if [ -f "$EVID/pid" ]; then
 fi
 if [ -f "$EVID/state" ]; then
   H="$(cat "$EVID/state")"
+  # The run's own defaults suite, whose name the app wrote into the state
+  # directory. Removing it is the whole reason that file exists: a suite is a
+  # plist in Preferences like any other, and it outlives the process that
+  # made it. Without this, isolating the defaults would just move the litter.
+  if [ -f "$H/defaults-suite" ]; then
+    SUITE="$(cat "$H/defaults-suite")"
+    case "$SUITE" in
+      surf.scratch.*)
+        # `defaults delete` empties the domain, which is what matters, but
+        # leaves the plist behind. Remove the file too, so a machine that has
+        # run a hundred verifications does not carry a hundred empty
+        # preference files around.
+        defaults delete "$SUITE" 2>/dev/null || true
+        rm -f "$HOME/Library/Preferences/$SUITE.plist" 2>/dev/null || true
+        ;;
+    esac
+  fi
   case "$H" in /tmp/surf-verify-state.*) rm -rf "$H" ;; esac
   rm -f "$EVID/state"
 fi

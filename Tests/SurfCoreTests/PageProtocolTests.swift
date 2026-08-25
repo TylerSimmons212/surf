@@ -113,3 +113,45 @@ struct PageProtocolTests {
         #expect(PageProtocol.World.isolated.handlerName != PageProtocol.World.page.handlerName)
     }
 }
+
+/// The seam that keeps a verification run out of the preferences of the Surf
+/// you have open. See `SurfDefaults`.
+@Suite("Scratch defaults")
+struct SurfDefaultsTests {
+
+    @Test("A state directory names a suite of its own")
+    func derivesASuite() {
+        let name = SurfDefaults.suiteName(forStateDirectory: "/tmp/surf-verify-state.abc")
+        #expect(name.hasPrefix("surf.scratch."))
+        // A defaults domain is a filename, and a path is full of characters a
+        // filename should not carry.
+        #expect(name.contains("/") == false)
+        #expect(name.contains(" ") == false)
+    }
+
+    /// Derived rather than random, so a run that restarts finds what it left
+    /// behind rather than starting over with a fresh domain.
+    @Test("The same directory always names the same suite")
+    func isStable() {
+        #expect(SurfDefaults.suiteName(forStateDirectory: "/tmp/one")
+            == SurfDefaults.suiteName(forStateDirectory: "/tmp/one"))
+    }
+
+    @Test("Different directories name different suites")
+    func separatesRuns() {
+        let a = SurfDefaults.suiteName(forStateDirectory: "/tmp/surf-verify-state.aaa")
+        let b = SurfDefaults.suiteName(forStateDirectory: "/tmp/surf-verify-state.bbb")
+        #expect(a != b)
+    }
+
+    /// It only has to not collide between two scratch directories on one
+    /// machine, but a hash that maps everything to one bucket would do
+    /// exactly that.
+    @Test("Similar paths do not collide")
+    func spreads() {
+        let names = Set((0..<200).map {
+            SurfDefaults.suiteName(forStateDirectory: "/tmp/surf-verify-state.\($0)")
+        })
+        #expect(names.count == 200)
+    }
+}

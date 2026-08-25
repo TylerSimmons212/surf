@@ -33,18 +33,18 @@ final class UpdateManager {
     }
 
     static func installedVersion(_ component: Component) -> String? {
-        UserDefaults.standard.string(forKey: "componentVersion.\(component.rawValue)")
+        SurfDefaults.store.string(forKey: "componentVersion.\(component.rawValue)")
     }
 
     private static func recordVersion(_ version: String, for component: Component) {
-        UserDefaults.standard.set(version, forKey: "componentVersion.\(component.rawValue)")
+        SurfDefaults.store.set(version, forKey: "componentVersion.\(component.rawValue)")
     }
 
     // MARK: - Scheduling
 
     private var lastCheck: Date? {
-        get { UserDefaults.standard.object(forKey: PreferenceKeys.lastComponentCheck) as? Date }
-        set { UserDefaults.standard.set(newValue, forKey: PreferenceKeys.lastComponentCheck) }
+        get { SurfDefaults.store.object(forKey: PreferenceKeys.lastComponentCheck) as? Date }
+        set { SurfDefaults.store.set(newValue, forKey: PreferenceKeys.lastComponentCheck) }
     }
 
     /// Called at launch. Returns immediately unless a check is actually due.
