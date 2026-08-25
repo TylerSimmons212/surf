@@ -67,6 +67,11 @@ final class AmazonLens {
     private(set) var cartContents: AmazonCart?
     private(set) var isCartOpen = false
     private(set) var isReadingCart = false
+    /// The cart could not be read, and Amazon's own badge says there is
+    /// something in it. Distinct from an empty cart, and shown as such: the
+    /// worst thing this feature can do is tell somebody their cart is empty
+    /// when it is not.
+    private(set) var cartUnreadable = false
     /// The line a write is in flight against. One at a time, and named rather
     /// than a bool so the row that is changing can say so and the others stay
     /// pressable.
@@ -231,6 +236,7 @@ final class AmazonLens {
     func openCart() {
         guard let tab, !isCartOpen else { return }
         isCartOpen = true
+        cartUnreadable = false
         whereWeWere = tab.currentSiteLensURL
         loadCart(navigating: true)
     }
@@ -270,15 +276,12 @@ final class AmazonLens {
                 guard !Task.isCancelled else { return }
                 let parsed = reply.parsed
                 // An empty read while Amazon's own badge says otherwise is a
-                // page that has not finished drawing, not an empty cart. Taken
-                // at face value it ends the ladder on nothing — which it did,
-                // and only `documentDidLoad` firing afterwards rescued it.
-                // A cart that really is empty has a badge saying zero and
-                // still lands here.
+                // page that has not finished drawing, not an empty cart.
                 if parsed.isEmpty, let badge = AmazonRating.count(reply.cartCount ?? ""),
-                   badge > 0, delay != 2000 {
+                   badge > 0 {
                     continue
                 }
+                cartUnreadable = false
                 cartContents = parsed
                 cart = cart.observing(reply.cartCount)
                 isReadingCart = false
@@ -291,6 +294,14 @@ final class AmazonLens {
             }
             guard !Task.isCancelled else { return }
             isReadingCart = false
+            // The ladder ran out. If the badge insists there is something in
+            // the cart, say the cart could not be read rather than drawing an
+            // empty one — and keep whatever was last read, which is closer to
+            // the truth than nothing.
+            if cart.count > 0, cartContents?.isEmpty ?? true {
+                cartUnreadable = true
+                debugLog("amazon: cart unreadable — badge says \(cart.count), read nothing")
+            }
         }
     }
 
@@ -425,7 +436,16 @@ final class AmazonLens {
     /// an empty grid is the one failure a user cannot tell from a broken
     /// feature.
     private func read(expecting destination: AmazonDestination) async {
-        for delay in [0, 350, 800, 1600] {
+        // Out to nine seconds, not three.
+        //
+        // The old ladder gave a page 2.75 seconds to resolve into something,
+        // which was measured against signed-out Amazon. A signed-in one is a
+        // heavier page — personalised rails, recommendations, an account
+        // header — and it ran out on real use, putting "Amazon didn't finish
+        // loading that" in front of somebody who had done nothing but open
+        // Focus. Patience costs nothing here: every rung after the first only
+        // runs on a page that has not resolved yet.
+        for delay in [0, 350, 800, 1600, 2400, 4000] {
             if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
             guard !Task.isCancelled, let tab else { return }
 
@@ -439,6 +459,12 @@ final class AmazonLens {
             switch reading {
             case .notReady:
                 continue
+            case .nothingToShow:
+                // A page with no screen of its own. The grid survives if there
+                // is one — the user has not asked to lose it — and otherwise
+                // this is the field, which is how the lens opens anyway.
+                phase = results.isEmpty ? .searching : .results
+                return
             case .blocked(let block):
                 // Never retried, and the bot check is the reason. Reading a
                 // wall three times is how you convince Amazon it was right
@@ -495,7 +521,12 @@ final class AmazonLens {
         // The ladder ran out with the page never resolving into anything.
         // Distinct from `blocked`: this is worth trying again.
         phase = .failed("Amazon didn\u{2019}t finish loading that.")
-        debugLog("amazon: gave up reading \(tab?.currentSiteLensURL?.path ?? "?")")
+        // What it was expecting matters as much as where it was: the two
+        // disagreeing is the usual reason a read never resolves.
+        debugLog("""
+            amazon: gave up reading \(tab?.currentSiteLensURL?.path ?? "?") \
+            expecting \(destination)
+            """)
     }
 
     private func apply(_ block: AmazonBlock) {

@@ -245,14 +245,21 @@ struct AmazonReconcileTests {
 
     /// Opening the lens on whatever is already on screen shouldn't declare a
     /// failure just because it isn't a search or a product.
-    @Test("Opening on an ordinary page waits rather than failing")
-    func waitsWhenNothingWasExpected() {
+    ///
+    /// That sentence is unchanged, and it was always right. What was wrong was
+    /// this test asserting `.notReady` to achieve it — a value whose whole
+    /// meaning is "wait and read again", which after four rungs of the ladder
+    /// declares precisely the failure the sentence forbids. The promise was
+    /// tested by its mechanism instead of by its outcome, and the mechanism
+    /// did not keep it.
+    @Test("Opening on an ordinary page offers the field rather than failing")
+    func offersTheFieldWhenNothingWasExpected() {
         let reading = AmazonReconcile.read(
             expected: .whatever,
             url: URL(string: "https://www.amazon.com/"),
             reply: AmazonPageReply()
         )
-        #expect(reading == .notReady)
+        #expect(reading == .nothingToShow)
     }
 }
 
@@ -323,5 +330,51 @@ struct CartBadgeTests {
         let badge = CartBadge(count: 2).assuming(added: 1).givingUp().observing("3")
         #expect(badge.confidence == .observed)
         #expect(badge.isTrustworthy)
+    }
+}
+
+@Suite("Amazon: entering Focus on a page with no lens")
+struct AmazonEnteringFocusTests {
+
+    /// Reported from real use: enter Focus and, with nothing touched, the lens
+    /// says "Amazon didn't finish loading that."
+    ///
+    /// Entering Focus reads the page that is already open with no expectation
+    /// in hand. On the front page — or a department, or an order list — there
+    /// is nothing for the lens to draw, and that came back as `.notReady`: the
+    /// answer that means "wait and read again". So the ladder waited, read
+    /// again, ran out, and failed a page that was never going to become
+    /// anything else.
+    ///
+    /// A page with no lens of its own is the search field's job, which is what
+    /// the YouTube lens does in the same situation.
+    @Test(
+        "A page with no lens of its own is the search field, not a failure",
+        arguments: [
+            "https://www.amazon.com/",
+            "https://www.amazon.com/gp/bestsellers",
+            "https://www.amazon.com/b?node=283155",
+        ]
+    )
+    func homeIsNotAFailure(address: String) {
+        let reading = AmazonReconcile.read(
+            expected: .whatever,
+            url: URL(string: address),
+            reply: AmazonPageReply()
+        )
+        #expect(reading == .nothingToShow, "\(address) gave \(reading)")
+    }
+
+    /// The distinction that has to survive: landing somewhere unexpected *in
+    /// the middle of a navigation we started* is still a real problem, and
+    /// still hands the page back.
+    @Test("Aiming at a product and landing on the front page is still wrong")
+    func aMissedNavigationStillBlocks() {
+        let reading = AmazonReconcile.read(
+            expected: .product(asin: "B088NRLMPV"),
+            url: URL(string: "https://www.amazon.com/"),
+            reply: AmazonPageReply()
+        )
+        #expect(reading == .blocked(.unsupported))
     }
 }
