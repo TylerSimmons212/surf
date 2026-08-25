@@ -3,6 +3,16 @@
     <channel>
         <title>Surf</title>
         <item>
+            <title>0.5.2</title>
+            <pubDate>Tue, 25 Aug 2026 16:54:52 -0700</pubDate>
+            <link>https://github.com/TylerSimmons212/surf</link>
+            <sparkle:version>1787701987</sparkle:version>
+            <sparkle:shortVersionString>0.5.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.5.2/Surf-0.5.2.dmg" length="9568168" type="application/octet-stream" sparkle:edSignature="BA38yvuWyvzfHcC1frnncE1haXa/Qij4QFpZbsykI4BuVUjJfEz+ayUN1/ANPkxR52feGzHJ3//W+umRR/liBQ=="/>
+        </item>
+        <item>
             <title>0.5.1</title>
             <pubDate>Tue, 25 Aug 2026 16:35:28 -0700</pubDate>
             <link>https://github.com/TylerSimmons212/surf</link>
@@ -21,16 +31,6 @@
             <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
             <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.5.0/Surf-0.5.0.dmg" length="9389772" type="application/octet-stream" sparkle:edSignature="CkQCVwmkE1TzC+X9ojE63RIiAhbC0KThctFa4+LgsOwvlLTXNovzLGZzNQDinBgKJffAXpcPKS2Xq4tK0KB4Bw=="/>
-        </item>
-        <item>
-            <title>0.4.0</title>
-            <pubDate>Sun, 23 Aug 2026 04:12:35 -0700</pubDate>
-            <link>https://github.com/TylerSimmons212/surf</link>
-            <sparkle:version>1787483453</sparkle:version>
-            <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.4.0/Surf-0.4.0.dmg" length="8958852" type="application/octet-stream" sparkle:edSignature="0DHFHoDLafUQ8zrG0P4ERqqfAUNeC1l0NyJtRufrPnzNLTkK/awI1atz3Pgt/xUQDtToZrMuIu7NlPGzsWXMDg=="/>
         </item>
     </channel>
 </rss>
