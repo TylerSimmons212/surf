@@ -152,6 +152,10 @@ public struct AmazonProductWire: Decodable, Sendable, Equatable {
     public var reviews: String?
     public var availability: String?
     public var delivery: String?
+    /// The delivery cell's own attributes — see `AmazonSelectors`.
+    public var deliveryProgram: String?
+    public var deliveryPrice: String?
+    public var deliveryTime: String?
     public var seller: String?
     public var shipsFrom: String?
     public var returns: String?
@@ -328,7 +332,10 @@ public struct AmazonPageReply: Decodable, Sendable, Equatable {
             // Clamped rather than trusted: this bounds a stepper, and a
             // payload saying nought or nine thousand should not make one.
             quantityMax: min(max(wire.quantityMax ?? 30, 1), 99),
-            gallery: AmazonGallery.parse(blob: wire.gallery ?? "")
+            gallery: AmazonGallery.parse(blob: wire.gallery ?? ""),
+            deliveryBenefit: AmazonDelivery.benefit(programID: wire.deliveryProgram ?? ""),
+            deliveryPrice: AmazonText.tidy(wire.deliveryPrice ?? ""),
+            deliveryTime: AmazonText.tidy(wire.deliveryTime ?? "")
         )
     }
 

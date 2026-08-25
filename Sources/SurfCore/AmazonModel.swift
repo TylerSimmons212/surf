@@ -158,6 +158,13 @@ public struct AmazonProduct: Equatable, Sendable, Identifiable {
     public var quantityMax: Int
     /// The gallery, at the size the photographs were published.
     public var gallery: [AmazonGalleryImage]
+    /// What kind of promise the delivery cell is making, read from its own
+    /// attributes rather than from its sentence. See `AmazonDelivery.Benefit`.
+    public var deliveryBenefit: AmazonDelivery.Benefit
+    /// "FREE", or a price. The cell's own word for it.
+    public var deliveryPrice: String
+    /// "Sunday, August 30". Already a date, so nothing has to find one in prose.
+    public var deliveryTime: String
 
     public init(
         id: String, title: String = "", brand: String = "",
@@ -171,7 +178,9 @@ public struct AmazonProduct: Equatable, Sendable, Identifiable {
         specs: [AmazonSpec] = [], keySpecs: [AmazonSpec] = [],
         variations: [AmazonVariationGroup] = [],
         canAddToCart: Bool = false, quantityMax: Int = 30,
-        gallery: [AmazonGalleryImage] = []
+        gallery: [AmazonGalleryImage] = [],
+        deliveryBenefit: AmazonDelivery.Benefit = .unknown,
+        deliveryPrice: String = "", deliveryTime: String = ""
     ) {
         self.id = id
         self.title = title
@@ -196,6 +205,9 @@ public struct AmazonProduct: Equatable, Sendable, Identifiable {
         self.canAddToCart = canAddToCart
         self.quantityMax = quantityMax
         self.gallery = gallery
+        self.deliveryBenefit = deliveryBenefit
+        self.deliveryPrice = deliveryPrice
+        self.deliveryTime = deliveryTime
     }
 
     /// What the page must have before it is worth drawing at all.
@@ -683,6 +695,45 @@ public struct AmazonHistogram: Equatable, Sendable {
 // MARK: - Delivery and dates
 
 public enum AmazonDelivery {
+
+    /// What kind of delivery promise the page is making.
+    ///
+    /// Read from `data-csa-c-delivery-benefit-program-id`, an attribute Amazon
+    /// already puts on the delivery cell, rather than from the sentence it
+    /// renders. The sentence is prose in whatever the locale is; the attribute
+    /// is a token. Both come from the same element, and only one of them can
+    /// be read without a grammar.
+    public enum Benefit: Equatable, Sendable {
+        /// Free because the account is Prime.
+        case prime
+        /// Free because the order clears a threshold — Amazon's `cfs`,
+        /// conditional free shipping, whose cell reads "FREE delivery Sunday,
+        /// August 30 on orders shipped by Amazon over $35".
+        case conditionallyFree
+        /// A promise with no benefit attached to it.
+        case standard
+        /// Nothing was there, or a token nobody has seen before.
+        case unknown
+    }
+
+    /// **`cfs` and an absent attribute are the only values observed.** `prime`
+    /// is what a Prime account is expected to report and has not been seen,
+    /// because verifying it needs a Prime membership on the machine doing the
+    /// recon.
+    ///
+    /// That uncertainty is why an unrecognised token is `.unknown` and not
+    /// `.standard`: the badge renders nothing for `.unknown`, so a value we
+    /// have not met yet degrades into silence rather than into Surf telling
+    /// somebody their Prime delivery is a standard one. The lens logs what it
+    /// saw, which is how a new token gets noticed instead of swallowed.
+    public static func benefit(programID raw: String) -> Benefit {
+        let token = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !token.isEmpty else { return .unknown }
+        if token == "prime" || token.hasPrefix("prime") { return .prime }
+        if token == "cfs" || token.hasPrefix("cfs") { return .conditionallyFree }
+        if token == "std" || token == "standard" { return .standard }
+        return .unknown
+    }
 
     /// Amazon stacks two or three delivery sentences in one cell:
     ///

@@ -339,3 +339,34 @@ struct AmazonProductPriceTests {
         #expect(split.unit == nil)
     }
 }
+
+@Suite("Amazon delivery benefit")
+struct AmazonDeliveryBenefitTests {
+
+    /// The only token observed on a live page, signed out.
+    @Test("Conditional free shipping is read as what it is")
+    func readsCFS() {
+        #expect(AmazonDelivery.benefit(programID: "cfs") == .conditionallyFree)
+    }
+
+    @Test("Prime is recognised", arguments: ["prime", "PRIME", "prime-us"])
+    func readsPrime(token: String) {
+        #expect(AmazonDelivery.benefit(programID: token) == .prime)
+    }
+
+    /// The load-bearing case. A token nobody has met must not resolve to a
+    /// claim about somebody's delivery — the badge draws nothing for
+    /// `.unknown`, and would draw the wrong thing for `.standard`.
+    @Test(
+        "An unseen token is unknown, never standard",
+        arguments: ["", "   ", "fba-express", "SNAP", "shipping"]
+    )
+    func unseenTokensAreUnknown(token: String) {
+        #expect(AmazonDelivery.benefit(programID: token) == .unknown)
+    }
+
+    @Test("An explicit standard programme is not free delivery")
+    func readsStandard() {
+        #expect(AmazonDelivery.benefit(programID: "std") == .standard)
+    }
+}

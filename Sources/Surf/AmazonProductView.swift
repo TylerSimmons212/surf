@@ -386,6 +386,8 @@ struct AmazonProductView: View {
                             ? Color(red: 0.10, green: 0.52, blue: 0.20) : .secondary
                     )
             }
+            deliveryBadge(product)
+
             if !product.delivery.isEmpty {
                 Text(product.delivery)
                     .font(Typeface.figtree(size: 12, weight: 400))
@@ -403,6 +405,54 @@ struct AmazonProductView: View {
                     .foregroundStyle(.tertiary)
             }
         }
+    }
+
+    /// What kind of free the delivery is.
+    ///
+    /// "FREE delivery" is the same sentence whether it is free because the
+    /// account is Prime or free because the order clears $35, and the
+    /// difference is the whole question when deciding whether to add one more
+    /// thing to the basket. The chip says which.
+    ///
+    /// Drawn, never Amazon's asset. The Prime mark is a trademark, and the
+    /// same reasoning that keeps `AmazonMark` and `YouTubeMark` hand-drawn
+    /// applies to a delivery badge — a checkmark and the word, in Amazon's own
+    /// blue, is a description of the offer rather than a reproduction of a logo.
+    ///
+    /// `.unknown` draws nothing at all. That is the honest reading of a token
+    /// nobody has seen: silence rather than a claim about somebody's delivery.
+    @ViewBuilder
+    private func deliveryBadge(_ product: AmazonProduct) -> some View {
+        switch product.deliveryBenefit {
+        case .prime:
+            deliveryChip(
+                "checkmark.seal.fill", "Prime delivery",
+                Color(red: 0.0, green: 0.63, blue: 0.85)
+            )
+        case .conditionallyFree:
+            deliveryChip(
+                "shippingbox.fill", "Free over $35",
+                Color(red: 0.10, green: 0.52, blue: 0.20)
+            )
+        case .standard, .unknown:
+            EmptyView()
+        }
+    }
+
+    private func deliveryChip(_ symbol: String, _ label: String, _ tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .bold))
+            Text(label)
+                .font(Typeface.figtree(size: 11, weight: 600))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background {
+            Capsule().fill(tint.opacity(0.12))
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// Sold by and shipped by on one line, and only once when they are the
@@ -464,22 +514,32 @@ struct AmazonProductView: View {
                     .fixedSize()
                     .accessibilityLabel("Quantity, \(quantity)")
 
+                    // The one control on the page anybody came here to press,
+                    // sized like it. A capsule rather than a rounded rectangle
+                    // because it is the only fully round thing in the column
+                    // and has nothing to be confused with, and given the width
+                    // that is left over rather than a minimum — the quantity
+                    // stepper is a small fixed thing and this is not.
                     Button {
                         lens.addToCart(quantity: quantity)
                     } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 7) {
                             if lens.addingToCart == product.id {
                                 ProgressView().controlSize(.small)
                             } else {
                                 Image(systemName: "cart.badge.plus")
-                                    .font(.system(size: 12, weight: .semibold))
+                                    .font(.system(size: 15, weight: .semibold))
                             }
                             Text("Add to Cart")
-                                .font(Typeface.figtree(size: 13, weight: 600))
+                                .font(Typeface.figtree(size: 15, weight: 600))
                         }
-                        .frame(minWidth: 130)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .contentShape(Capsule())
                     }
                     .buttonStyle(.glassProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
                     .disabled(lens.addingToCart != nil || lens.pendingVariation != nil)
                 }
             }

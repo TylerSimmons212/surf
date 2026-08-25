@@ -139,6 +139,24 @@ public enum AmazonSelectors {
         "#deliveryBlockMessage",
         "#delivery-block-message",
     ]
+    /// The same cell, read as data instead of as a sentence.
+    ///
+    /// Amazon stamps the delivery element with what it means before rendering
+    /// what it says: `data-csa-c-delivery-price="FREE"`,
+    /// `data-csa-c-delivery-time="Sunday, August 30"`,
+    /// `data-csa-c-delivery-benefit-program-id="cfs"`. Measured on a live
+    /// product page — the whole set is there, and every one of them is a token
+    /// or a date rather than prose that would need a grammar.
+    ///
+    /// The programme id is the only honest answer to "is this Prime". The
+    /// sentence says "FREE delivery" either way, and the difference between
+    /// free-because-Prime and free-because-you-spent-$35 is the entire question.
+    private static let deliveryCell = "[data-csa-c-content-id=\"DEXUnifiedCXPDM\"]"
+    public static let productDeliveryProgram = [
+        deliveryCell + "@data-csa-c-delivery-benefit-program-id"
+    ]
+    public static let productDeliveryPrice = [deliveryCell + "@data-csa-c-delivery-price"]
+    public static let productDeliveryTime = [deliveryCell + "@data-csa-c-delivery-time"]
     /// Who takes the money. `.offer-display-feature-text-message` is the one
     /// node holding only the value: the block around it repeats the label and
     /// the value three times over, so a text walk of the whole thing returns
@@ -335,6 +353,9 @@ public enum AmazonSelectors {
             "productReviews": productReviews,
             "productAvailability": productAvailability,
             "productDelivery": productDelivery,
+            "productDeliveryProgram": productDeliveryProgram,
+            "productDeliveryPrice": productDeliveryPrice,
+            "productDeliveryTime": productDeliveryTime,
             "productSeller": productSeller,
             "productImages": productImages,
             "productBullets": productBullets,
