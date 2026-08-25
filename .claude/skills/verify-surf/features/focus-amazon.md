@@ -71,9 +71,15 @@ guard did not hold`.
 
 **A removed row stays in the page.** Amazon empties the element and shows "… was
 removed from Shopping Cart" inside it, keeping every attribute:
-`data-itemtype="active"`, the old quantity, the old price. A ghost row has no
-controls and no product image, and both have to be missing before a line is
-dropped.
+`data-itemtype="active"`, the old quantity, the old price.
+
+It is recognised by that message node becoming visible — a *positive* marker,
+and the correction matters. The first version inferred a ghost from what the row
+was missing, which is also exactly what a row looks like before the page has
+finished rendering. On a slower signed-in cart every line matched that
+description, the whole cart was dropped, and the sidebar reported it empty to
+somebody who had just filled it. When testing this, check both directions: the
+marker must match a removed row **and not match a live one.**
 
 **"The cart changed" is not evidence a write landed.** Amazon re-renders rows on
 its own, so each action has to show its own effect — a removal is that line
