@@ -13,7 +13,8 @@ import SwiftUI
 struct StickerShelf: View {
     let session: BrowserSession
 
-    /// Tile edge. Six per row at the sidebar's 264pt minus insets.
+    /// Tile edge. Six per row at the sidebar's width minus insets — still six
+    /// at 284pt, since a seventh would need 304.
     static let tileSize: CGFloat = 38
 
     /// The spring that presses a new sticker down. Named here because the

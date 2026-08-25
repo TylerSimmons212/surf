@@ -36,7 +36,13 @@ struct Sidebar: View {
 
     /// Wide enough that the roomier rows don't buy their height back out of
     /// the title: taller rows with the same width would just truncate sooner.
-    static let width: CGFloat = 264
+    ///
+    /// 284 rather than the 264 it was, because the action row above the list
+    /// had run out of room. Nine controls at `IconButton.actionSize` plus their
+    /// gaps come to 268 points, and at 264 the row was two points over its own
+    /// width before the buttons were made bigger at all. The tab titles get the
+    /// other twenty points.
+    static let width: CGFloat = 284
     /// One 21pt control.
     static let actionsWidth: CGFloat = 21
 
@@ -100,6 +106,17 @@ struct Sidebar: View {
                                                 .fill(Color.primary.opacity(0.10))
                                                 .frame(width: 1)
                                                 .padding(.leading, 4)
+                                                // Half the stack's spacing at
+                                                // each end, so consecutive rows'
+                                                // segments meet. The rule is
+                                                // drawn per row — one for the
+                                                // whole section would mean an
+                                                // eager `VStack` around it — and
+                                                // without this it stops at every
+                                                // row boundary and reads as a
+                                                // column of little bars rather
+                                                // than a line.
+                                                .padding(.vertical, -2)
                                         }
                                 }
                             }
@@ -1240,22 +1257,14 @@ private struct SidebarNavigationBar: View {
 
             Spacer()
 
-            // Zoom has no other visible home, and a page stuck at 125% with
-            // nothing saying so reads as a rendering bug.
-            if tab.isZoomed {
-                Button { tab.resetZoom() } label: {
-                    Text(tab.zoomLabel)
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background { Capsule().fill(Color.primary.opacity(0.09)) }
-                }
-                .buttonStyle(.plain)
-                .help("Reset zoom (⌘0)")
-                .transition(.scale(scale: 0.7).combined(with: .opacity))
-            }
-
+            // No zoom control here. It used to sit in this row as a pill,
+            // justified as "zoom has no other visible home" — which was never
+            // true: View has had Zoom In, Zoom Out and Actual Size all along,
+            // and Actual Size greys out when the page is at 100%, so the menu
+            // already says whether a page is zoomed. What the pill actually did
+            // was take 42 points out of a row that did not have them, in the
+            // one state where every other control was already fighting for
+            // width. The level now reads on the Actual Size item itself.
             ScreenshotButton(tab: tab)
 
             CopyLinkButton(tab: tab)
@@ -1280,10 +1289,13 @@ private struct SidebarNavigationBar: View {
             }
             .animation(.easeOut(duration: 0.2), value: isPinned)
         }
-        .padding(.horizontal, 8)
+        // Six, not the eight the list below uses: nine controls and their gaps
+        // come to 268 points, and this leaves four of slack rather than none.
+        // The buttons are centred in their own plates, so their icons still
+        // line up close enough to the rows underneath.
+        .padding(.horizontal, 6)
         .padding(.top, 8)
         .padding(.bottom, 6)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
     }
 }
 
@@ -1296,22 +1308,46 @@ private struct SidebarNavigationBar: View {
 private struct ScreenshotButton: View {
     let tab: Tab
 
+    @State private var isHovering = false
+
+    private var isEnabled: Bool { tab.mode == .browsing }
+
     var body: some View {
         Menu {
-            Button("Select Area…") { tab.beginAreaCapture() }
+            Button("Select Area") { tab.beginAreaCapture() }
             Button("Visible Area") { capture { await tab.captureVisibleArea() } }
             Button("Full Page") { capture { await tab.captureFullPage() } }
         } label: {
             Image(systemName: "camera")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.secondary)
-                .frame(width: 26, height: 22)
+                .frame(width: IconButton.actionSize.width, height: IconButton.actionSize.height)
                 .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
+        // `.button` rather than `.borderlessButton`, which is what lets a
+        // `.buttonStyle` reach the label at all: this control sits in a row of
+        // `IconButton`s and has to answer the pointer the way they do. It wore
+        // the plain style until someone noticed it was the only dead button in
+        // the row. The hover state is tracked here because a menu's label gets
+        // no `isHovering` of its own.
+        .menuStyle(.button)
+        .buttonStyle(
+            IconButtonStyle(
+                isHovering: isHovering && isEnabled,
+                isEnabled: isEnabled,
+                cornerRadius: IconButton.actionCornerRadius,
+                tint: nil
+            )
+        )
         .menuIndicator(.hidden)
         .fixedSize()
-        .disabled(tab.mode != .browsing)
+        .disabled(!isEnabled)
+        .onHover { hovering in
+            guard isEnabled else { return }
+            isHovering = hovering
+        }
+        .onChange(of: isEnabled) { _, enabled in
+            if !enabled { isHovering = false }
+        }
         .help("Screenshot")
     }
 
@@ -1406,7 +1442,9 @@ private struct ReloadControl: View {
             )
             // Starts the arc at twelve o'clock instead of three.
             .rotationEffect(.degrees(-90))
-            .frame(width: 21, height: 21)
+            // Inside the button's plate with a little air, so the ring reads
+            // as around the arrow rather than as its own control.
+            .frame(width: IconButton.actionSize.height - 4, height: IconButton.actionSize.height - 4)
             .animation(.easeOut(duration: 0.25), value: progress)
             .transition(.opacity.combined(with: .scale(scale: 0.7)))
             // Purely decorative: clicks belong to the button underneath.

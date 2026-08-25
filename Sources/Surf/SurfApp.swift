@@ -165,6 +165,12 @@ struct SurfApp: App {
     /// Only what changes how the current page is presented. Everything that
     /// used to sit here alongside it — back and forward, tab switching, splits,
     /// groups, Open Location — was somewhere else's business.
+    /// "Actual Size", plus the current level when there is one to report.
+    private var zoomResetTitle: String {
+        let tab = session.selectedTab
+        return tab.isZoomed ? "Actual Size (\(tab.zoomLabel))" : "Actual Size"
+    }
+
     private var viewCommands: some Commands {
         CommandGroup(after: .toolbar) {
             // ⌘⇧L, not ⌘S: Save is the most universally spoken-for key on the
@@ -210,7 +216,12 @@ struct SurfApp: App {
             Button("Zoom Out") { session.selectedTab.zoomOut() }
                 .keyboardShortcut("-", modifiers: .command)
 
-            Button("Actual Size") { session.selectedTab.resetZoom() }
+            // Carries the level, because this is now the only place that says
+            // what it is. The sidebar used to show a pill; the menu already had
+            // every zoom control and this item already greyed out at 100%, so
+            // the pill was spending width in the action row to repeat what an
+            // enabled menu item was saying anyway.
+            Button(zoomResetTitle) { session.selectedTab.resetZoom() }
                 .keyboardShortcut("0", modifiers: .command)
                 .disabled(!session.selectedTab.isZoomed)
 
