@@ -962,6 +962,15 @@ makes it unit-testable — the UI targets can't be.
   record of who's signed in, model menus, and which provider runs
 - `Sources/SurfCore/AITabNaming.swift` — AI tab renaming: the prompt, the
   per-CLI command line, and how much of the answer to believe
+- `Sources/SurfCore/AIDownloadNaming.swift` — AI download renaming. Two things
+  are never the model's to decide, and both are decided here instead: the
+  extension, which the file keeps whatever the reply says, and the naming
+  convention, which follows the *kind* of file. A document gets spaces
+  (`Q3 Revenue Report.pdf`); anything that ends up in a terminal gets hyphens
+  (`Surf-0.5.0.dmg`), because a space in a name you type means quoting it every
+  time and forgetting to means two arguments where one was meant. The prompt
+  asks for the right shape and the sanitiser enforces it, so a model that
+  ignores the instruction still cannot put a space where one must not be
 - `Sources/SurfCore/SRGB.swift` — sRGB colour, hex parsing, alpha compositing
 - `Sources/SurfCore/OKLCH.swift` — the perceptual colour space and hue-preserving
   gamut mapping
