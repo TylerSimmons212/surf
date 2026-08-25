@@ -93,6 +93,12 @@ struct ThumbnailImage: View {
     let address: String
     /// The longest edge to decode to, in pixels.
     var maxPixel: CGFloat = 720
+    /// How the picture meets its frame.
+    ///
+    /// A video still is 16:9 and filling its card is right. A product shot is
+    /// squarish on white, in whatever proportion the seller photographed it,
+    /// and cropping one to a fixed frame cuts the shoes off the shoes.
+    var contentMode: ContentMode = .fill
 
     /// What this view fetched, and for which address — the pair, because a
     /// recycled card keeps the `@State` of the card it replaced and would
@@ -117,7 +123,7 @@ struct ThumbnailImage: View {
             if let image {
                 Image(nsImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: contentMode)
             } else {
                 Rectangle().fill(.quaternary)
             }

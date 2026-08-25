@@ -99,7 +99,7 @@ struct PageProtocolTests {
     /// quietly pick the wrong one.
     @Test("Worlds are assigned by domain, not case by case")
     func worldsFollowDomain() {
-        let pageWorldDomains: Set<Substring> = ["media", "find", "youtube"]
+        let pageWorldDomains: Set<Substring> = ["media", "find", "youtube", "amazon"]
         for method in PageProtocol.Method.allCases {
             let domain = method.rawValue.split(separator: ".")[0]
             let expected: PageProtocol.World =

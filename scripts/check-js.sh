@@ -73,10 +73,10 @@ const worlds = {
   // main's lazy domain with the same arrangement.
   isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'capture.js',
              'focus.js', 'focus-extract.js'],
-  // youtube.js is not resident either — Tab evaluates it when the site
+  // youtube.js and amazon.js are not resident either — Tab evaluates them when the site
   // lens opens — but it registers the youtube.* methods against the page
   // world's agent, so it installs here like everything else.
-  page: ['runtime-page.js', 'media.js', 'find.js', 'youtube.js'],
+  page: ['runtime-page.js', 'media.js', 'find.js', 'youtube.js', 'amazon.js'],
 };
 
 const agents = {};
@@ -323,6 +323,7 @@ check_size focus.js               3000
 check_size focus-extract.js      16000
 # Not resident either — evaluated only on the tab that focuses YouTube.
 check_size youtube.js            12000
+check_size amazon.js            14000
 # Only while dev tools are attached — never on ordinary pages, so this one
 # budgets feature growth rather than per-page cost. Raised from 70000 when
 # the elements-pane work landed (74683 bytes at the time).

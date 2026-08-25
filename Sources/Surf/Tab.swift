@@ -1437,8 +1437,15 @@ final class Tab: NSObject, Identifiable {
     /// why `resetFocus` takes an instruction to leave it standing.
     private(set) var focusSite: SiteFocusSite?
 
-    /// The YouTube lens's state, alive only while that lens is up.
-    private(set) var youtubeLens: YouTubeLens?
+    /// The site lens's state, alive only while one is up.
+    ///
+    /// One property rather than one per site. `Tab` calls exactly three
+    /// methods on it (`SiteLens`), and the views ask for the concrete type
+    /// they know how to draw.
+    private(set) var siteLens: (any SiteLens)?
+
+    var youtubeLens: YouTubeLens? { siteLens as? YouTubeLens }
+    var amazonLens: AmazonLens? { siteLens as? AmazonLens }
 
     /// The site lens on offer here, if this address has one.
     ///
@@ -1461,8 +1468,11 @@ final class Tab: NSObject, Identifiable {
         focusDetection = nil
         focusPrevalidated = nil
         focusSite = site
-        let lens = YouTubeLens(tab: self)
-        youtubeLens = lens
+        // Exhaustive over the enum, so a new site cannot ship without a lens
+        // of its own — this line used to name YouTube outright, and adding a
+        // second site would have compiled and put the wrong lens on it.
+        let lens = site.makeLens(tab: self)
+        siteLens = lens
         focusPhase = .active
         // Whatever is already on screen is the lens's first screen: opening
         // it on a video should land on that video, not on a blank field.
@@ -1474,8 +1484,8 @@ final class Tab: NSObject, Identifiable {
         guard focusSite != nil else { return }
         // By hand rather than by navigation, so the page is still there and
         // still wearing the stage — it has to be handed back as it was.
-        youtubeLens?.tearDown()
-        youtubeLens = nil
+        siteLens?.tearDown()
+        siteLens = nil
         focusSite = nil
         focusPhase = .inactive
     }
@@ -1517,6 +1527,45 @@ final class Tab: NSObject, Identifiable {
 
     func youtubeSetCaptions(_ language: String) {
         pageAgent.send(.youtubeCaptions, ["language": language])
+    }
+
+    /// Installs the Amazon domain and reads the page. Idempotent and free
+    /// after the first call on a document, so every read carries it and no
+    /// caller has to remember to.
+    ///
+    /// The selectors travel with the call rather than living in the script.
+    /// That is what keeps every piece of Amazon knowledge in Swift, where a
+    /// change to it is an edit with a test beside it.
+    func amazonRead() async -> AmazonPageReply? {
+        _ = try? await webView.callAsyncJavaScript(
+            AmazonBridge.installScript, arguments: [:],
+            in: nil, contentWorld: PageProtocol.World.page.contentWorld
+        )
+        return await pageAgent.value(
+            .amazonPage, ["selectors": AmazonSelectors.payload],
+            as: AmazonPageReply.self
+        )
+    }
+
+    /// Just the navigation bar's cart count and account name — the cheap
+    /// read, for confirming a write. A whole page read to check one number
+    /// would be absurd.
+    func amazonNav() async -> AmazonNavWire? {
+        await pageAgent.value(
+            .amazonNav, ["selectors": AmazonSelectors.payload],
+            as: AmazonNavWire.self
+        )
+    }
+
+    /// Presses Amazon's own Add to Cart button. True only means there was a
+    /// button to press; whether anything reached the cart is observed
+    /// afterwards, from the page.
+    func amazonAddToCart(quantity: Int) async -> Bool {
+        await pageAgent.value(
+            .amazonAddToCart,
+            ["selectors": AmazonSelectors.payload, "quantity": quantity],
+            as: Bool.self
+        ) ?? false
     }
 
     /// The element the stage was applied to, pinned at entry. The ranking
@@ -1979,7 +2028,7 @@ final class Tab: NSObject, Identifiable {
         guard !keepingSiteLens else { return }
         // No unstage here either, and for the same reason: this path is a
         // document that has already gone. Leaving by hand is `exitSiteFocus`.
-        youtubeLens = nil
+        siteLens = nil
         focusSite = nil
         focusPhase = .inactive
     }
@@ -2028,7 +2077,7 @@ extension Tab: WKNavigationDelegate {
         // asked for — but only while the address still belongs to its site, so
         // a link out of YouTube closes the lens rather than framing the web.
         let lensSurvives = focusSite?.claims(webView.url) == true
-        if lensSurvives { youtubeLens?.documentWillChange() }
+        if lensSurvives { siteLens?.documentWillChange() }
         resetFocus(keepingSiteLens: lensSurvives)
     }
 
@@ -2049,7 +2098,7 @@ extension Tab: WKNavigationDelegate {
         // The lens reads the page it just asked for. After `scheduleFocus-
         // Detection` deliberately: the two never both run, because a tab in a
         // site lens is not `.inactive` and the detector's work is discarded.
-        youtubeLens?.documentDidLoad()
+        siteLens?.documentDidLoad()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 

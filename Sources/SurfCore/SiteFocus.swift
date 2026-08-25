@@ -13,6 +13,7 @@ import Foundation
 /// go that isn't an `if` in a view.
 public enum SiteFocusSite: String, CaseIterable, Sendable {
     case youtube
+    case amazon
 
     /// The site this address belongs to, or nil when Focus has no lens for it.
     public static func matching(_ url: URL?) -> SiteFocusSite? {
@@ -37,12 +38,22 @@ public enum SiteFocusSite: String, CaseIterable, Sendable {
             // would be a different lens.
             return bare == "youtube.com" || bare == "m.youtube.com"
                 || bare == "youtu.be"
+        case .amazon:
+            let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+            // amazon.com and nothing else. The twenty-odd international
+            // marketplaces run different markup, different currency and
+            // localised availability text, none of which this lens has ever
+            // been pointed at — and reading a price wrong is worse than
+            // declining to offer. smile. and the media subdomains are not
+            // storefronts at all.
+            return bare == "amazon.com"
         }
     }
 
     public var displayName: String {
         switch self {
         case .youtube: return "YouTube"
+        case .amazon: return "Amazon"
         }
     }
 }
