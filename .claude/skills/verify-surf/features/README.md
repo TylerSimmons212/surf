@@ -13,5 +13,6 @@ One file per user-facing feature. Each says what it is, how a user reaches it, h
 | [focus-youtube.md](focus-youtube.md) — the YouTube site lens | `SURF_FOCUS=1` | youtube.com (no fixture) |
 | [menu-bar.md](menu-bar.md) — the nine menus, dynamic tab and island lists | Accessibility API | any |
 | [mini-window.md](mini-window.md) — the floating panel for uncommitted links | context menu + `CGEvent` | `testpages/context-demo.html` |
+| [window-frame.md](window-frame.md) — how big the main window opens, and what it remembers | launch + Accessibility API | any |
 
 Not yet mapped (human-driven, no log hook): downloads, element capture/screenshots, address palette. Split panes and island switching have no log hook either, but both are reachable through the menu bar, which `menu-bar.md` drives. Map them before claiming a proof that touches them.

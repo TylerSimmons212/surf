@@ -790,6 +790,42 @@ a `WindowGroup` would open a second window over the same tabs, and the two
 would then steal each page from each other whenever either showed it. Closing
 the window quits the app, which is the other half of the same fact.
 
+### How big the window is
+
+The first time Surf opens it takes the full height of the display and as much
+width as it can up to 1800 points, centred. Height is what reading a page wants,
+and there is no reason to hand back any of it. Width is capped because a browser
+stretched across a 6K display puts the sidebar and the far edge of the page a
+head-turn apart, and the line lengths go with it — past that point the extra
+width is worth more to the desktop than to the page. On a laptop or a 1440p
+monitor the cap never bites and the window fills the screen edge to edge. Full
+screen stays a thing you choose, not a thing Surf does to you.
+
+After that it is whatever you left it as. `WindowPlacement` in SurfCore settles
+the arithmetic: a frame saved on a monitor that has since been unplugged is slid
+back onto a screen rather than opened where there are no pixels, and one saved
+on a larger display is cut down to fit a smaller one. Leaving the window in full
+screen saves nothing, because full screen is a mode and not a size.
+
+`MainWindowFrame` does the remembering, and it does it by hand for a reason
+worth writing down. `setFrameAutosaveName` is the one-line AppKit answer to all
+of this, and Surf called it for months with no effect at all. A `WindowGroup`'s
+window belongs to SwiftUI, which assigns an autosave name of its own a runloop
+turn after the hosting view attaches and overwrites whatever anyone else set.
+The name it picks is built from the *type* of the scene's content, so it reads
+in full as `SwiftUI.WindowGroup<SwiftUI.ModifiedContent<Surf.ContentView, …>>-1-AppWindow-1`
+— which means adding a modifier at the root of `ContentView` changes the key,
+orphans the old one, and makes the window forget its size, silently, with
+nothing in the diff to suggest it. That is what had happened.
+
+So the frame is Surf's to keep, under a short stable key, in `SurfDefaults.store`
+rather than the standard domain. That last part closes the hole the scratch
+suite could not: AppKit's autosave always writes to the standard domain, so a
+`SURF_STATE_DIR` run used to leave a window frame in your real preferences.
+SwiftUI still writes its own key about a tenth of a second after the name is
+cleared — clearing stops AppKit, not SwiftUI, which keeps its own copy — so the
+key is swept back out after that write and again when the window closes.
+
 ## Run
 
 ```

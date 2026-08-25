@@ -33,6 +33,10 @@ enum PreferenceKeys {
     /// installed. On by default: downloading it *is* the opt-in.
     static let focusEnhancedVoice = "focusEnhancedVoice"
     static let hideAdContainers = "hideAdContainers"
+    /// The main window's frame, as `NSStringFromRect`. Not a setting — there is
+    /// no UI for it — but it is a key, and keys are named here. See
+    /// `MainWindowFrame` for why AppKit's own autosave could not be used.
+    static let mainWindowFrame = "mainWindowFrame"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"

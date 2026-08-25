@@ -39,8 +39,8 @@ private final class TransparentHostView: NSVisualEffectView {
         // With no titlebar to grab, dragging the background moves the window.
         window.isMovableByWindowBackground = true
 
-        // Restores size and position across launches. Assigning the name also
-        // applies any saved frame immediately.
-        window.setFrameAutosaveName("SurfMainWindow")
+        // Size and position across launches, which SwiftUI cannot be left to
+        // do — see MainWindowFrame for what it does instead and why.
+        MainWindowFrame.shared.adopt(window)
     }
 }
