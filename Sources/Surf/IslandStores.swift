@@ -105,11 +105,11 @@ final class IslandStores {
 
     private var tombstones: [UUID] {
         get {
-            (UserDefaults.standard.array(forKey: Self.tombstoneKey) as? [String] ?? [])
+            (SurfDefaults.store.array(forKey: Self.tombstoneKey) as? [String] ?? [])
                 .compactMap(UUID.init(uuidString:))
         }
         set {
-            UserDefaults.standard.set(
+            SurfDefaults.store.set(
                 newValue.map(\.uuidString), forKey: Self.tombstoneKey
             )
         }

@@ -47,7 +47,7 @@ struct YouTubeLensView: View {
 
     private var openingScreen: some View {
         VStack(spacing: 22) {
-            YouTubeMark(size: 34)
+            SiteMark(site: .youtube, height: 34)
             YouTubeSearchField(lens: lens, isLarge: true)
                 .frame(maxWidth: 620)
             Text("Search YouTube")
@@ -330,17 +330,3 @@ private struct YouTubeResultCard: View {
 }
 
 // MARK: - Surf's YouTube mark
-
-/// Drawn rather than bundled. YouTube's logo is their trademark and shipping
-/// it inside another application is their decision to give, not ours — so
-/// this is the shape everyone reads as "video", in Surf's own hand and in
-/// their red.
-struct YouTubeMark: View {
-    var size: CGFloat = 13
-
-    var body: some View {
-        Image(systemName: "play.rectangle.fill")
-            .font(.system(size: size, weight: .medium))
-            .foregroundStyle(Color(red: 0.87, green: 0.11, blue: 0.11))
-    }
-}

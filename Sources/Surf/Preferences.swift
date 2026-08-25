@@ -48,7 +48,7 @@ extension PrivacySettings {
     /// unset keys read as `false` and quietly invert the intent — "keep me
     /// signed in" would default to off.
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [
+        SurfDefaults.store.register(defaults: [
             PreferenceKeys.rememberHistory: PrivacySettings.default.rememberHistory,
             PreferenceKeys.keepSignedIn: PrivacySettings.default.keepSignedIn,
             PreferenceKeys.restoreTabs: PrivacySettings.default.restoreTabs,
@@ -79,7 +79,7 @@ extension PrivacySettings {
     }
 
     static var current: PrivacySettings {
-        let defaults = UserDefaults.standard
+        let defaults = SurfDefaults.store
         return PrivacySettings(
             rememberHistory: defaults.bool(forKey: PreferenceKeys.rememberHistory),
             keepSignedIn: defaults.bool(forKey: PreferenceKeys.keepSignedIn),
@@ -99,7 +99,7 @@ enum AIPreferences {
         let installed = AICLIProvider.allCases.filter {
             AICLIDetector.shared.status($0).isInstalled
         }
-        let stored = UserDefaults.standard.string(forKey: PreferenceKeys.aiProvider)
+        let stored = SurfDefaults.store.string(forKey: PreferenceKeys.aiProvider)
         if let stored, let pick = AICLIProvider(rawValue: stored), installed.contains(pick) {
             return pick
         }
@@ -109,7 +109,7 @@ enum AIPreferences {
     }
 
     static func isEnabled(_ feature: AIFeature) -> Bool {
-        UserDefaults.standard.bool(forKey: feature.enabledKey)
+        SurfDefaults.store.bool(forKey: feature.enabledKey)
     }
 
     /// What a feature should actually run right now, or nil when it can't:
@@ -121,7 +121,7 @@ enum AIPreferences {
         guard let provider = selectedProvider,
               AICLIDetector.shared.status(provider).isUsable else { return nil }
         let status = AICLIDetector.shared.status(provider)
-        let stored = UserDefaults.standard.string(forKey: feature.modelKey(for: provider))
+        let stored = SurfDefaults.store.string(forKey: feature.modelKey(for: provider))
         guard let model = provider.validatedModel(
             stored, options: status.modelOptions, descriptions: status.modelDescriptions
         ) else { return nil }
@@ -133,14 +133,14 @@ enum LinkPreferences {
     /// Whether a link handed over by another application opens in a mini
     /// window rather than as a tab.
     static var externalUseMiniWindow: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.externalLinksInMiniWindow)
+        SurfDefaults.store.bool(forKey: PreferenceKeys.externalLinksInMiniWindow)
     }
 }
 
 enum MediaPreferences {
     /// Whether leaving a tab that's playing video should pop it out.
     static var autoPopOut: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.autoPopOutVideo)
+        SurfDefaults.store.bool(forKey: PreferenceKeys.autoPopOutVideo)
     }
 }
 

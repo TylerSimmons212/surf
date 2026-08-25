@@ -51,7 +51,7 @@ final class ContentBlocker {
     }
 
     static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.blockAds)
+        SurfDefaults.store.bool(forKey: PreferenceKeys.blockAds)
     }
 
     // MARK: - Storage
@@ -240,7 +240,7 @@ final class ContentBlocker {
     /// wave is the one they're in.
     private func primeFromCache() async {
         let identifiers = Self.cachedIdentifiers
-        guard !identifiers.isEmpty, let store = WKContentRuleListStore.default() else { return }
+        guard !identifiers.isEmpty, let store = WKContentRuleListStore.surf else { return }
 
         var primed: [WKContentRuleList] = []
         for identifier in identifiers {
@@ -259,8 +259,8 @@ final class ContentBlocker {
     /// What `primeFromCache` reads. Written only after a compile has actually
     /// produced these lists, so an identifier here is one the store has.
     private static var cachedIdentifiers: [String] {
-        get { UserDefaults.standard.stringArray(forKey: "blockListIdentifiers") ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: "blockListIdentifiers") }
+        get { SurfDefaults.store.stringArray(forKey: "blockListIdentifiers") ?? [] }
+        set { SurfDefaults.store.set(newValue, forKey: "blockListIdentifiers") }
     }
 
     /// Rebuilds the compiled lists and republishes them.
@@ -375,7 +375,7 @@ final class ContentBlocker {
         // Nil only when WebKit can't open its own store — a sandbox with no
         // writable container. There is nothing to fall back to, and nothing to
         // report: blocking is simply unavailable.
-        guard let store = WKContentRuleListStore.default() else { return nil }
+        guard let store = WKContentRuleListStore.surf else { return nil }
         if let cached = try? await store.contentRuleList(forIdentifier: identifier) {
             return cached
         }
@@ -396,7 +396,7 @@ final class ContentBlocker {
     /// in WebKit's store, and without this every list update and every click on
     /// Block would leave one there forever.
     private static func discardStaleLists(keeping current: Set<String>) async {
-        guard let store = WKContentRuleListStore.default(),
+        guard let store = WKContentRuleListStore.surf,
               let existing = await store.availableIdentifiers()
         else { return }
         for identifier in existing
@@ -505,8 +505,8 @@ final class ContentBlocker {
     // MARK: - Updating
 
     private var lastCheck: Date? {
-        get { UserDefaults.standard.object(forKey: PreferenceKeys.lastFilterListCheck) as? Date }
-        set { UserDefaults.standard.set(newValue, forKey: PreferenceKeys.lastFilterListCheck) }
+        get { SurfDefaults.store.object(forKey: PreferenceKeys.lastFilterListCheck) as? Date }
+        set { SurfDefaults.store.set(newValue, forKey: PreferenceKeys.lastFilterListCheck) }
     }
 
     /// Weekly, and immediately when there is no list at all — a first launch
@@ -569,6 +569,29 @@ final class ContentBlocker {
 }
 
 extension WKContentRuleListStore {
+
+    /// The store this process should compile into.
+    ///
+    /// The other half of the isolation `SurfDefaults` fixes. WebKit's default
+    /// rule-list store lives beside the app's own data, not inside
+    /// `SURF_STATE_DIR`, so a verification run was compiling its rule sets
+    /// into the same store as the copy of Surf you have open — and
+    /// `discardStaleLists` then removed the ones it did not recognise.
+    ///
+    /// Harmless in practice, because both would recompile. Still not what
+    /// "never touches your state" means.
+    /// Main-actor, because `WKContentRuleListStore.default()` is, and every
+    /// caller here is `ContentBlocker`, which is too.
+    @MainActor static let surf: WKContentRuleListStore? = {
+        guard SurfDefaults.isScratch else { return .default() }
+        let directory = SupportDirectory.url
+            .appendingPathComponent("ContentRules", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        return WKContentRuleListStore(url: directory) ?? .default()
+    }()
+
     /// The async spelling the SDK doesn't provide for this one call.
     func availableIdentifiers() async -> [String]? {
         await withCheckedContinuation { continuation in
