@@ -22,6 +22,15 @@ Opening a page in a tab: navigation, the content blocker priming and applying, t
 
 Several tabs: pass `"file://$PWD/testpages/heavy.html,https://example.com"` and wait for the second `loaded` line (`launch.sh load <urls> 'loaded https://example.com'`).
 
+Tabs a page opens for itself: `testpages/popup-demo.html` has a `target="_blank"`
+link, the same pointed at a host that answers in three seconds, and a
+`window.open()` button. All three go through `createWebViewWith`, so proving one
+proves the path — but the slow one is the only one that makes the timing visible.
+Such a tab must never show the home screen: it is selected the moment it exists
+and nothing calls `submit` on it, so any window where `mode` is `.home` is a
+window where the water animation is on screen. Log `tab.mode` at creation to
+check; it should already read `browsing`.
+
 ## What proves it
 
 - `stderr.log`: `[surf] rules ready — N lists, M blocked domains` before `[surf] loaded <url>` (the blocker is applied before the first page, `Sources/Surf/ContentBlocker.swift`). In a fresh state directory this reads `0 lists`, followed later by `EasyList: … rules converted` and `EasyList installed` once the download lands; a second run in the same directory primes from that cache.
