@@ -94,7 +94,12 @@ final class ContentBlocker {
     /// this off gives them nothing to measure while every request is still
     /// refused.
     static var hidesAdContainers: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.hideAdContainers)
+        // `SurfDefaults.store`, not `UserDefaults.standard`: the two are the
+        // same object in an ordinary run, so reading the wrong one looks
+        // correct right up until `SURF_STATE_DIR` is set — and then this reads
+        // your real preference while `registerDefaults` wrote the scratch
+        // suite, so the shipped default of `true` never applies at all.
+        SurfDefaults.store.bool(forKey: PreferenceKeys.hideAdContainers)
     }
 
     private static func domainsURL(_ source: FilterListSource) -> URL {

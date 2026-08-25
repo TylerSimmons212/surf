@@ -26,10 +26,23 @@ needed their own seams — a directory override alone does not reach them:
   in `Sources/` may say `UserDefaults.standard`; that is the whole point of
   the seam. The suite's name is written to `<state>/defaults-suite` so
   `stop.sh` can remove both the domain and its plist.
+
+  One deliberate exception, in `MainWindowFrame.sweepOrphanedFrames`, which
+  *deletes* from the standard domain and never reads or writes state there.
+  SwiftUI saves the main window's frame under a key of its own choosing every
+  launch, to the standard domain, where no seam can redirect it; the sweep
+  takes it back out. Removing it is the only way the promise above stays true
+  for the window's own geometry.
 - **Compiled blocking rules.** `WKContentRuleListStore.surf`
   (`Sources/Surf/ContentBlocker.swift`) compiles into `<state>/ContentRules`
   rather than WebKit's shared store, which sits beside the app's own data.
   Expect ~116MB per run; `stop.sh` takes it with the state directory.
+
+- **The main window's frame.** Kept by `MainWindowFrame` under
+  `mainWindowFrame` in the suite above, rather than by AppKit's
+  `setFrameAutosaveName`, which always writes to the standard domain. See
+  [features/window-frame.md](features/window-frame.md) for how to prove both
+  the placement and the isolation.
 
 Before these existed a run shared `blockListIdentifiers`, the `blockAds`
 preference and the compiled rule sets with whatever Surf you had open — and

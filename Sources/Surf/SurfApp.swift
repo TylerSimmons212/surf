@@ -34,13 +34,19 @@ struct SurfApp: App {
     var body: some Scene {
         WindowGroup("Surf") {
             ContentView(session: session)
-                .frame(minWidth: 720, minHeight: 480)
+                .frame(
+                    minWidth: WindowPlacement.minimumSize.width,
+                    minHeight: WindowPlacement.minimumSize.height
+                )
                 // Only fires for schemes `CFBundleURLTypes` claims, which is
                 // why being the default browser is a bundle change and a code
                 // change rather than either one alone.
                 .onOpenURL { session.openFromOutside($0) }
         }
         .windowStyle(.hiddenTitleBar)
+        // Only ever seen for the instant before `MainWindowFrame` places the
+        // window; SwiftUI insists on a number, and this is a reasonable one to
+        // be wrong at.
         .defaultSize(width: 980, height: 640)
         .commands {
             tabCommands
