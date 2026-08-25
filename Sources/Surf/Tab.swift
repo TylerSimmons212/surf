@@ -1770,7 +1770,7 @@ final class Tab: NSObject, Identifiable {
     /// is observed afterwards by reading it again — the same split as
     /// `amazonAddToCart`, and for the same reason: the click resolves at once
     /// and the request behind it lands a second or two later.
-    func amazonCartWrite(itemID: String, action: String) async -> Bool {
+    func amazonCartWrite(itemID: String, action: String) async -> String {
         await pageAgent.value(
             .amazonCartWrite,
             [
@@ -1778,8 +1778,8 @@ final class Tab: NSObject, Identifiable {
                 "itemID": itemID,
                 "action": action,
             ],
-            as: Bool.self
-        ) ?? false
+            as: String.self
+        ) ?? "unreachable"
     }
 
     /// The element the stage was applied to, pinned at entry. The ranking

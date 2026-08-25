@@ -402,7 +402,8 @@ enum AmazonBridge {
                 outOfStock: one(row, sel.cartItemOutOfStock),
                 prime: one(row, sel.cartItemPrime),
                 image: one(row, sel.cartItemImage),
-                canDecrement: has(row, sel.cartDecrement)
+                canDecrement: has(row, sel.cartDecrement),
+                canRemove: has(row, sel.cartRemove)
               })),
               subtotal: one(document, sel.cartSubtotal),
               subtotalLabel: one(document, sel.cartSubtotalLabel),
@@ -428,8 +429,12 @@ enum AmazonBridge {
             const sel = (params && params.selectors) || {};
             const id = params && params.itemID;
             const action = params && params.action;
-            if (!id || !action) { return false; }
+            if (!id || !action) { return 'bad-request'; }
 
+            // Why this reports which step failed rather than just failing: a
+            // row that is no longer in the document and a row whose control
+            // has moved are different bugs with the same symptom, and one
+            // afternoon was spent proving they are not the same thing.
             let row = null;
             for (const entry of sel.cartItem || []) {
               try {
@@ -439,13 +444,13 @@ enum AmazonBridge {
               } catch (e) { continue; }
               if (row) { break; }
             }
-            if (!row) { return false; }
+            if (!row) { return 'no-row'; }
 
             const list = action === 'increment' ? sel.cartIncrement
               : action === 'decrement' ? sel.cartDecrement
               : action === 'remove' ? sel.cartRemove
               : null;
-            if (!list) { return false; }
+            if (!list) { return 'bad-request'; }
 
             let control = null;
             for (const entry of list) {
@@ -453,9 +458,9 @@ enum AmazonBridge {
               catch (e) { continue; }
               if (control) { break; }
             }
-            if (!control) { return false; }
+            if (!control) { return 'no-control'; }
             control.click();
-            return true;
+            return 'pressed';
           });
         })();
         """

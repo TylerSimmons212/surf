@@ -195,3 +195,119 @@ struct AmazonCartLabelTests {
         #expect(AmazonRating.count("3 monthly payments") == 3)
     }
 }
+
+@Suite("Amazon cart write confirmation")
+struct AmazonCartConfirmationTests {
+
+    static let line = AmazonCartItem(id: "line-1", asin: "B0", quantity: 2)
+    static let other = AmazonCartItem(id: "line-2", asin: "B1", quantity: 1)
+
+    /// The bug this replaced: "the cart changed" was taken as evidence, and a
+    /// remove that did nothing reported that it had landed, because Amazon had
+    /// re-rendered something else in the meantime.
+    @Test("A cart that merely changed is not a write that took effect")
+    func changeIsNotEvidence() {
+        // Same line, still there, but the rest of the cart moved.
+        let after = AmazonCart(
+            items: [Self.line, Self.other],
+            subtotal: AmazonPrice(display: "$40.00")
+        )
+        #expect(!after.reflects(.remove, on: Self.line))
+        #expect(!after.reflects(.increment, on: Self.line))
+        #expect(!after.reflects(.decrement, on: Self.line))
+    }
+
+    @Test("A removal is the line being gone")
+    func removeIsAbsence() {
+        let after = AmazonCart(items: [Self.other])
+        #expect(after.reflects(.remove, on: Self.line))
+        #expect(!AmazonCart(items: [Self.line, Self.other]).reflects(.remove, on: Self.line))
+    }
+
+    @Test("An increment is that line going up, not the cart going up")
+    func incrementIsThatLine() {
+        var raised = Self.line
+        raised.quantity = 3
+        #expect(AmazonCart(items: [raised]).reflects(.increment, on: Self.line))
+        // Another line growing is not this line growing.
+        var otherGrew = Self.other
+        otherGrew.quantity = 9
+        #expect(!AmazonCart(items: [Self.line, otherGrew]).reflects(.increment, on: Self.line))
+    }
+
+    @Test("A decrement is that line going down")
+    func decrementIsThatLine() {
+        var lowered = Self.line
+        lowered.quantity = 1
+        #expect(AmazonCart(items: [lowered]).reflects(.decrement, on: Self.line))
+    }
+
+    /// The failure the whole design is arranged around: Amazon's minus is a
+    /// delete at the floor. If both guards ever fail, the line vanishes — and
+    /// that must not read as a successful decrement.
+    @Test("A decrement that removed the line is a failure, not a success")
+    func vanishingUnderDecrementIsNotSuccess() {
+        let after = AmazonCart(items: [Self.other])
+        #expect(!after.reflects(.decrement, on: Self.line))
+        #expect(after.lostLine(Self.line, underDecrement: true))
+        // The same absence under a remove is exactly what was asked for.
+        #expect(!after.lostLine(Self.line, underDecrement: false))
+    }
+}
+
+@Suite("Amazon removed-row ghosts")
+struct AmazonCartGhostTests {
+
+    /// The reason Remove looked broken. Amazon does not take the row out of
+    /// the page — it empties it and shows "… was removed from Shopping Cart"
+    /// inside it, with every attribute still on the element: still
+    /// `data-itemtype="active"`, still its old quantity and price.
+    @Test("A row Amazon has emptied is not a line any more")
+    func dropsAGhostRow() {
+        #expect(
+            AmazonCartParse.item(
+                id: "ecd26f38", asin: "B088NRLMPV", title: "Anker USB C",
+                price: "9.99", quantity: "2", minQuantity: "1",
+                outOfStock: "0", prime: "0",
+                // Nothing left in it: no controls, no image.
+                image: "", hasRemoveControl: false
+            ) == nil
+        )
+    }
+
+    /// Both signals are required. Either one alone could be a layout nobody
+    /// has met, and dropping a real line is worse than briefly keeping a ghost.
+    @Test("One missing signal is not enough to drop a line")
+    func keepsALineWithOneSignalMissing() {
+        // No remove control, but the product is still pictured.
+        #expect(
+            AmazonCartParse.item(
+                id: "a", asin: "B0", title: "t", price: "1.00", quantity: "1",
+                minQuantity: "1", outOfStock: "0", prime: "0",
+                image: "https://m.media-amazon.com/images/I/x.jpg",
+                hasRemoveControl: false
+            ) != nil
+        )
+        // A control but no picture — an image that has not loaded yet.
+        #expect(
+            AmazonCartParse.item(
+                id: "a", asin: "B0", title: "t", price: "1.00", quantity: "1",
+                minQuantity: "1", outOfStock: "0", prime: "0",
+                image: "", hasRemoveControl: true
+            ) != nil
+        )
+    }
+
+    /// A cart whose only line is a ghost is an empty cart, which is what the
+    /// sidebar has to say once a removal lands.
+    @Test("A cart of nothing but ghosts is empty")
+    func ghostsLeaveAnEmptyCart() {
+        let ghost = AmazonCartParse.item(
+            id: "gone", asin: "B0", title: "t", price: "9.99", quantity: "2",
+            minQuantity: "1", outOfStock: "0", prime: "0",
+            image: "", hasRemoveControl: false
+        )
+        #expect(ghost == nil)
+        #expect(AmazonCart(items: [ghost].compactMap { $0 }).isEmpty)
+    }
+}

@@ -103,6 +103,35 @@ public struct AmazonCart: Equatable, Sendable {
 
     /// The line with this id, which is how every write finds its subject.
     public func item(id: String) -> AmazonCartItem? { items.first { $0.id == id } }
+
+    /// Whether this reading of the cart shows a write having taken effect.
+    ///
+    /// Action-specific, and that is the entire point. The first version asked
+    /// whether the cart had changed *at all*, which is not evidence of
+    /// anything: Amazon re-renders rows on its own schedule, an image URL or a
+    /// recommendation shifts, and a remove that did nothing reported that it
+    /// had landed. Each action now has to show its own effect.
+    public func reflects(_ action: AmazonCartAction, on line: AmazonCartItem) -> Bool {
+        switch action {
+        case .remove:
+            return item(id: line.id) == nil
+        case .increment:
+            guard let now = item(id: line.id) else { return false }
+            return now.quantity > line.quantity
+        case .decrement:
+            // A line that vanished under a decrement is the delete trap having
+            // fired. It is not success, and it must never be reported as it.
+            guard let now = item(id: line.id) else { return false }
+            return now.quantity < line.quantity
+        }
+    }
+
+    /// A decrement that removed the line instead of lowering it — the failure
+    /// two separate guards exist to prevent, worth naming so it can be logged
+    /// rather than silently read as "nothing happened".
+    public func lostLine(_ line: AmazonCartItem, underDecrement: Bool) -> Bool {
+        underDecrement && item(id: line.id) == nil
+    }
 }
 
 /// Turning what the script copied into a cart.
@@ -130,14 +159,30 @@ public enum AmazonCartParse {
     /// A line without an id is not merely incomplete — it is unmodifiable, and
     /// rendering a quantity stepper next to something no write can reach is
     /// worse than not rendering the line at all.
+    /// A row that has been removed is still in the page, and still carries
+    /// every attribute it had — `data-itemtype="active"`, its old quantity,
+    /// its old price. Amazon does not take the element out; it empties it and
+    /// shows "… was removed from Shopping Cart" inside it.
+    ///
+    /// This is why Remove appeared not to work. It worked perfectly: the badge
+    /// went to zero and the subtotal to `$0.00`. But the row was still there,
+    /// so the cart still counted it, and the confirmation waited for a line to
+    /// disappear that never would.
+    ///
+    /// A removed row is recognisable by having nothing left in it — no
+    /// controls, no stepper, no product image. Both signals are required
+    /// because either alone could be a layout we have not met, and dropping a
+    /// real line is worse than keeping a ghost for a moment.
     public static func item(
         id: String?, asin: String?, title: String?, price: String?,
         quantity: String?, minQuantity: String?, outOfStock: String?,
-        prime: String?, image: String?
+        prime: String?, image: String?, hasRemoveControl: Bool = true
     ) -> AmazonCartItem? {
         guard let id = id?.trimmingCharacters(in: .whitespaces), !id.isEmpty else {
             return nil
         }
+        let picture = AmazonText.tidy(image ?? "")
+        guard hasRemoveControl || !picture.isEmpty else { return nil }
         return AmazonCartItem(
             id: id,
             asin: (asin ?? "").trimmingCharacters(in: .whitespaces),
@@ -147,7 +192,7 @@ public enum AmazonCartParse {
             minQuantity: max(1, number(minQuantity) ?? 1),
             isOutOfStock: flag(outOfStock),
             isPrime: flag(prime),
-            image: AmazonText.tidy(image ?? "")
+            image: picture
         )
     }
 

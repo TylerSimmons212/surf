@@ -332,36 +332,48 @@ final class AmazonLens {
         writingLine = item.id
         cartReadTask?.cancel()
         cartReadTask = Task { @MainActor in
-            let pressed = await tab.amazonCartWrite(itemID: item.id, action: action.rawValue)
+            let outcome = await tab.amazonCartWrite(itemID: item.id, action: action.rawValue)
             guard !Task.isCancelled else { return }
-            guard pressed else {
+            guard outcome == "pressed" else {
                 writingLine = nil
-                debugLog("amazon: no \(action.rawValue) control on \(item.id)")
+                debugLog("amazon: \(action.rawValue) on \(item.id) — \(outcome)")
+                // The row has gone from under us. Whatever the sidebar is
+                // showing is a cart that no longer exists, so re-read it
+                // rather than leave a list nothing can act on.
+                if outcome == "no-row" { loadCart(navigating: false) }
                 return
             }
             // Observed, never assumed. Amazon rewrites the row asynchronously,
             // so the cart is read again until it disagrees with what it said
             // before — which is what "the write landed" actually looks like.
-            let before = cartContents
-            for delay in [500, 1100, 2000] {
+            for delay in [500, 1100, 2000, 3000] {
                 try? await Task.sleep(for: .milliseconds(delay))
                 guard !Task.isCancelled else { return }
                 guard let reply = await tab.amazonCart() else { continue }
                 let parsed = reply.parsed
-                if parsed != before {
+                if parsed.lostLine(item, underDecrement: action == .decrement) {
+                    // Both guards failed and Amazon's minus deleted the line.
+                    // Loud, because this is the failure the whole design is
+                    // arranged around.
                     cartContents = parsed
                     cart = cart.observing(reply.cartCount)
                     writingLine = nil
-                    debugLog("amazon: \(action.rawValue) landed — \(parsed.countedUnits) units")
+                    debugLog("amazon: DECREMENT REMOVED \(item.id) — the floor guard did not hold")
                     return
                 }
+                guard parsed.reflects(action, on: item) else { continue }
+                cartContents = parsed
+                cart = cart.observing(reply.cartCount)
+                writingLine = nil
+                debugLog("amazon: \(action.rawValue) landed — \(parsed.countedUnits) units")
+                return
             }
             guard !Task.isCancelled else { return }
             // The page never changed. Re-read once so the sidebar shows what
             // Amazon actually holds rather than what we hoped for.
             if let reply = await tab.amazonCart() { cartContents = reply.parsed }
             writingLine = nil
-            debugLog("amazon: \(action.rawValue) on \(item.id) never showed up")
+            debugLog("amazon: \(action.rawValue) on \(item.id) never took effect")
         }
     }
 

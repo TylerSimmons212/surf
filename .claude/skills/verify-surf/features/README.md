@@ -11,6 +11,7 @@ One file per user-facing feature. Each says what it is, how a user reaches it, h
 | [devtools.md](devtools.md) — the attached inspector panel | `SURF_DEVTOOLS=<pane>` | `testpages/styles-demo.html`, `console-demo.html` |
 | [media-and-popout.md](media-and-popout.md) — now-playing, theater, pop-out | human | `testpages/media-demo.html` |
 | [focus-youtube.md](focus-youtube.md) — the YouTube site lens | `SURF_FOCUS=1` | youtube.com (no fixture) |
+| [focus-amazon.md](focus-amazon.md) — the Amazon site lens, incl. the cart | `SURF_FOCUS=1` | amazon.com (no fixture) |
 | [menu-bar.md](menu-bar.md) — the nine menus, dynamic tab and island lists | Accessibility API | any |
 | [mini-window.md](mini-window.md) — the floating panel for uncommitted links | context menu + `CGEvent` | `testpages/context-demo.html` |
 | [window-frame.md](window-frame.md) — how big the main window opens, and what it remembers | launch + Accessibility API | any |

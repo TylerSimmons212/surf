@@ -616,6 +616,9 @@ public struct AmazonCartItemWire: Decodable, Sendable {
     /// this is the page's own answer to "may this be decremented", checked
     /// against `AmazonCartItem.canDecrement` rather than trusted alone.
     public var canDecrement: Bool?
+    /// Whether the row still has a remove control. See the ghost-row note in
+    /// `AmazonCartParse.item`.
+    public var canRemove: Bool?
 }
 
 public struct AmazonCartReply: Decodable, Sendable {
@@ -631,7 +634,8 @@ public struct AmazonCartReply: Decodable, Sendable {
             AmazonCartParse.item(
                 id: wire.id, asin: wire.asin, title: wire.title, price: wire.price,
                 quantity: wire.quantity, minQuantity: wire.minQuantity,
-                outOfStock: wire.outOfStock, prime: wire.prime, image: wire.image
+                outOfStock: wire.outOfStock, prime: wire.prime, image: wire.image,
+                hasRemoveControl: wire.canRemove ?? true
             )
         }
         return AmazonCart(
