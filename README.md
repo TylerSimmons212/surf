@@ -525,12 +525,89 @@ appears — a window that opens and vanishes is still something that happened to
 the reader. Nothing is refused on a heuristic, because the cost of being wrong
 is a link someone clicked and never got.
 
-A window aimed somewhere unlisted whose *contents* are then blocked is a
-different case: WebKit hands the window over and fails the load afterwards,
-leaving a blank tab with no address and no title. That tab is an artefact of
-blocking rather than anything the reader asked for, so it closes itself — but
-only ever a tab a page opened, and only while nothing has committed in it. A tab
-you opened stays open however empty it is, because you opened it.
+A window aimed somewhere unlisted fails in two other ways. The first never gets
+off the ground: WebKit hands the window over, the load fails, and the tab has no
+address at all. The second is the one that gets seen — the landing page commits,
+so there is an address and a document, and then everything it exists to fetch is
+refused, leaving a blank tab with no title, no text, and a blocked count
+climbing on the shield.
+
+Both close themselves. The emptiness is not incidental in the second case; it is
+what a page whose entire contents were blocked looks like, and it is a better
+signal than any guess about how the window was opened. All three conditions have
+to hold together — no title, nothing readable in the body, and several refused
+requests — and only ever on a tab a page opened. A tab you opened stays open
+however empty it is, because you opened it.
+
+There is a third way a page can check, and it is the one Surf can least argue
+with: hiding is the only thing a blocker does that a site can *see from the
+inside*. A player puts an element on its own page, measures it, finds it hidden,
+and stops playing — and it is right, in the sense that the measurement is
+correct. So element hiding can be switched off on its own, in Settings, without
+giving up a single refused request. The lists are compiled a second way with the
+hiding rules left out — and the switch reaches the reclaiming pass too, because
+closing a hole is as measurable as hiding one, and a switch that stopped the
+list hiding things while leaving that running would leave the same fingerprint
+on a page that had just been told there was nothing to find. With it off, the
+layout is exactly what the site's authors wrote, holes and all, and every request
+is still refused.
+
+Some pages check less directly, and two of those ways are worth naming because
+between them they account for a video that starts and then stops.
+
+The first is a bait variable. A page cannot ask whether a request was blocked,
+so it loads a script whose only job is to set a variable and then tests whether
+the variable is there — pausing the video and raising a wall if it isn't. The
+name is random per site, so no list can carry it and no stub can be written for
+it in advance. What is constant is the shape: an identifier tested with `typeof`,
+never assigned anywhere in the page, and named after what it is. So Surf reads
+the check rather than knowing the name, and answers it. Narrowly: only names that
+announce themselves as bait, and only where the page never assigns them, because
+`typeof jQuery === 'undefined'` is how a page decides whether to load jQuery and
+answering that one would leave it calling methods on nothing.
+
+The second is a sheet laid over the player to catch the click meant for it —
+unnamed, empty, transparent, and stacked above the player's own controls. The
+viewer aims at play, hits that instead, and gets a window; it then gets out of
+the way so the second click works, which is exactly why it reads as "I pressed
+play and an ad opened". What identifies it is the combination, and above all
+the last part: a player has no reason to cover its own controls. Its own layers
+are named — `fp-ui`, `fp-ui-block` — because its own code has to find them
+again, where this one is anonymous because nothing ever will. It is made
+transparent to the pointer rather than removed, because removing an element a
+player put there is a guess about someone else's code, while this changes
+nothing except who receives the click — and the click was always meant for the
+player.
+
+The third is a window opened by the click that plays the video. A player can be
+configured to open one — the destination sits in the page, beside the video's own
+settings — so every defence that reasons about gestures is defeated by design:
+the gesture is real, and it is the one the viewer made. Checking the destination
+doesn't help either, because these land on throwaway affiliate domains no list
+carries. What is constant is the intent. Pressing play is a request to play, not
+to open a window, and no legitimate player has ever needed one — so that is what
+gets refused, which is why it works on a domain nobody has seen before. Scoped as
+tightly as the claim: only while a click on a video or its controls is being
+handled, and only for somewhere other than the site you are on. A share button
+that opens a window still opens it.
+
+A blocked script is invisible to a page that never checks, and a video player is
+not that page. It loads Google's ad SDK, waits for `google.ima` to appear, and
+hands the viewer to it. Refuse the script and the global never arrives, so the
+player waits for a callback that cannot come — and the viewer, who pressed play,
+watches nothing happen. The site is then free to call that an ad blocker's
+fault, and usually does.
+
+So a script Surf has a stand-in for is answered rather than silenced. The stub
+is installed, nothing is fetched, and the script element reports the load the
+player is waiting on. What the stub then says is that there are no ads, which is
+a state every player already handles — it is what an unfilled ad slot looks like
+to them, and they play the video. This is not a way of hiding that blocking
+happened: it is the difference between a component that is *absent* and one that
+says it has *nothing*, and only the second is something the player was written
+to survive. Anything a player reaches for that the stub doesn't define answers as
+a harmless no-op, because a stand-in that breaks the page it was meant to rescue
+is worse than none.
 
 Blocking the request is only half of a blocked ad. A page reserves the space
 before it knows what will fill it — a banner slot is a container given a height
@@ -871,6 +948,10 @@ makes it unit-testable — the UI targets can't be.
   current, applies both to every tab
 - `Sources/SurfCore/AdSlots.swift` — what names an ad container, and what has
   to be true before its space is reclaimed
+- `Sources/SurfCore/Surrogates.swift` — stand-ins for the scripts blocking
+  removes, so a player is told there are no ads rather than left waiting
+- `Sources/SurfCore/AntiAdblock.swift` — the bait variable a page checks for,
+  and why pressing play is never a request to open a window
 - `Sources/Surf/BlockBridge.swift` — the page-side account of what was
   requested, and the two passes that close the hole a blocked ad leaves
 - `Sources/Surf/BlockPanel.swift` — the shield and the list behind it

@@ -300,7 +300,10 @@ check_size() {
 }
 # Injected into every frame of every page.
 check_size theme.js              34000
-check_size block.js              14000
+# block.js carries the surrogates and the anti-adblock answers as well as
+# the blocking itself — a stub that satisfies an ad SDK is a script, and there
+# are a lot of ad SDKs. Raised from 14000 deliberately when that landed.
+check_size block.js              30000
 # Raised from 12000 when theater mode landed, and again to 16000 when it
 # learned to survive hostile players (14451 at the time): stylesheet-based
 # staging, ancestor neutralisation, and lights-out all have to run where the

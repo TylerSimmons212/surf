@@ -24,7 +24,14 @@ enum BlockBridge {
 
     /// Built rather than stored, so the words the sweep matches on come from
     /// `AdSlot` — one list, tested in Swift, rather than two that drift.
-    static var script: String {
+    ///
+    /// `collapsing` is off when the reader has turned element hiding off, and it
+    /// has to reach in here as well as into the rules. Reclaiming a container's
+    /// space is a change to the page's layout, which means it is a change a page
+    /// can *measure* — and a switch that stopped the filter list hiding things
+    /// while leaving this running would leave exactly the same fingerprint, on a
+    /// page that has just been told there is nothing to find.
+    static func script(collapsing: Bool) -> String {
         """
     (function () {
       if (window.__surfBlockInstalled) { return; }
@@ -152,6 +159,268 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
+      // Standing in for what was blocked.
+      //
+      // A player loads Google's ad SDK, waits for the global to appear, and
+      // hands the viewer to it. Refuse the script and the global never arrives,
+      // so the player waits for a callback that cannot come and the viewer, who
+      // pressed play, watches nothing happen.
+      //
+      // So a script we have a stand-in for is answered rather than silenced:
+      // the stub is installed, nothing is fetched, and the element reports the
+      // load the player is waiting on. What the stub then says is that there
+      // are no ads — a state every player already handles, because it is what
+      // an unfilled ad slot looks like to them.
+
+      const SURROGATES = \(Surrogate.javaScriptTable);
+      const installed = new Set();
+
+      function surrogateFor(url) {
+        for (let i = 0; i < SURROGATES.length; i++) {
+          if (SURROGATES[i].pattern.test(url)) { return SURROGATES[i]; }
+        }
+        return null;
+      }
+
+      function installSurrogate(surrogate) {
+        if (installed.has(surrogate)) { return; }
+        installed.add(surrogate);
+        try { surrogate.install(); } catch (error) { /* never break the page */ }
+      }
+
+      // Intercepting the property rather than the network, because the request
+      // is already refused by the time anything here could see it — and it is
+      // the element's `load` event, not the response, that the player is
+      // actually waiting for.
+      const nativeSrc = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+      if (nativeSrc && nativeSrc.set) {
+        Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+          configurable: true,
+          enumerable: nativeSrc.enumerable,
+          get: function () { return nativeSrc.get.call(this); },
+          set: function (value) {
+            const surrogate = surrogateFor(String(value));
+            if (!surrogate) { return nativeSrc.set.call(this, value); }
+            installSurrogate(surrogate);
+            // Asynchronously, so a handler attached on the next line still sees
+            // it — the same reason the stub answers asynchronously itself.
+            const element = this;
+            setTimeout(function () {
+              try { element.dispatchEvent(new Event('load')); } catch (error) {}
+            }, 0);
+          }
+        });
+      }
+
+      // `setAttribute('src', …)` is the same act by another name, and players
+      // use both.
+      const nativeSetAttribute = Element.prototype.setAttribute;
+      Element.prototype.setAttribute = function (name, value) {
+        if (this instanceof HTMLScriptElement && String(name).toLowerCase() === 'src') {
+          this.src = value;
+          return;
+        }
+        return nativeSetAttribute.apply(this, arguments);
+      };
+
+      // A script written into the markup is fetched by the parser before any of
+      // the above can see it. Its `load` will never fire, but a player that
+      // polls for the global — most do — still finds one.
+      function sweepMarkupScripts() {
+        let scripts;
+        try { scripts = document.querySelectorAll('script[src]'); } catch (error) { return; }
+        for (let i = 0; i < scripts.length; i++) {
+          const surrogate = surrogateFor(scripts[i].getAttribute('src') || '');
+          if (surrogate) { installSurrogate(surrogate); }
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // Pressing play is not asking for a window.
+      //
+      // A player can be configured to open one when clicked — the config sits
+      // in the page, next to the video's own settings — so the click that plays
+      // the video is the click that opens the tab. Every defence that reasons
+      // about gestures is defeated by design there: the gesture is real, and it
+      // is the one the viewer made. Checking the destination doesn't help
+      // either, because these land on throwaway affiliate domains no list
+      // carries.
+      //
+      // What is constant is the intent. Pressing play is a request to play, not
+      // to open a window, and no legitimate player has ever needed one. That is
+      // what gets refused — which is why it works on a domain nobody has seen
+      // before.
+
+      const PLAYER_PARTS = \(AntiAdblock.playerSelectorsJS);
+      let playerClickUntil = 0;
+
+      document.addEventListener('click', function (event) {
+        const target = event.target;
+        if (!target || !target.closest) { return; }
+        try {
+          if (target.closest(PLAYER_PARTS)) {
+            playerClickUntil = Date.now() + \(Int(AntiAdblock.playerClickWindow * 1000));
+          }
+        } catch (error) { /* a selector this engine dislikes */ }
+      }, true);
+
+      const nativeOpen = window.open;
+      if (typeof nativeOpen === 'function') {
+        window.open = function (url) {
+          let elsewhere = false;
+          try {
+            elsewhere = new URL(String(url), location.href).hostname !== location.hostname;
+          } catch (error) { elsewhere = false; }
+
+          if (Date.now() < playerClickUntil && elsewhere) {
+            note(String(url), 'popup', false);
+            // What a popup blocker returns, and what these scripts already
+            // handle — they have to, because every browser blocks some of them.
+            return null;
+          }
+          return nativeOpen.apply(window, arguments);
+        };
+      }
+
+      // ------------------------------------------------------------------
+      // The layer over the play button.
+      //
+      // A transparent sheet covering the player, stacked above the player's own
+      // controls, catching the click meant for the video. The viewer aims at
+      // play, hits this, and gets a window — which is what "I clicked play and
+      // it opened an ad" actually is.
+      //
+      // It is made transparent to the pointer rather than removed. Removing an
+      // element a player put there is a guess about someone else's code; this
+      // changes nothing except who receives the click, and the click was always
+      // meant for the player.
+
+      const TRAP_COVERAGE = \(AntiAdblock.clickTrapCoverage);
+      const SMALLEST_PLAYER = \(Int(AntiAdblock.smallestPlayer));
+
+      function isTransparent(style) {
+        if (style.backgroundImage !== 'none') { return false; }
+        const colour = style.backgroundColor || '';
+        return colour === 'transparent' || colour === 'rgba(0, 0, 0, 0)' || colour === '';
+      }
+
+      function untrapPlayers() {
+        let videos;
+        try { videos = document.querySelectorAll('video'); } catch (error) { return; }
+
+        for (let v = 0; v < videos.length; v++) {
+          const video = videos[v];
+
+          // The *outermost* player element, not the nearest one. `closest`
+          // stops at the first match, which on a real player is the inner
+          // wrapper holding the video — and the sheet is laid one level above
+          // that, as a sibling of it, precisely where a search from the inner
+          // wrapper can never look.
+          let container = null;
+          let node = video.parentElement;
+          while (node && node !== document.body && node !== document.documentElement) {
+            try { if (node.matches(PLAYER_PARTS)) { container = node; } }
+            catch (error) { /* a selector this engine dislikes */ }
+            node = node.parentElement;
+          }
+          if (!container) { container = video.parentElement; }
+          if (!container) { continue; }
+
+          // Measured against the video rather than against the container. An
+          // outer wrapper can be far larger than the picture, and a sheet that
+          // covers the picture is covering the player whatever else it does or
+          // doesn't reach.
+          const player = video.getBoundingClientRect();
+          if (player.width < SMALLEST_PLAYER || player.height < SMALLEST_PLAYER) { continue; }
+          const area = player.width * player.height;
+
+          let candidates;
+          try { candidates = container.querySelectorAll('div,a,span'); } catch (error) { continue; }
+
+          for (let i = 0; i < candidates.length; i++) {
+            const element = candidates[i];
+            if (element.hasAttribute('data-surf-untrapped')) { continue; }
+            // Named elements belong to the player: its own code has to find
+            // them again. This one is anonymous because nothing ever will.
+            if (element.id) { continue; }
+            const className = typeof element.className === 'string' ? element.className : '';
+            if (className.trim()) { continue; }
+            // Empty. A layer with anything in it is showing something.
+            if (element.children.length || (element.textContent || '').trim()) { continue; }
+
+            let style;
+            try { style = getComputedStyle(element); } catch (error) { continue; }
+            if (style.position !== 'absolute' && style.position !== 'fixed') { continue; }
+            if (style.display === 'none' || style.visibility === 'hidden') { continue; }
+            if (style.pointerEvents === 'none') { continue; }
+            if (!isTransparent(style)) { continue; }
+
+            const box = element.getBoundingClientRect();
+            if (box.width * box.height < area * TRAP_COVERAGE) { continue; }
+
+            element.style.setProperty('pointer-events', 'none', 'important');
+            element.setAttribute('data-surf-untrapped', '');
+          }
+        }
+      }
+
+      // ------------------------------------------------------------------
+      // The variable a page checks for instead of asking.
+      //
+      // A page cannot ask whether a request was blocked, so it loads a script
+      // whose only job is to set a variable and then checks whether the
+      // variable is there. The name is random per site, so no list can carry it
+      // and no stub can be written for it in advance — but the check itself is
+      // in the page, in plain text, and can be read.
+
+      const BAIT_PREFIXES = \(AntiAdblock.baitPrefixesJSArray);
+
+      function namesBait(identifier) {
+        const lowered = identifier.toLowerCase();
+        for (let i = 0; i < BAIT_PREFIXES.length; i++) {
+          const prefix = BAIT_PREFIXES[i];
+          if (lowered.indexOf(prefix) !== 0) { continue; }
+          const tail = lowered.slice(prefix.length);
+          // A word that merely starts with "bait" is a word.
+          if (!tail) { return true; }
+          return tail[0] === '_' || tail[0] === '$' || (tail[0] >= '0' && tail[0] <= '9');
+        }
+        return false;
+      }
+
+      function answerBaitChecks() {
+        let scripts;
+        try { scripts = document.querySelectorAll('script:not([src])'); }
+        catch (error) { return; }
+
+        const patterns = [
+          /\(AntiAdblock.baitCheckPattern)/g,
+          /\(AntiAdblock.baitCheckPatternReversed)/g
+        ];
+
+        for (let i = 0; i < scripts.length; i++) {
+          const source = scripts[i].textContent || '';
+          for (let p = 0; p < patterns.length; p++) {
+            patterns[p].lastIndex = 0;
+            let match;
+            while ((match = patterns[p].exec(source)) !== null) {
+              const name = match[1];
+              if (!namesBait(name) || name in window) { continue; }
+              // Never when the page assigns it itself — then it is a variable
+              // the page owns and the check is about its own state, not ours.
+              if (new RegExp('(var|let|const)\\s+' + name + '\\b|\\b' + name + '\\s*=[^=]')
+                  .test(source)) { continue; }
+              try {
+                Object.defineProperty(window, name, {
+                  value: true, writable: true, configurable: true
+                });
+              } catch (error) { /* the page got there first */ }
+            }
+          }
+        }
+      }
+
+      // ------------------------------------------------------------------
       // The hole the ad leaves behind.
       //
       // Refusing the request doesn't reclaim the space: a slot is a container
@@ -164,6 +433,7 @@ enum BlockBridge {
       // height open collapses while it is empty and grows again if something
       // real arrives.
 
+      const COLLAPSING = \(collapsing);
       const SLOT_NAMES = new Set(\(AdSlot.slotNamesJSArray));
       const HEIGHT_FLOOR = \(Int(AdSlot.reservedHeightFloor));
       const MAX_SWEEPS = 12;
@@ -230,6 +500,7 @@ enum BlockBridge {
       // *this* element is safe in a way that hiding a slot is not: there is
       // nothing in it and nothing coming.
       function collapseFailed(element) {
+        if (!COLLAPSING) { return; }
         if (!element || !element.style || element.hasAttribute('data-surf-collapsed')) { return; }
         const box = element.getBoundingClientRect();
         element.style.setProperty('display', 'none', 'important');
@@ -243,6 +514,7 @@ enum BlockBridge {
       // forever. Three conditions together, never any one alone: it is named
       // as an ad container, it is reserving real height, and it is empty.
       function sweepSlots() {
+        if (!COLLAPSING) { return; }
         if (sweeps++ > MAX_SWEEPS) { return; }
         let candidates;
         try {
@@ -271,11 +543,29 @@ enum BlockBridge {
       let sweepTimer = null;
       function scheduleSweep() {
         if (sweepTimer) { return; }
-        sweepTimer = setTimeout(() => { sweepTimer = null; sweepSlots(); }, 400);
+        sweepTimer = setTimeout(() => {
+          sweepTimer = null;
+          sweepSlots();
+          // The trap is laid once the player has built itself, and laid again
+          // if it is taken away, so it is looked for on every sweep rather
+          // than once at load.
+          untrapPlayers();
+        }, 400);
       }
 
-      document.addEventListener('DOMContentLoaded', scheduleSweep, true);
-      window.addEventListener('load', scheduleSweep, true);
+      // Before `load`, which is when these checks are wired up, and again after
+      // in case the page wrote more of itself in between.
+      document.addEventListener('DOMContentLoaded', function () {
+        sweepMarkupScripts();
+        answerBaitChecks();
+        untrapPlayers();
+        scheduleSweep();
+      }, true);
+      window.addEventListener('load', function () {
+        answerBaitChecks();
+        untrapPlayers();
+        scheduleSweep();
+      }, true);
       try {
         new MutationObserver(scheduleSweep)
           .observe(document.documentElement, { childList: true, subtree: true });

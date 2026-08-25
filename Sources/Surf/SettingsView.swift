@@ -215,6 +215,7 @@ struct GeneralSettingsView: View {
 
 struct PrivacySettingsView: View {
     @AppStorage(PreferenceKeys.blockAds) private var blockAds = true
+    @AppStorage(PreferenceKeys.hideAdContainers) private var hideAdContainers = true
     @AppStorage(PreferenceKeys.rememberHistory) private var rememberHistory = false
     @AppStorage(PreferenceKeys.keepSignedIn) private var keepSignedIn = true
     @AppStorage(PreferenceKeys.restoreTabs) private var restoreTabs = true
@@ -243,6 +244,29 @@ struct PrivacySettingsView: View {
                     // Every open tab picks this up where it stands. A setting
                     // that needs a reload to be believed reads as broken.
                     ContentBlocker.shared.enabledDidChange()
+                }
+
+                Toggle(isOn: $hideAdContainers) {
+                    TipLabel("Hide leftover ad containers", tip: """
+                    On by default. With an ad refused, the empty frame it would \
+                    have filled is hidden too, which is most of what makes a \
+                    blocked page look like a page rather than a page with holes \
+                    in it.
+                    """, caveat: """
+                    Changing a page's layout is the one thing a blocker does \
+                    that a site can see from the inside: it puts an element on \
+                    its own page, measures it, and knows. A few video players \
+                    do exactly that and stop playing when the measurement comes \
+                    back wrong. Turn this off and Surf leaves the layout exactly \
+                    as its authors wrote it — every ad request is still refused, \
+                    but the empty frames stay where they are, holes and all.
+                    """)
+                }
+                .disabled(!blockAds)
+                .onChange(of: hideAdContainers) { _, _ in
+                    // This one recompiles: it is a different set of rules
+                    // rather than the same set applied differently.
+                    ContentBlocker.shared.hidingDidChange()
                 }
             } header: {
                 Text("Blocking")

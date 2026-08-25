@@ -2418,29 +2418,65 @@ extension Tab: WKUIDelegate {
         return true
     }
 
-    /// Closes a window that opened with nothing in it.
+    /// Closes a window a page opened that turns out to hold nothing.
     ///
     /// The destination check above catches a pop-under aimed at a domain the
-    /// lists name. What it can't catch is one aimed somewhere unlisted whose
-    /// *contents* are then blocked — WebKit hands over the window and fails the
-    /// load afterwards, leaving a blank tab with no address and no title. That
-    /// tab is an artefact of blocking rather than anything the reader asked
-    /// for, so it goes.
+    /// lists name. It can't catch one aimed somewhere unlisted, and those fail
+    /// in two different ways.
     ///
-    /// Only ever a tab the page opened, and only while nothing has committed in
-    /// it: a tab the user opened stays open however empty it is, because they
+    /// The first never gets off the ground: WebKit hands the window over and
+    /// the load fails, leaving a tab with no address at all.
+    ///
+    /// The second is the one that gets *seen*. The landing page commits, so
+    /// there is an address and a document, and then everything it exists to
+    /// fetch is refused — leaving a blank tab with no title, no text, and a
+    /// blocked count climbing on the shield. Its emptiness is not incidental;
+    /// it is what a page whose entire contents were blocked looks like, and it
+    /// is a better signal than any guess about how the window was opened.
+    ///
+    /// All three conditions together, never one alone, and only on a tab a page
+    /// opened. A tab you opened stays open however empty it is, because you
     /// opened it.
     func watchForAnEmptyWindow() {
         emptyPopupWatchdog?.cancel()
         emptyPopupWatchdog = Task { @MainActor [weak self] in
-            // Long enough for a slow redirect chain to arrive, short enough that
-            // a blank tab isn't left sitting there.
-            try? await Task.sleep(for: .seconds(4))
-            guard let self, !Task.isCancelled else { return }
-            guard wasOpenedByPage, !hasCommittedDocument, liveWebView?.url == nil else { return }
+            // Twice, not once: a redirect chain through three ad exchanges can
+            // still be moving at four seconds, and the tab it lands on can take
+            // as long again to give up.
+            for delay in [4, 10] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, !Task.isCancelled, wasOpenedByPage else { return }
+                if await closeIfEmpty() { return }
+            }
+        }
+    }
+
+    /// Returns whether the tab was closed.
+    private func closeIfEmpty() async -> Bool {
+        guard let live = liveWebView else { return false }
+
+        // Nothing ever arrived.
+        if !hasCommittedDocument, live.url == nil {
             debugLog("closed a window that never loaded anything")
             session?.close(self)
+            return true
         }
+
+        // Something arrived and was hollowed out. A title is the cheapest test
+        // and the one that fails first, so it goes first.
+        guard pageTitle.isEmpty, blockLog.blockedCount >= 3 else { return false }
+
+        // Asking the page itself, because a document can carry a full DOM and
+        // still show the reader nothing — and closing a tab that had something
+        // in it would be far worse than leaving one that didn't.
+        let text = try? await live.evaluateJavaScript(
+            "document.body ? document.body.innerText.trim().length : 0"
+        )
+        guard let length = text as? Int, length < 20 else { return false }
+
+        debugLog("closed a window whose page was entirely blocked")
+        session?.close(self)
+        return true
     }
 
     func webViewDidClose(_ webView: WKWebView) {

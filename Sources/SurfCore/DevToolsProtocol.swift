@@ -22,6 +22,7 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domRequestChildNodes = "DOM.requestChildNodes"
     case domGetBoxModel = "DOM.getBoxModel"
     case domScrollIntoView = "DOM.scrollIntoView"
+    case domGetOuterHTML = "DOM.getOuterHTML"
     case domWatch = "DOM.watch"
     case domPathToNode = "DOM.pathToNode"
     /// Adds or removes one class on one element.
@@ -112,6 +113,7 @@ extension DevToolsMethod {
              .domGetDocument, .domRequestChildNodes, .domGetBoxModel,
              .domScrollIntoView, .domWatch, .domPathToNode, .domAck, .domSetClass,
              .domSetAttribute, .domSetText,
+             .domScrollIntoView, .domGetOuterHTML, .domWatch, .domPathToNode, .domAck,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
              .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames, .cssAddRule,
              .cssForceState, .cssFontsForNode,

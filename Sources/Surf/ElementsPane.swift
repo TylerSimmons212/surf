@@ -112,6 +112,24 @@ struct ElementsPane: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(session.selectedSelector, forType: .string)
                 }
+
+                // The element itself, next to the selector for it. Two
+                // different answers to "copy this", and which one is wanted
+                // isn't guessable — so both are offered rather than one being
+                // chosen on the reader's behalf.
+                IconButton(
+                    systemName: "chevron.left.forwardslash.chevron.right",
+                    size: 11, weight: .medium, width: 24, height: 22,
+                    cornerRadius: DevToolsTheme.corner,
+                    help: "Copy element, including its children"
+                ) {
+                    guard let id = session.selectedNode else { return }
+                    Task { @MainActor in
+                        guard let html = await session.outerHTML(of: id) else { return }
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(html, forType: .string)
+                    }
+                }
             }
         }
         .padding(.horizontal, DevToolsTheme.barInset)
@@ -269,8 +287,18 @@ private struct DOMRowView: View {
             Button("Copy Selector") {
                 copy(session.tree.selectorPath(to: row.nodeId))
             }
+            // The element and everything inside it, which is what "copy this"
+            // nearly always means — and the one thing the row itself can't
+            // provide, since a row is one line and an element is a subtree.
+            Button("Copy Element") {
+                Task { @MainActor in
+                    guard let html = await session.outerHTML(of: row.nodeId) else { return }
+                    copy(html)
+                }
+            }
+            // Just this line, for when the subtree is the part you don't want.
             // Replaces what dragging across the row used to give you.
-            Button("Copy Markup") {
+            Button("Copy Opening Tag") {
                 copy(String(attributed.characters))
             }
             Divider()

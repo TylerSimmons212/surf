@@ -32,6 +32,7 @@ enum PreferenceKeys {
     /// Whether narration speaks through the downloaded voice when it's
     /// installed. On by default: downloading it *is* the opt-in.
     static let focusEnhancedVoice = "focusEnhancedVoice"
+    static let hideAdContainers = "hideAdContainers"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"
@@ -71,6 +72,9 @@ extension PrivacySettings {
             // Downloading the enhanced voice is the opt-in; a switch that
             // then defaulted off would make the download do nothing.
             PreferenceKeys.focusEnhancedVoice: true,
+            // On: an emptied ad container still occupies the page, and hiding
+            // it is most of what makes a blocked page look unblocked.
+            PreferenceKeys.hideAdContainers: true,
         ])
     }
 

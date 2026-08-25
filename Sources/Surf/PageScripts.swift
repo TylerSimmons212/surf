@@ -164,7 +164,10 @@ enum PageScripts {
             to: controller, world: .page, mainFrameOnly: true)
         if blocking {
             add(
-                BlockBridge.script,
+                // The reader can turn element hiding off on its own, which
+                // is a different script rather than the same script applied
+                // differently — see ContentBlocker.hidingDidChange.
+                BlockBridge.script(collapsing: ContentBlocker.hidesAdContainers),
                 to: controller, world: .page,
                 // Every frame: a third-party iframe is where much of an ad
                 // stack does its work, and a panel blind to it would report one
@@ -273,7 +276,7 @@ extension PageScripts {
             "preflight.js": ThemeBridge.preflightScript(for: .dark),
             // Not agent domains, but `install` owns them too — and a dump that
             // showed only half of what goes into a page would be worse than none.
-            "block.js": BlockBridge.script,
+            "block.js": BlockBridge.script(collapsing: true),
             "console.js": ConsoleAgent.script,
             "network.js": NetworkAgent.script,
             "devtools.js": DevToolsAgent.script,
