@@ -291,6 +291,9 @@ final class AmazonLens {
                     sold by \(found.seller.isEmpty ? "?" : found.seller)/\
                     ships \(found.shipsFrom.isEmpty ? "?" : found.shipsFrom), \
                     \(found.returnsPolicy.isEmpty ? "no returns line" : found.returnsPolicy), \
+                    delivery \(found.deliveryBenefit)\
+                    \(found.deliveryTime.isEmpty ? "" : " " + found.deliveryTime)\
+                    \(found.deliveryPrice.isEmpty ? "" : " " + found.deliveryPrice), \
                     swatch prices \(found.variations.flatMap { $0.options }
                         .compactMap(\.price).joined(separator: "/"))
                     """)

@@ -129,6 +129,19 @@ struct AmazonProductView: View {
                 }
                 .scrollIndicators(.hidden)
                 .frame(height: 62)
+                // Without this the strip ends mid-thumbnail against a hard
+                // edge, which reads as a rendering fault rather than as more
+                // pictures one scroll away.
+                .mask {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .black, location: 0),
+                            .init(color: .black, location: 0.93),
+                            .init(color: .clear, location: 1),
+                        ],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                }
             }
         }
     }
@@ -377,7 +390,7 @@ struct AmazonProductView: View {
     /// page are the ones most easily mistaken for marketing, so they are
     /// dressed as prose.
     private func fulfilment(_ product: AmazonProduct) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 7) {
             if !product.availability.isEmpty {
                 Text(product.availability)
                     .font(Typeface.figtree(size: 13, weight: 600))
@@ -395,14 +408,19 @@ struct AmazonProductView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !sellerLine(product).isEmpty {
+                // `.secondary`, not `.tertiary`. Who ships it and who takes
+                // the returns are the two facts this block exists for, and
+                // they were the two drawn faintest on the page — a comment
+                // four lines up calls them the most useful facts here while
+                // the code rendered them as the least.
                 Text(sellerLine(product))
-                    .font(Typeface.figtree(size: 11.5, weight: 400))
-                    .foregroundStyle(.tertiary)
+                    .font(Typeface.figtree(size: 12, weight: 400))
+                    .foregroundStyle(.secondary)
             }
             if !product.returnsPolicy.isEmpty {
                 Text(product.returnsPolicy)
-                    .font(Typeface.figtree(size: 11.5, weight: 400))
-                    .foregroundStyle(.tertiary)
+                    .font(Typeface.figtree(size: 12, weight: 400))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -500,19 +518,8 @@ struct AmazonProductView: View {
     private func purchase(_ product: AmazonProduct) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if product.canAddToCart {
-                HStack(spacing: 10) {
-                    // Bounded by what Amazon will actually sell: 99 on a
-                    // cable, 4 on a streaming stick. A stepper that offers
-                    // thirty of something capped at four only produces an
-                    // error on the other side.
-                    Stepper(value: $quantity, in: 1...product.quantityMax) {
-                        Text("Qty \(quantity)")
-                            .font(.system(size: 12).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    .controlSize(.small)
-                    .fixedSize()
-                    .accessibilityLabel("Quantity, \(quantity)")
+                HStack(spacing: 12) {
+                    quantityControl(max: product.quantityMax)
 
                     // The one control on the page anybody came here to press,
                     // sized like it. A capsule rather than a rounded rectangle
@@ -534,13 +541,18 @@ struct AmazonProductView: View {
                                 .font(Typeface.figtree(size: 15, weight: 600))
                         }
                         .frame(maxWidth: .infinity)
-                        .frame(height: 44)
+                        .frame(height: 46)
                         .contentShape(Capsule())
                     }
                     .buttonStyle(.glassProminent)
                     .buttonBorderShape(.capsule)
                     .controlSize(.large)
                     .disabled(lens.addingToCart != nil || lens.pendingVariation != nil)
+                    // Wide, but not the whole column. A pill stretched across
+                    // five hundred points stops reading as a button and starts
+                    // reading as a banner, which is the one thing on this page
+                    // that must not happen to it.
+                    .frame(maxWidth: 340)
                 }
             }
 
@@ -562,6 +574,57 @@ struct AmazonProductView: View {
             }
             .buttonStyle(.plain)
         }
+    }
+
+    /// Quantity, at the height of the button it stands next to.
+    ///
+    /// A stock `Stepper` is a small pair of arrows with a label, which beside a
+    /// 46-point capsule reads as an afterthought — and quantity is not an
+    /// afterthought when the thing next to it puts items in a cart. Bounded by
+    /// what Amazon will actually sell: measured at 99 on a cable and 4 on a
+    /// streaming stick, and a control offering thirty of something capped at
+    /// four only produces an error on the other side.
+    private func quantityControl(max limit: Int) -> some View {
+        HStack(spacing: 0) {
+            stepButton("minus", enabled: quantity > 1) { quantity -= 1 }
+            Text("\(quantity)")
+                .font(Typeface.figtree(size: 14, weight: 600).monospacedDigit())
+                .frame(minWidth: 24)
+                .accessibilityHidden(true)
+            stepButton("plus", enabled: quantity < limit) { quantity += 1 }
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 46)
+        .background {
+            Capsule().fill(Color.primary.opacity(0.06))
+        }
+        .overlay {
+            Capsule().strokeBorder(Color.primary.opacity(0.10))
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Quantity")
+        .accessibilityValue("\(quantity)")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment where quantity < limit: quantity += 1
+            case .decrement where quantity > 1: quantity -= 1
+            default: break
+            }
+        }
+    }
+
+    private func stepButton(
+        _ symbol: String, enabled: Bool, _ action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .frame(width: 30, height: 38)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(enabled ? Color.primary : Color.primary.opacity(0.25))
+        .disabled(!enabled)
     }
 
     // MARK: - Key specifications

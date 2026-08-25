@@ -300,6 +300,12 @@ enum AmazonBridge {
               reviews: one(document, sel.productReviews),
               availability: one(document, sel.productAvailability),
               delivery: one(document, sel.productDelivery),
+              // The same cell's own attributes. A token beats the sentence:
+              // "FREE delivery" reads identically whether it is free because
+              // of Prime or free because the order cleared $35.
+              deliveryProgram: one(document, sel.productDeliveryProgram),
+              deliveryPrice: one(document, sel.productDeliveryPrice),
+              deliveryTime: one(document, sel.productDeliveryTime),
               seller: one(document, sel.productSeller),
               shipsFrom: one(document, sel.productShipsFrom),
               returns: one(document, sel.productReturns),
