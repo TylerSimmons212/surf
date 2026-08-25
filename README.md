@@ -27,6 +27,14 @@ Working tabbed browser: type a search or an address on the home screen and it
 loads, with back/forward/reload/stop, a live progress bar, and tabs. Links with
 `target="_blank"` open in a new tab; scripted popups are blocked.
 
+A tab WebKit opens for itself skips the home screen. Every other new tab starts
+there and dives out of it when you submit an address, but a popup is selected
+the moment it exists and nothing calls `submit` on it — so it used to sit on the
+home screen, water animation running, until its first URL arrived. That wait is
+however long WebKit takes to start the navigation, which is what made it look
+intermittent: a flicker on a fast host, the whole animation on a slow one.
+`Tab.willBeLoadedByPage` is where it starts out browsing instead.
+
 The window is nothing but the page, under a slim title strip that tints itself
 from the current page's `theme-color` (or its background colour). Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be

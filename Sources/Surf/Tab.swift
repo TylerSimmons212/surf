@@ -550,6 +550,22 @@ final class Tab: NSObject, Identifiable {
 
     /// A new tab in this tab's own island, on `url`.
     @discardableResult
+    /// A tab WebKit is about to load into by itself.
+    ///
+    /// The mode is the point. A popup used to start on the home screen like
+    /// every other new tab and only reach `.browsing` when its first URL
+    /// arrived — but `addTab` selects it immediately and nothing calls
+    /// `submit`, so everything between those two moments was the home screen,
+    /// water animation and all, on a tab that was never home. How long that
+    /// lasted was however long WebKit took to start the navigation, which is
+    /// why it looked intermittent: a flicker on a fast host and the whole
+    /// animation on a slow one.
+    func willBeLoadedByPage(from opener: UUID) {
+        wasOpenedByPage = true
+        openerTabID = opener
+        mode = .browsing
+    }
+
     private func openInNewTab(_ url: URL, select: Bool) -> Tab? {
         guard let session else { return nil }
         let opened = session.addTab(select: select)
@@ -1426,10 +1442,12 @@ final class Tab: NSObject, Identifiable {
                     self.focusDetection = nil
                     self.focusPrevalidated = nil
                     self.scheduleFocusDetection()
-                    // A popup tab starts in .home but is loaded by WebKit
-                    // directly, so the mode has to follow the URL. Not during
-                    // a dive, though: there the load starting is precisely the
-                    // moment the home screen must stay up.
+                    // A backstop, for any tab that ends up loading a page
+                    // without anything having moved it off the home screen.
+                    // This used to be how popups got there — see
+                    // `willBeLoadedByPage`, which is why they no longer arrive
+                    // here. Not during a dive: there the load starting is
+                    // precisely the moment the home screen must stay up.
                     if self.mode == .home && !self.isDiving { self.mode = .browsing }
                     // Swap the icon as soon as the host changes, so a stale
                     // favicon never sits next to a different site's title.
@@ -2424,8 +2442,7 @@ extension Tab: WKUIDelegate {
         // Must be built with WebKit's configuration, not a fresh one, or the
         // new view won't be linked to the opener.
         let tab = session.addTab(configuration: configuration)
-        tab.wasOpenedByPage = true
-        tab.openerTabID = id
+        tab.willBeLoadedByPage(from: id)
         tab.watchForAnEmptyWindow()
         // No explicit load here — WebKit drives the returned view itself.
         return tab.webView
