@@ -169,20 +169,26 @@ public enum AmazonCartParse {
     /// so the cart still counted it, and the confirmation waited for a line to
     /// disappear that never would.
     ///
-    /// A removed row is recognisable by having nothing left in it — no
-    /// controls, no stepper, no product image. Both signals are required
-    /// because either alone could be a layout we have not met, and dropping a
-    /// real line is worse than keeping a ghost for a moment.
+    /// A removed row is recognised by the marker Amazon reveals inside it, and
+    /// not by what it is missing.
+    ///
+    /// The first version inferred it from absence — no controls, no image —
+    /// which is also precisely what a row looks like *before the page has
+    /// finished rendering*. On a slower, signed-in cart every line matched that
+    /// description on the first read, every line was dropped, and the sidebar
+    /// reported an empty cart to somebody who had just filled one. Absence is
+    /// not evidence; it was the same mistake as reading "the cart changed" as
+    /// "the write landed", two commits apart.
     public static func item(
         id: String?, asin: String?, title: String?, price: String?,
         quantity: String?, minQuantity: String?, outOfStock: String?,
-        prime: String?, image: String?, hasRemoveControl: Bool = true
+        prime: String?, image: String?, isRemoved: Bool = false
     ) -> AmazonCartItem? {
         guard let id = id?.trimmingCharacters(in: .whitespaces), !id.isEmpty else {
             return nil
         }
+        guard !isRemoved else { return nil }
         let picture = AmazonText.tidy(image ?? "")
-        guard hasRemoveControl || !picture.isEmpty else { return nil }
         return AmazonCartItem(
             id: id,
             asin: (asin ?? "").trimmingCharacters(in: .whitespaces),

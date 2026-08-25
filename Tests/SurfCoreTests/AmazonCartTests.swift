@@ -258,54 +258,45 @@ struct AmazonCartConfirmationTests {
 @Suite("Amazon removed-row ghosts")
 struct AmazonCartGhostTests {
 
-    /// The reason Remove looked broken. Amazon does not take the row out of
-    /// the page — it empties it and shows "… was removed from Shopping Cart"
-    /// inside it, with every attribute still on the element: still
-    /// `data-itemtype="active"`, still its old quantity and price.
+    /// Amazon does not take a removed row out of the page — it empties it and
+    /// reveals "… was removed from Shopping Cart" inside it, with every
+    /// attribute still on the element.
     @Test("A row Amazon has emptied is not a line any more")
     func dropsAGhostRow() {
         #expect(
             AmazonCartParse.item(
                 id: "ecd26f38", asin: "B088NRLMPV", title: "Anker USB C",
                 price: "9.99", quantity: "2", minQuantity: "1",
-                outOfStock: "0", prime: "0",
-                // Nothing left in it: no controls, no image.
-                image: "", hasRemoveControl: false
+                outOfStock: "0", prime: "0", image: "", isRemoved: true
             ) == nil
         )
     }
 
-    /// Both signals are required. Either one alone could be a layout nobody
-    /// has met, and dropping a real line is worse than briefly keeping a ghost.
-    @Test("One missing signal is not enough to drop a line")
-    func keepsALineWithOneSignalMissing() {
-        // No remove control, but the product is still pictured.
-        #expect(
-            AmazonCartParse.item(
-                id: "a", asin: "B0", title: "t", price: "1.00", quantity: "1",
-                minQuantity: "1", outOfStock: "0", prime: "0",
-                image: "https://m.media-amazon.com/images/I/x.jpg",
-                hasRemoveControl: false
-            ) != nil
+    /// The regression that shipped in 0.5.1, and the reason the marker is
+    /// positive now.
+    ///
+    /// A ghost row used to be inferred from what it was *missing* — no
+    /// controls, no image. That is also exactly what every row looks like
+    /// before the page has finished rendering, so on a slower signed-in cart
+    /// the whole cart was dropped and the sidebar reported it empty to
+    /// somebody who had just filled it. Absence is not evidence.
+    @Test("A line that has not finished rendering is still a line")
+    func keepsAnUnrenderedLine() {
+        let item = AmazonCartParse.item(
+            id: "a", asin: "B0", title: "t", price: "1.00", quantity: "1",
+            minQuantity: "1", outOfStock: "0", prime: "0",
+            // No image yet, and no controls bound: the page is still coming up.
+            image: "", isRemoved: false
         )
-        // A control but no picture — an image that has not loaded yet.
-        #expect(
-            AmazonCartParse.item(
-                id: "a", asin: "B0", title: "t", price: "1.00", quantity: "1",
-                minQuantity: "1", outOfStock: "0", prime: "0",
-                image: "", hasRemoveControl: true
-            ) != nil
-        )
+        #expect(item != nil)
     }
 
-    /// A cart whose only line is a ghost is an empty cart, which is what the
-    /// sidebar has to say once a removal lands.
     @Test("A cart of nothing but ghosts is empty")
     func ghostsLeaveAnEmptyCart() {
         let ghost = AmazonCartParse.item(
             id: "gone", asin: "B0", title: "t", price: "9.99", quantity: "2",
             minQuantity: "1", outOfStock: "0", prime: "0",
-            image: "", hasRemoveControl: false
+            image: "", isRemoved: true
         )
         #expect(ghost == nil)
         #expect(AmazonCart(items: [ghost].compactMap { $0 }).isEmpty)

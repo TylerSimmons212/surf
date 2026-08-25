@@ -80,6 +80,15 @@ its own, so each action has to show its own effect — a removal is that line
 being gone, an increment is that line going up. Getting this wrong reported
 `remove landed` while nothing had moved.
 
+**A page the lens has no screen for is the search field, not a failure.** The
+front page, a department, an order list. Entering Focus reads whatever is
+already open with no expectation in hand, and that used to come back as
+`notReady` — "wait and read again" — so the ladder ran out and told somebody who
+had touched nothing that Amazon had not finished loading.
+
+**Signed-in Amazon is a heavier page.** The read ladder runs to nine seconds,
+not the three that were enough signed out.
+
 ## Not yet proven
 
 Anything signed in. Every measurement here is a signed-out session, so Prime

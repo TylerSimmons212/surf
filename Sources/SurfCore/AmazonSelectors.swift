@@ -373,6 +373,29 @@ public enum AmazonSelectors {
     /// one row.
     public static let cartRemove = ["input[name^=\"submit.delete-active.\"]"]
 
+    /// A row Amazon has emptied.
+    ///
+    /// Removing a line does not take its element out of the page: Amazon
+    /// empties it in place and reveals "… was removed from Shopping Cart"
+    /// inside it, leaving every attribute behind — still
+    /// `data-itemtype="active"`, still the old quantity and price.
+    ///
+    /// This is a *positive* marker, and that is the correction. The first
+    /// version inferred a removed row from what it was missing — no controls,
+    /// no image — which is also exactly what a row looks like before the page
+    /// has finished rendering. On a slower, signed-in cart every line matched
+    /// that description on the first read and the sidebar showed an empty cart
+    /// for a cart that was not empty.
+    ///
+    /// The message node is present in every row and carries an inline
+    /// `style="display:none;"` until it is shown, so the absence of "none" in
+    /// that attribute is the row having been emptied. Verified in both
+    /// directions on a live cart: it matches a removed row and does not match
+    /// a live one.
+    public static let cartRemovedMarker = [
+        ".sc-list-item-removed-msg:not([style*=\"none\"])"
+    ]
+
     /// The whole table, in the shape the page script consumes. Crossing as a
     /// call argument rather than being baked into the script is what keeps
     /// every piece of site knowledge on this side of the bridge.
@@ -418,6 +441,7 @@ public enum AmazonSelectors {
             "cartIncrement": cartIncrement,
             "cartDecrement": cartDecrement,
             "cartRemove": cartRemove,
+            "cartRemovedMarker": cartRemovedMarker,
             "productDeliveryProgram": productDeliveryProgram,
             "productDeliveryPrice": productDeliveryPrice,
             "productDeliveryTime": productDeliveryTime,

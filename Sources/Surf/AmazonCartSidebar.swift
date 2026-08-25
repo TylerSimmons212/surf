@@ -48,6 +48,31 @@ struct AmazonCartSidebar: View {
                 footer(cart)
             } else if lens.isReadingCart {
                 centred { ProgressView().controlSize(.small) }
+            } else if lens.cartUnreadable {
+                // Amazon says there is something in there and we could not read
+                // it. Telling somebody their cart is empty when it is not is
+                // the worst thing this panel can do, so it says what happened
+                // and opens the real page.
+                centred {
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(.system(size: 24, weight: .light))
+                            .foregroundStyle(.secondary)
+                        Text("Couldn\u{2019}t read your cart")
+                            .font(Typeface.figtree(size: 13, weight: 600))
+                        Text("Amazon says there\u{2019}s something in it.")
+                            .font(Typeface.figtree(size: 12, weight: 400))
+                            .foregroundStyle(.secondary)
+                        Button("Open cart on Amazon") {
+                            lens.handBack(to: AmazonPage.cartURL)
+                        }
+                        .buttonStyle(.glass)
+                        .controlSize(.large)
+                        .padding(.top, 2)
+                    }
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                }
             } else {
                 centred {
                     VStack(spacing: 8) {

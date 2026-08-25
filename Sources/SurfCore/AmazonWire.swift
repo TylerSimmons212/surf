@@ -488,6 +488,16 @@ public enum AmazonReading: Equatable, Sendable {
     /// The document hasn't finished becoming what it will be. The caller
     /// should wait and read again rather than draw anything.
     case notReady
+    /// A real Amazon page that this lens has no screen for — the front page, a
+    /// department, a best-seller list. Nothing is wrong; there is simply
+    /// nothing here to draw, and the search field is what that looks like.
+    ///
+    /// Distinct from `notReady`, and the distinction was worth a bug. Entering
+    /// Focus reads whatever is already open with no expectation in hand, and
+    /// the front page came back as "wait and read again" — so the ladder
+    /// waited, read again, ran out, and told somebody who had touched nothing
+    /// that Amazon had not finished loading.
+    case nothingToShow
 }
 
 /// The single most consequential function in the lens: given what we asked
@@ -532,9 +542,17 @@ public enum AmazonReconcile {
             // screen.
             switch expected {
             case .product, .search:
+                // We aimed somewhere and landed here, which is a real problem:
+                // Amazon does this when an item is withdrawn, and drawing the
+                // previous product over it would be a lie about what is on
+                // screen.
                 return .blocked(.unsupported)
-            case .cart, .whatever:
+            case .cart:
                 return .notReady
+            case .whatever:
+                // Nothing was in flight. This is just a page the lens has no
+                // screen for, which is the search field's job.
+                return .nothingToShow
             }
         }
     }
@@ -616,9 +634,12 @@ public struct AmazonCartItemWire: Decodable, Sendable {
     /// this is the page's own answer to "may this be decremented", checked
     /// against `AmazonCartItem.canDecrement` rather than trusted alone.
     public var canDecrement: Bool?
-    /// Whether the row still has a remove control. See the ghost-row note in
-    /// `AmazonCartParse.item`.
+    /// Whether the row still has a remove control. Reported, but no longer
+    /// what decides whether the row is a ghost — see `isRemoved`.
     public var canRemove: Bool?
+    /// Whether Amazon has emptied this row. The positive marker; see
+    /// `AmazonSelectors.cartRemovedMarker`.
+    public var isRemoved: Bool?
 }
 
 public struct AmazonCartReply: Decodable, Sendable {
@@ -635,7 +656,7 @@ public struct AmazonCartReply: Decodable, Sendable {
                 id: wire.id, asin: wire.asin, title: wire.title, price: wire.price,
                 quantity: wire.quantity, minQuantity: wire.minQuantity,
                 outOfStock: wire.outOfStock, prime: wire.prime, image: wire.image,
-                hasRemoveControl: wire.canRemove ?? true
+                isRemoved: wire.isRemoved ?? false
             )
         }
         return AmazonCart(

@@ -403,7 +403,8 @@ enum AmazonBridge {
                 prime: one(row, sel.cartItemPrime),
                 image: one(row, sel.cartItemImage),
                 canDecrement: has(row, sel.cartDecrement),
-                canRemove: has(row, sel.cartRemove)
+                canRemove: has(row, sel.cartRemove),
+                isRemoved: has(row, sel.cartRemovedMarker)
               })),
               subtotal: one(document, sel.cartSubtotal),
               subtotalLabel: one(document, sel.cartSubtotalLabel),
