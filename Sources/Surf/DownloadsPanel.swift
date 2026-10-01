@@ -2,62 +2,6 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Toolbar button plus the downloads popover.
-///
-/// A popover rather than a permanent sidebar section: downloads are episodic,
-/// and the sidebar's vertical space belongs to tabs. The button only exists
-/// once there's something to show.
-struct DownloadsButton: View {
-    let session: BrowserSession
-    /// Keeps the sidebar revealed while the list is up. The popover is its own
-    /// window, so without this, moving the pointer toward Clear collapses the
-    /// sidebar and takes the popover with it.
-    let hold: SidebarHold
-
-    private var isShowingList: Binding<Bool> { hold.binding(for: Self.holdReason) }
-
-    private static let holdReason = "downloads"
-
-    private var manager: DownloadManager { DownloadManager.shared }
-
-    var body: some View {
-        if !manager.items.isEmpty {
-            ZStack {
-                IconButton(
-                    systemName: manager.activeCount > 0
-                        ? "arrow.down"
-                        : "arrow.down.circle",
-                    help: manager.activeCount > 0
-                        ? "\(manager.activeCount) downloading"
-                        : "Downloads"
-                ) {
-                    isShowingList.wrappedValue.toggle()
-                }
-
-                // Same idiom as the reload button: the control carries its own
-                // progress instead of needing a separate bar.
-                if manager.activeCount > 0 {
-                    Circle()
-                        .trim(from: 0, to: max(0.04, manager.activeProgress))
-                        .stroke(Color.accentColor,
-                                style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 20, height: 20)
-                        .animation(.easeOut(duration: 0.25), value: manager.activeProgress)
-                        .allowsHitTesting(false)
-                }
-            }
-            .popover(isPresented: isShowingList, arrowEdge: .bottom) {
-                DownloadsList(session: session)
-            }
-            // Clearing the last item removes this button, and a popover whose
-            // anchor is gone never reports itself dismissed — the hold would be
-            // stuck on and the sidebar stuck open.
-            .onDisappear { hold.set(Self.holdReason, false) }
-        }
-    }
-}
-
 struct DownloadsList: View {
     let session: BrowserSession
 

@@ -26,11 +26,23 @@ struct TrafficLights: NSViewRepresentable {
     /// The vertical centre of the row they occupy, measured from the window's
     /// top edge, so the buttons centre in the strip the sidebar holds clear.
     let rowCenterFromTop: CGFloat
+    /// How much room the three buttons actually take, reported back as AppKit
+    /// lays them out.
+    ///
+    /// Measured rather than assumed. The sidebar has to hold their place open
+    /// in its own top row, and nothing in the view tree draws them, so the
+    /// width was a constant — which was wrong by four points, and the row read
+    /// as crowded because the first real control landed 4pt from the zoom
+    /// button while the buttons themselves sit 9pt apart. These are AppKit's
+    /// metrics and they belong to AppKit's version, not to ours.
+    let onMeasure: (CGFloat) -> Void
 
     func makeNSView(context: Context) -> NSView { TrafficLightHost() }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         guard let host = nsView as? TrafficLightHost else { return }
+        host.onMeasure = onMeasure
+        host.verifyCustody()
         host.setPlacement(leadingInset: leadingInset, rowCenterFromTop: rowCenterFromTop)
         host.setRevealed(isRevealed)
     }
@@ -38,6 +50,10 @@ struct TrafficLights: NSViewRepresentable {
 
 private final class TrafficLightHost: NSView {
     private var isRevealed = false
+    var onMeasure: ((CGFloat) -> Void)?
+    /// The last span handed out, so an unchanged measurement doesn't push
+    /// state back into SwiftUI on every tiling pass.
+    private var reportedSpan: CGFloat = 0
     private var leadingInset: CGFloat = 7
     private var rowCenterFromTop: CGFloat = 14
 
@@ -90,7 +106,51 @@ private final class TrafficLightHost: NSView {
             }
         )
 
+        // The one hook that fires after AppKit has rebuilt anything about the
+        // window. There is no notification for a style mask being reassigned,
+        // and that is the event that matters here, so this is the net under it.
+        observers.append(
+            NotificationCenter.default.addObserver(
+                forName: NSWindow.didUpdateNotification, object: window, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.verifyCustody() }
+            }
+        )
+
         adoptIfNeeded()
+        apply(animated: false)
+    }
+
+    /// Takes the buttons back when AppKit has quietly repossessed them.
+    ///
+    /// Reassigning `styleMask` rebuilds the window's theme frame, and a rebuilt
+    /// titlebar reclaims its standard buttons. Inserting `.fullSizeContentView`
+    /// is enough to do it, and that happens while the window is being
+    /// configured, from a *different* view's `viewDidMoveToWindow`. Whichever
+    /// of the two attached second won, which made the lights' position an
+    /// attach-order accident: the group stayed exactly where it had been put,
+    /// empty, while the real buttons reappeared in the stock corner — 9 points
+    /// from the window's top, where the sidebar's row is nowhere near.
+    ///
+    /// Nothing announced it, either. Re-parenting leaves each button's *local*
+    /// frame alone — the close button reads x9 in the titlebar and read x9 in
+    /// the group — so the frame-change observers this class already kept never
+    /// fired. Custody has to be asked about rather than waited for.
+    func verifyCustody() {
+        guard let window, !window.styleMask.contains(.fullScreen) else { return }
+        guard let group else {
+            adoptIfNeeded()
+            return
+        }
+        let buttons = buttons
+        guard buttons.count == 3, buttons.contains(where: { $0.superview !== group })
+        else { return }
+
+        for button in buttons where button.superview !== group {
+            group.addSubview(button)
+        }
+        place()
+        // The titlebar hands them back visible, whatever the sidebar is doing.
         apply(animated: false)
     }
 
@@ -199,6 +259,17 @@ private final class TrafficLightHost: NSView {
             x: leadingInset - close.frame.minX,
             y: frameView.bounds.height - rowCenterFromTop - close.frame.midY
         ))
+
+        // From the close button's leading edge to the far side of the last
+        // one, which is the stretch the sidebar has to leave empty.
+        let span = union.maxX - close.frame.minX
+        if abs(span - reportedSpan) > 0.5 {
+            reportedSpan = span
+            // Out of this layout pass before SwiftUI hears about it: `place`
+            // runs from `updateNSView`, and writing state from inside a view
+            // update is how you get one.
+            Task { @MainActor [onMeasure] in onMeasure?(span) }
+        }
     }
 
     // MARK: - Fading

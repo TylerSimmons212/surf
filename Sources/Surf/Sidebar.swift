@@ -31,40 +31,80 @@ struct Sidebar: View {
     /// can end on the page, so the drop zones over the content area have to be
     /// watching the same object the rows write to.
     let dragContext: TabDragContext
+    /// How much of the top row the window's own buttons are occupying, as
+    /// AppKit last laid them out.
+    let lightsSpan: CGFloat
 
     @State private var isHoveringNewTab = false
 
     /// Wide enough that the roomier rows don't buy their height back out of
     /// the title: taller rows with the same width would just truncate sooner.
-    static let width: CGFloat = 264
+    /// Wider again now that the top holds a full address pill rather than a
+    /// row of squares — a pill narrow enough to truncate "docs.swift.org" is
+    /// not worth having.
+    static let width: CGFloat = 292
     /// One 21pt control.
     static let actionsWidth: CGFloat = 21
 
-    /// How far the floating panel is held off the top of the window: clear of
-    /// the traffic lights' row, plus a small gap. The lights appear with the
-    /// panel and sit just above it, so the two read as one piece of chrome
-    /// without the buttons ever being *on* the panel.
-    static let floatingTopPadding: CGFloat = ChromeReveal.lightsRowHeight + 4
+    /// The panel's own gutter. Everything in the sidebar lines up on it,
+    /// including the window's traffic lights, which AppKit positions in window
+    /// coordinates and therefore has to be told about separately.
+    static let horizontalPadding: CGFloat = 12
 
-    /// The traffic lights' row, held clear at the top of a pinned panel.
+    /// A first guess at the room the window's buttons need, used for the one
+    /// layout pass before AppKit has reported the real figure. `TrafficLights`
+    /// measures it and the true number arrives immediately after.
+    static let lightsWidth: CGFloat = 60
+
+    /// Clear air after the traffic lights, on top of the row's own spacing.
     ///
-    /// The pinned panel runs to the window's top edge, so the lights — which
-    /// are always up while it's pinned — would land on its navigation bar
-    /// otherwise. The floating panel already hangs below their row and needs
-    /// nothing.
-    private var topInset: CGFloat {
-        isFloating ? 0 : ChromeReveal.lightsRowHeight
+    /// The window's buttons and Surf's are two groups of controls that happen
+    /// to share a line, and spacing them identically makes them read as one
+    /// run of six. This is what separates them.
+    static let lightsTrailingGap: CGFloat = 6
+
+    /// The row the traffic lights share with the window's own controls.
+    static let topRowHeight: CGFloat = 30
+
+    /// The address pill beneath it.
+    static let addressHeight: CGFloat = 34
+
+    /// How far the floating panel is held off the top of the window.
+    ///
+    /// A gap now, and nothing more. It used to be the height of the traffic
+    /// lights' row plus a margin, because the lights sat *above* the panel and
+    /// it had to hang below them. They are in its first row now, so the panel
+    /// only has to clear the window's edge.
+    static let floatingTopPadding: CGFloat = 10
+
+    /// How far the floating panel sits in from the window's leading edge.
+    static let floatingLeadingPadding: CGFloat = 8
+
+    /// How far the top bar sits below whatever edge is above it — the panel's
+    /// own when floating, the window's when pinned. Pinned is tighter because
+    /// the lights ride on this figure, and a pinned panel runs to the top of
+    /// the window where every other Mac app puts them.
+    static func topBarTopPadding(isFloating: Bool) -> CGFloat {
+        isFloating ? 8 : 5
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            SidebarNavigationBar(session: session, isPinned: $isPinned, hold: hold)
+            SidebarTopBar(
+                session: session,
+                isPinned: $isPinned,
+                isFloating: isFloating,
+                hold: hold,
+                lightsSpan: lightsSpan
+            )
             StickerShelf(session: session)
             tabList
             SidebarMediaSection(session: session)
-            IslandStrip(session: session, hold: hold)
+            SidebarFooter(session: session, hold: hold)
+                // The island list grows upward out of the dots, over the tab
+                // list behind it.
+                .zIndex(1)
         }
-        .padding(.top, topInset)
         .frame(width: Sidebar.width)
     }
 
@@ -296,8 +336,8 @@ struct Sidebar: View {
                     .font(.system(size: 13))
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 10)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1170,212 +1210,6 @@ private struct SidebarMediaSection: View {
 
 // MARK: - Navigation
 
-/// The back/forward/reload row. Separated because it reads the selected tab's
-/// `progress`, which `WKWebView` reports many times per load.
-private struct SidebarNavigationBar: View {
-    let session: BrowserSession
-    @Binding var isPinned: Bool
-    let hold: SidebarHold
-
-    var body: some View {
-        let tab = session.selectedTab
-
-        return HStack(spacing: 2) {
-            IconButton(
-                systemName: "chevron.left",
-                isEnabled: tab.canGoBackOrClose,
-                drawsIn: true,
-                help: "Back (⌘[)"
-            ) { tab.goBack() }
-
-            IconButton(
-                systemName: "chevron.right",
-                isEnabled: tab.canGoForward,
-                drawsIn: true,
-                help: "Forward (⌘])"
-            ) { tab.goForward() }
-
-            // While loading, the arrow spins and a ring around it fills with
-            // real progress; it only becomes a stop button under the pointer.
-            // The control reports state at rest and offers the action on hover.
-            ReloadControl(tab: tab)
-
-            Spacer()
-
-            // Zoom has no other visible home, and a page stuck at 125% with
-            // nothing saying so reads as a rendering bug.
-            if tab.isZoomed {
-                Button { tab.resetZoom() } label: {
-                    Text(tab.zoomLabel)
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background { Capsule().fill(Color.primary.opacity(0.09)) }
-                }
-                .buttonStyle(.plain)
-                .help("Reset zoom (⌘0)")
-                .transition(.scale(scale: 0.7).combined(with: .opacity))
-            }
-
-            ScreenshotButton(tab: tab)
-
-            CopyLinkButton(tab: tab)
-
-            BlockButton(session: session, hold: hold)
-
-            DownloadsButton(session: session, hold: hold)
-
-            IconButton(
-                systemName: "magnifyingglass",
-                motion: .pulse,
-                drawsIn: true,
-                help: "Open Address Bar (⌘L)"
-            ) { session.requestAddressFocus() }
-
-            IconButton(
-                systemName: isPinned ? "sidebar.left" : "pin",
-                drawsIn: true,
-                help: isPinned ? "Unpin Sidebar (⌘S)" : "Pin Sidebar (⌘S)"
-            ) {
-                isPinned.toggle()
-            }
-            .animation(.easeOut(duration: 0.2), value: isPinned)
-        }
-        .padding(.horizontal, 8)
-        .padding(.top, 8)
-        .padding(.bottom, 6)
-        .animation(.spring(response: 0.3, dampingFraction: 0.75), value: tab.isZoomed)
-    }
-}
-
-/// Captures the page — visible area or the whole document — straight to
-/// Downloads, named for the page.
-///
-/// A menu rather than a click-then-choose dialog: two capture kinds is a
-/// two-item menu, and the momentary checkmark afterwards is the same
-/// "it actually happened" feedback the copy button earned its own struct for.
-private struct ScreenshotButton: View {
-    let tab: Tab
-
-    var body: some View {
-        Menu {
-            Button("Select Area…") { tab.beginAreaCapture() }
-            Button("Visible Area") { capture { await tab.captureVisibleArea() } }
-            Button("Full Page") { capture { await tab.captureFullPage() } }
-        } label: {
-            Image(systemName: "camera")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Color.secondary)
-                .frame(width: 26, height: 22)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .disabled(tab.mode != .browsing)
-        .help("Screenshot")
-    }
-
-    private func capture(_ take: @escaping () async -> NSImage?) {
-        Task { @MainActor in
-            guard let image = await take() else { return }
-            // The preview is the feedback now — the checkmark this button
-            // used to flash was standing in for a window that didn't exist.
-            ScreenshotPreviewController.shared.show(image, title: tab.displayTitle)
-        }
-    }
-}
-
-/// Copies the address of the page on screen.
-///
-/// Its own struct for the same reason `ReloadControl` is: the momentary
-/// "copied" tick is local state, and held on the navigation bar every press
-/// would re-evaluate the whole row of controls twice — once to show the
-/// checkmark and once to put it away.
-private struct CopyLinkButton: View {
-    let tab: Tab
-
-    @State private var didCopy = false
-
-    var body: some View {
-        // Momentary checkmark: copying is invisible otherwise, and a silent
-        // copy leaves you unsure it worked.
-        IconButton(
-            systemName: didCopy ? "checkmark" : "link",
-            tint: didCopy ? .green : nil,
-            isEnabled: tab.mode == .browsing,
-            drawsIn: true,
-            help: "Copy Link"
-        ) {
-            copyURL()
-        }
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: didCopy)
-    }
-
-    private func copyURL() {
-        let url = tab.currentURL ?? tab.addressText
-        guard !url.isEmpty else { return }
-
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url, forType: .string)
-
-        didCopy = true
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.4))
-            didCopy = false
-        }
-    }
-}
-
-/// The reload button and its progress ring.
-///
-/// Split out from the navigation bar for the same reason the bar is split from
-/// the sidebar: `progress` changes continuously while a page loads, and this is
-/// the only thing that reads it. Now that is all it re-renders.
-private struct ReloadControl: View {
-    let tab: Tab
-
-    var body: some View {
-        ZStack {
-            IconButton(
-                systemName: "arrow.clockwise",
-                hoverSymbol: tab.isLoading ? "xmark" : nil,
-                isEnabled: tab.mode == .browsing,
-                isSpinning: tab.isLoading,
-                help: tab.isLoading ? "Stop" : "Reload (⌘R)"
-            ) {
-                tab.isLoading ? tab.stop() : tab.reload()
-            }
-
-            if tab.isLoading {
-                progressRing(tab.progress)
-            }
-        }
-        .animation(.easeOut(duration: 0.2), value: tab.isLoading)
-    }
-
-    /// Load progress drawn around the reload button, so the control *is* the
-    /// indicator and no separate bar is needed.
-    private func progressRing(_ progress: Double) -> some View {
-        Circle()
-            // A floor keeps a visible arc at 0%, so the ring appears the moment
-            // loading starts rather than materialising partway through.
-            .trim(from: 0, to: max(0.04, progress))
-            .stroke(
-                Color.accentColor,
-                style: StrokeStyle(lineWidth: 1.5, lineCap: .round)
-            )
-            // Starts the arc at twelve o'clock instead of three.
-            .rotationEffect(.degrees(-90))
-            .frame(width: 21, height: 21)
-            .animation(.easeOut(duration: 0.25), value: progress)
-            .transition(.opacity.combined(with: .scale(scale: 0.7)))
-            // Purely decorative: clicks belong to the button underneath.
-            .allowsHitTesting(false)
-    }
-}
-
 // MARK: - Rows
 
 /// One tab in the list.
@@ -1420,8 +1254,8 @@ private struct TabRow: View {
         // permanently made every tab name truncate early for the sake of a
         // button that is hidden most of the time.
         .overlay(alignment: .trailing) { actions }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
         .background {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .fill(Color.primary.opacity(isSelected ? 0.14 : (isHovered ? 0.07 : 0)))

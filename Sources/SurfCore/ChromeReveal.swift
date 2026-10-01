@@ -22,19 +22,15 @@ public struct ChromePointer: Equatable, Sendable {
 
 /// Decides when the sidebar — the window's one piece of hover chrome — shows.
 ///
-/// The traffic lights need no say of their own: they live at the top of the
-/// sidebar now, in a row the panel holds clear for them, so they appear and
-/// disappear with it. There used to be an arbitration here between the lights'
-/// corner and the sidebar's edge; giving the lights to the sidebar dissolved
-/// it — one zone, one panel, one decision.
+/// The traffic lights need no say of their own: they live in the sidebar's own
+/// top row now, beside the window controls they belong with, so they appear
+/// and disappear with the panel. There used to be an arbitration here between
+/// the lights' corner and the sidebar's edge; giving the lights to the sidebar
+/// dissolved it — one zone, one panel, one decision. Their geometry went with
+/// them, to `Sidebar`, which is what actually lays that row out.
 public enum ChromeReveal {
 
     // MARK: - Geometry
-
-    /// Height of the row the traffic lights sit in — macOS's own titlebar
-    /// height, so the buttons land where every other Mac app puts them. The
-    /// sidebar reserves this much at its top for them.
-    public static let lightsRowHeight: CGFloat = 28
 
     /// Width of the leading strip that reveals the sidebar. Wide on purpose:
     /// the zone doesn't intercept clicks, so the only cost is opening when the

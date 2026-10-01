@@ -28,6 +28,10 @@ struct ContentView: View {
     /// drag that starts on a row can end on the page: both the rows and the
     /// split drop zones have to be looking at the same one.
     @State private var dragContext = TabDragContext()
+    /// What the window's own buttons actually measure, reported by
+    /// `TrafficLights` as AppKit lays them out. The sidebar holds this much of
+    /// its top row open for them.
+    @State private var lightsSpan: CGFloat = Sidebar.lightsWidth
 
     /// The pointer report, with the sidebar's hold folded in.
     ///
@@ -46,20 +50,32 @@ struct ContentView: View {
     /// pinned sidebar is permanently on screen.
     private var areLightsRevealed: Bool { isPinned || isSidebarRevealed }
 
-    /// Clear of the lights' row, so a find bar can never sit under a reveal.
-    private var overlayTopInset: CGFloat { ChromeReveal.lightsRowHeight + 10 }
+    /// Clear of the sidebar's top bar, so a find bar can never sit under one.
+    private var overlayTopInset: CGFloat {
+        Sidebar.floatingTopPadding
+            + Sidebar.topBarTopPadding(isFloating: true)
+            + Sidebar.topRowHeight
+            + 10
+    }
 
-    /// Where the lights' row begins, from the window's leading edge. A touch
-    /// in from the floating panel's own edge (which sits 8pt off the window's),
-    /// so the buttons read as perched above its top-left corner; the same
-    /// figure pinned keeps them from hugging the window edge.
-    private var lightsLeadingInset: CGFloat { 12 }
+    /// Where the lights' row begins, from the window's leading edge.
+    ///
+    /// The buttons sit *in* the sidebar's top row now rather than above the
+    /// panel, which means they line up on the panel's own gutter — and the
+    /// panel's leading edge moves depending on whether it is pinned. AppKit
+    /// positions them in window coordinates and knows nothing about either, so
+    /// the sum is made here.
+    private var lightsLeadingInset: CGFloat {
+        (isPinned ? 0 : Sidebar.floatingLeadingPadding) + Sidebar.horizontalPadding
+    }
 
-    /// The centre of the lights' row, from the window's top. Floating, the row
-    /// is the gap the panel hangs below; pinned, it's the strip the panel
-    /// holds clear at its top.
+    /// The centre of the lights' row, from the window's top: whatever sits
+    /// above the top bar, plus half the row itself.
     private var lightsRowCenter: CGFloat {
-        isPinned ? ChromeReveal.lightsRowHeight / 2 : Sidebar.floatingTopPadding / 2
+        let isFloating = !isPinned
+        let above = (isFloating ? Sidebar.floatingTopPadding : 0)
+            + Sidebar.topBarTopPadding(isFloating: isFloating)
+        return above + Sidebar.topRowHeight / 2
     }
 
     var body: some View {
@@ -95,7 +111,8 @@ struct ContentView: View {
             TrafficLights(
                 isRevealed: areLightsRevealed,
                 leadingInset: lightsLeadingInset,
-                rowCenterFromTop: lightsRowCenter
+                rowCenterFromTop: lightsRowCenter,
+                onMeasure: { lightsSpan = $0 }
             )
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
@@ -200,7 +217,8 @@ struct ContentView: View {
             isPinned: $isPinned,
             isFloating: isFloating,
             hold: sidebarHold,
-            dragContext: dragContext
+            dragContext: dragContext,
+            lightsSpan: lightsSpan
         )
     }
 
@@ -211,7 +229,9 @@ struct ContentView: View {
             drag: dragContext,
             // The floating panel plus its leading inset — the exact strip of
             // page the chrome is sitting on top of.
-            chromeInset: (!isPinned && isSidebarRevealed) ? Sidebar.width + 8 : 0
+            chromeInset: (!isPinned && isSidebarRevealed)
+                ? Sidebar.width + Sidebar.floatingLeadingPadding
+                : 0
         )
         // Deliberately *no* `.id(tab.id)` here. Tying identity to the tab is
         // the obvious way to make a switch mount the right page, and it made
@@ -237,7 +257,7 @@ struct ContentView: View {
             .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
             .padding(.top, Sidebar.floatingTopPadding)
             .padding(.bottom, 10)
-            .padding(.leading, 8)
+            .padding(.leading, Sidebar.floatingLeadingPadding)
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointer.inSidebar = $0 }
             .zIndex(1)
