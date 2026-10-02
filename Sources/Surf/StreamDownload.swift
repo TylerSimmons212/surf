@@ -559,6 +559,7 @@ extension StreamDownload {
     /// the same muxer.
     func startSABR(
         captured: StreamTap.ABRRequest, formats: [StreamTap.Format],
+        choosing: DownloadOption? = nil,
         pageURL: URL?, title: String, tab: Tab?
     ) async -> Result<Produced, StreamRefusal> {
         guard let body = captured.bytes else {
@@ -587,7 +588,29 @@ extension StreamDownload {
         // because AVFoundation reads neither.
         var wantedVideo: Int?
         var wantedAudio: Int?
-        if let chosen = SABRClient.Session.choose(from: formats) {
+        // A row from the menu names an itag, and it is used as given. The whole
+        // point of offering a choice is that it is not second-guessed.
+        if let asked = choosing, let itag = Int(asked.id),
+           let format = formats.first(where: { $0.itag == itag }),
+           let revision = format.revision {
+            let sound = asked.isAudioOnly
+                ? format
+                : SABRClient.Session.choose(from: formats)?.audio
+            if !asked.isAudioOnly {
+                session.videoFormats = [
+                    SABR.FormatID(itag: itag, lastModified: revision).encodedID,
+                ]
+                wantedVideo = itag
+            }
+            if let sound, let soundRevision = sound.revision {
+                session.audioFormats = [
+                    SABR.FormatID(itag: sound.itag, lastModified: soundRevision).encodedID,
+                ]
+                wantedAudio = sound.itag
+            }
+            debugLog("sabr: asked for \(asked.title) — video \(wantedVideo.map(String.init) ?? "none")"
+                + ", audio \(wantedAudio.map(String.init) ?? "none")")
+        } else if let chosen = SABRClient.Session.choose(from: formats) {
             session.videoFormats = [SABR.FormatID(
                 itag: chosen.video.itag, lastModified: chosen.video.revision ?? 0
             ).encodedID]

@@ -63,6 +63,13 @@ enum StreamTap {
         var mimeType: String
         var height: Int
         var bitrate: Int
+        /// Stated by the page, exactly. Empty when it says nothing.
+        var contentLength: String = ""
+
+        var bytes: Int? {
+            let value = Int(contentLength)
+            return (value ?? 0) > 0 ? value : nil
+        }
 
         var revision: UInt64? { UInt64(lastModified) }
         var isVideo: Bool { mimeType.hasPrefix("video/") }
@@ -165,7 +172,11 @@ enum StreamTap {
                 lastModified: String(f.lastModified),
                 mimeType: f.mimeType || '',
                 height: f.height || 0,
-                bitrate: f.bitrate || 0
+                bitrate: f.bitrate || 0,
+                // The exact size, which YouTube states and a bitrate only
+                // approximates. A string for the same reason as lastModified:
+                // it is a byte count that can exceed what a JSON number holds.
+                contentLength: String(f.contentLength || '')
               });
             }
             return out;

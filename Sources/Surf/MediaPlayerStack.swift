@@ -397,13 +397,10 @@ struct MediaRow: View {
                 }
             }
         } else if media.isDownloadable {
-            IconButton(
-                systemName: "arrow.down.circle",
-                size: 13, width: 26, height: 26, cornerRadius: 13,
-                help: "Download Video"
-            ) {
-                DownloadManager.shared.downloadMedia(from: tab)
-            }
+            DownloadButton(
+                tab: tab, systemName: "arrow.down.circle",
+                help: "Download Video", isEnabled: true, bounces: false
+            )
         } else if media.needsExtraction {
             // Segmented media has no URL to fetch and is reassembled from the
             // page instead. A different glyph because it's a slower,
@@ -411,19 +408,48 @@ struct MediaRow: View {
             // machinery behind it is never named. As far as anyone using Surf
             // is concerned this is just what downloading a stream looks like.
             let isReady = MediaExtractor.shared.isAvailable
-            IconButton(
-                systemName: "arrow.down.circle.dotted",
-                size: 13, width: 26, height: 26, cornerRadius: 13,
-                isEnabled: isReady,
-                motion: isReady ? .bounce : .none,
+            DownloadButton(
+                tab: tab, systemName: "arrow.down.circle.dotted",
                 help: isReady
                     ? "Download Video — reassembled from the stream"
-                    : "This video is streamed in segments and can't be saved as a file"
-            ) {
-                DownloadManager.shared.downloadMedia(from: tab)
-            }
+                    : "This video is streamed in segments and can't be saved as a file",
+                isEnabled: isReady, bounces: isReady
+            )
         }
     }
 
 }
 
+
+
+/// The download button, which opens a menu when there is something to choose.
+///
+/// A press still downloads — the menu's first row is the same thing the button
+/// used to do on its own, and it is where the pointer already is. The rest of the
+/// menu exists for the cases where the engine's pick and the right pick are not
+/// the same, which on YouTube is the difference between 543MB of 4K and 214MB of
+/// 1080p.
+private struct DownloadButton: View {
+    let tab: Tab
+    let systemName: String
+    let help: String
+    let isEnabled: Bool
+    let bounces: Bool
+
+    @State private var isShowingMenu = false
+
+    var body: some View {
+        IconButton(
+            systemName: systemName,
+            size: 13, width: 26, height: 26, cornerRadius: 13,
+            isEnabled: isEnabled,
+            motion: bounces ? .bounce : .none,
+            help: help
+        ) {
+            isShowingMenu = true
+        }
+        .popover(isPresented: $isShowingMenu, arrowEdge: .bottom) {
+            DownloadMenu(tab: tab) { isShowingMenu = false }
+        }
+    }
+}

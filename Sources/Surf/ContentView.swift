@@ -499,6 +499,18 @@ struct ContentView: View {
                 debugLog("download: nothing playing to save")
                 return
             }
+            // What the menu would show. Logged before downloading because the
+            // menu itself only opens on a click, and nothing else exercises the
+            // list it is built from.
+            let offered = await DownloadManager.shared.options(for: tab)
+            let rows = DownloadOptions.video(from: offered.options)
+            for row in rows.prefix(8) {
+                debugLog("menu: \(row.title) — \(row.detail(duration: offered.duration))")
+            }
+            if let sound = DownloadOptions.audio(from: offered.options) {
+                debugLog("menu: \(sound.title) — \(sound.detail(duration: offered.duration))")
+            }
+
             debugLog("download: saving \(media.kind) \(media.sourceURL)")
             DownloadManager.shared.downloadMedia(from: tab)
             guard want == "2" else { return }

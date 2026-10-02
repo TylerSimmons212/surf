@@ -124,6 +124,19 @@ final class DownloadItem: Identifiable {
 final class DownloadManager: NSObject, WKDownloadDelegate {
     static let shared = DownloadManager()
 
+    /// What the menu last asked for, read by whichever path starts next.
+    ///
+    /// A property rather than an argument threaded through five call sites, and
+    /// cleared as soon as it is read: a choice belongs to one download, and a
+    /// stale one silently deciding the next download's quality would be worse
+    /// than having no menu.
+    @ObservationIgnored private var choice: DownloadOption?
+
+    func takeChoice() -> DownloadOption? {
+        defer { choice = nil }
+        return choice
+    }
+
     /// Newest first. This is the history list; entries persist until cleared
     /// rather than disappearing when the transfer ends.
     private(set) var items: [DownloadItem] = []
@@ -295,11 +308,85 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         }
     }
 
+    // MARK: - What is on offer
+
+    /// Everything this page could be downloaded as, and how long it runs.
+    ///
+    /// Two sources, because the two kinds of stream know different things.
+    /// YouTube's formats are on the page and need no network at all. A manifest
+    /// has to be fetched and parsed, which is a round trip — hence the menu
+    /// saying it is looking rather than appearing to have finished.
+    ///
+    /// An empty list is an ordinary answer: a plain file has one quality, and
+    /// there is nothing to choose.
+    func options(for tab: Tab) async -> (options: [DownloadOption], duration: Double?) {
+        let duration = tab.media.map { $0.duration > 0 ? $0.duration : nil } ?? nil
+
+        if let seen = await tab.streamTap() {
+            if !seen.formats.isEmpty {
+                // Only what the downloader can actually deliver. It mixes down to
+                // MP4, so offering the VP9-in-WebM renditions would be a menu
+                // promising something another part of the program refuses — and
+                // at 2160p that row read 2.1GB beside an AV1 of the same picture
+                // at 543MB, which is a worse offer as well as an undeliverable
+                // one.
+                return (seen.formats.filter(\.isMP4).map { format in
+                    DownloadOption(
+                        id: String(format.itag),
+                        height: format.isVideo ? format.height : nil,
+                        bitrate: format.bitrate,
+                        codecs: format.mimeType,
+                        isAudioOnly: format.isAudio,
+                        exactBytes: format.bytes
+                    )
+                }, duration)
+            }
+            if let manifest = seen.manifests.compactMap({ URL(string: $0) }).first {
+                return (await renditions(at: manifest, in: tab), duration)
+            }
+        }
+
+        if let media = tab.media, media.kind == .manifest,
+           let url = URL(string: media.sourceURL) {
+            return (await renditions(at: url, in: tab), duration)
+        }
+        return ([], duration)
+    }
+
+    /// What a manifest offers, which costs one fetch.
+    private func renditions(at url: URL, in tab: Tab) async -> [DownloadOption] {
+        let credentials = await SegmentFetcher.credentials(for: tab, page: tab.webView.url)
+        let fetcher = SegmentFetcher(credentials: credentials, parallelism: 1)
+        guard let text = await fetcher.text(at: url),
+              let index = StreamManifest.parse(text, baseURL: url)
+        else { return [] }
+        return index.renditions.compactMap { rendition in
+            switch rendition.role {
+            case .video, .muxed:
+                return DownloadOption(
+                    id: rendition.id, height: rendition.height,
+                    bitrate: rendition.bandwidth, codecs: rendition.codecs ?? ""
+                )
+            case .audio:
+                return DownloadOption(
+                    id: rendition.id, bitrate: rendition.bandwidth,
+                    codecs: rendition.codecs ?? "", isAudioOnly: true
+                )
+            case .other:
+                return nil
+            }
+        }
+    }
+
     // MARK: - Starting
 
     /// The one entry point for "save what's playing". Picks the engine.
-    func downloadMedia(from tab: Tab) {
+    /// `choosing` is a row from the menu. Nil means the engine decides, which is
+    /// what the button does on its own and what every path did before the menu
+    /// existed.
+    func downloadMedia(from tab: Tab, choosing: DownloadOption? = nil) {
         guard let media = tab.media else { return }
+        self.choice = choosing
 
         switch media.kind {
         case .file:
@@ -351,10 +438,13 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // manifest is fetched and no format carries a URL, so a captured
                 // streaming request is the only route to its media.
                 if let captured = seen?.abr {
+                    let chosen = self.takeChoice()
                     debugLog("download: using a captured streaming request, "
-                        + "\(seen?.formats.count ?? 0) formats on offer")
+                        + "\(seen?.formats.count ?? 0) formats on offer"
+                        + (chosen.map { ", asked for \($0.title)" } ?? ""))
                     self.startSABRDownload(
                         captured: captured, formats: seen?.formats ?? [],
+                        choosing: chosen,
                         page: pageURL, title: media.title, tab: tab,
                         expecting: expectation
                     )
@@ -586,6 +676,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     func startSABRDownload(
         captured: StreamTap.ABRRequest,
         formats: [StreamTap.Format],
+        choosing: DownloadOption? = nil,
         page pageURL: URL?,
         title: String,
         tab: Tab?,
@@ -617,7 +708,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         Task { @MainActor in
             let result = await download.startSABR(
-                captured: captured, formats: formats,
+                captured: captured, formats: formats, choosing: choosing,
                 pageURL: pageURL, title: title, tab: tab
             )
             item.stream = nil
