@@ -6,6 +6,14 @@ import Foundation
 /// version and nothing else. When yt-dlp ships a fix for a site that changed its
 /// player, that becomes a Surf improvement, delivered the same way every other
 /// improvement is.
+///
+/// Neither ships inside Surf.app, and for ffmpeg that is a licensing
+/// requirement rather than a size decision: every prebuilt static macOS build is
+/// GPLv3, and bundling one would put Surf under GPLv3 with it. Fetching it from
+/// its publisher at runtime makes the user the recipient rather than Surf the
+/// redistributor, which is the arrangement yt-dlp itself and HandBrake use.
+/// yt-dlp is public domain and could be bundled; it isn't, because it is 40MB
+/// with its own release cadence and `UpdateManager` keeps it current anyway.
 public enum Component: String, CaseIterable, Sendable {
     case ytdlp
     case ffmpeg
@@ -15,21 +23,6 @@ public enum Component: String, CaseIterable, Sendable {
         switch self {
         case .ytdlp: "yt-dlp"
         case .ffmpeg: "ffmpeg"
-        }
-    }
-
-    /// Whether a copy ships inside Surf.app.
-    ///
-    /// yt-dlp is public domain, so it can be bundled and the feature works with
-    /// no network on first run. Every prebuilt static macOS ffmpeg is GPLv3, and
-    /// bundling one would put Surf under GPLv3 with it — so ffmpeg is fetched
-    /// from its publisher at runtime, which makes the user the recipient rather
-    /// than Surf the redistributor. This is the same arrangement yt-dlp itself
-    /// and HandBrake use.
-    public var isBundled: Bool {
-        switch self {
-        case .ytdlp: true
-        case .ffmpeg: false
         }
     }
 }

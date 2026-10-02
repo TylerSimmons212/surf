@@ -220,15 +220,6 @@ struct FFmpegReleaseTests {
 @Suite("Components")
 struct ComponentTests {
 
-    @Test("Only yt-dlp is bundled")
-    func bundling() {
-        // ffmpeg's every prebuilt static macOS build is GPLv3, and bundling one
-        // would put Surf under GPLv3 too. Fetching it at runtime makes the
-        // user the recipient rather than Surf the redistributor.
-        #expect(Component.ytdlp.isBundled)
-        #expect(!Component.ffmpeg.isBundled)
-    }
-
     @Test("Executable names match what's looked for on disk")
     func names() {
         #expect(Component.ytdlp.executableName == "yt-dlp")
