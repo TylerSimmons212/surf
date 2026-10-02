@@ -78,25 +78,32 @@ enum SABRClient {
             let eligible = maxHeight.map { cap in videos.filter { $0.height <= cap } } ?? videos
             var candidates = eligible.isEmpty ? videos : eligible
 
-            // Codec before resolution, which is the opposite of what every other
-            // choice in this engine does.
+            // Tallest wins, as it does everywhere else in this engine, and the
+            // codec only breaks a tie between equals.
             //
-            // Not a technical limit — ffmpeg muxes the 2160p AV1 this would
-            // otherwise pick, and does it in a second. A preference: a file
-            // someone downloaded from a browser should play in whatever they open
-            // it with, and H.264 plays everywhere while AV1 needs a recent
-            // machine. It is also a third of the size for the same video, 224MB
-            // against 543MB on the one measured here.
+            // It was the other way round first — H.264 preferred outright — on
+            // the grounds that a browser download should play in anything. That
+            // reasoning is sound and the consequence was not: YouTube offers
+            // H.264 no higher than 1080p, so preferring it silently capped every
+            // download at 1080p on a site whose whole point above that is VP9 and
+            // AV1. A rule about codecs turned into a rule about resolution
+            // without saying so.
             //
-            // On YouTube this usually means 1080p rather than 2160p, which is the
-            // real cost of the choice and worth stating rather than hiding.
-            for codec in ["avc1", "avc3", "hvc1", "hev1"] {
-                let readable = candidates.filter { $0.mimeType.contains(codec) }
-                if !readable.isEmpty { candidates = readable; break }
-            }
-
+            // There is no technical reason for the cap. ffmpeg muxes the 2160p
+            // AV1 in about a second and the result reads back at exactly the
+            // right duration.
             guard let video = candidates.max(by: { a, b in
-                a.height != b.height ? a.height < b.height : a.bitrate < b.bitrate
+                if a.height != b.height { return a.height < b.height }
+                // Same picture, two encodings: take the one more things can play.
+                let rank = { (format: StreamTap.Format) -> Int in
+                    for (index, codec) in ["avc1", "avc3", "hvc1", "hev1"].enumerated()
+                    where format.mimeType.contains(codec) {
+                        return ["avc1", "avc3", "hvc1", "hev1"].count - index
+                    }
+                    return 0
+                }
+                if rank(a) != rank(b) { return rank(a) < rank(b) }
+                return a.bitrate < b.bitrate
             }) else { return nil }
             // The best sound available: it is a fraction of the video's size, so
             // there is nothing to save by taking less.
