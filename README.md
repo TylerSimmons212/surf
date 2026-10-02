@@ -54,15 +54,16 @@ over to the other. Load progress is drawn around the
 window's edge as two crests leaving twelve o'clock in opposite directions and
 meeting at six. Nothing is drawn for a load that finishes inside 120 ms, which
 covers most cached pages, so the border only appears when there's something to
-wait for. A successful load ends in a wash of foam where the crests meet, and
-the page ripples outward from that point as though it were water: a snapshot of
-the page, bent by a Metal shader for under a second and faded back to the live
-page. A failed one fades from wherever it stopped. The ripple and the sticker
-peel are ports of Canvas UI's WebGL effects, which can't run as they are: they
-capture HTML into a canvas with Chrome's HTML-in-Canvas API, which WebKit
-doesn't have, and the chrome they would bend here isn't HTML. Their shader maths
-carries over; the shaders are compiled from source at runtime, since
-`swift build` doesn't compile `.metal` files.
+wait for. A successful load ends in a wash of foam where the crests meet. A
+failed one fades from wherever it stopped. A ripple spreading into the page
+from where the crests met was built and tried, first as rings and then as the
+page itself refracting, and taken out: it was a flourish on every single load.
+
+Peeling a sticker off curls it as a real sheet, a port of Canvas UI's WebGL
+Peel. That can't run as it is: it captures HTML into a canvas with Chrome's
+HTML-in-Canvas API, which WebKit doesn't have, and a sticker isn't HTML. The
+shader maths carries over; the shaders are compiled from source at runtime,
+since `swift build` doesn't compile `.metal` files.
 
 A tab that's playing media shows a now-playing strip at the bottom of the
 sidebar, with play/pause and a button to pop video out into a floating
