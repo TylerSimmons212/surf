@@ -834,11 +834,122 @@ window grew taller than the screen and became something to scroll past rather
 than read, which is its own way of going unread. Settings is one pane per
 subject now: General, Privacy, Links, Reader, AI.
 
+### Saving video
+
+Surf downloads video itself. It used to hand every stream to yt-dlp, and the
+reason for changing is not speed: an external tool spends most of its effort
+reconstructing, from outside, a session the browser already has on the inside.
+Cookies, referrer, the loaded player, the tokens that player obtained. We were
+paying a subprocess, a 40&nbsp;MB runtime download and someone else's release
+cadence to simulate a browser, from inside a browser.
+
+> The page has already solved authentication. Observe or delegate; do not
+> reimplement.
+
+Every hard part of extraction is something the page did successfully a moment
+ago. It fetched a manifest, signed a URL, holds a session. A downloader living
+in the browser reads those answers instead of recomputing them, and that is the
+one structural advantage Surf has over every external tool. The limit is the
+same fact stated backwards: it works while a tab is on the page with the player
+loaded, which is exactly the situation a download button is pressed in.
+
+Six steps, and only the last two know a web view exists. `StreamTap` reports
+what the page fetched, which is the only route to a `blob:` source because the
+URL says nothing. `StreamManifest` parses HLS or DASH into one `StreamIndex`;
+the acceptance test for that boundary was that adding DASH should need no new
+code in `Sources/Surf`, and it didn't. `StreamPlan` decides which rendition to
+take and what to refuse before a byte is requested. `SegmentSchedule` hands out
+work from a cursor rather than a worklist, which is what makes the output an
+in-order append, the memory bounded, and resuming nothing more than seeding
+what is already done. `SegmentFetcher` puts the tab's own session behind each
+request, which is why signed URLs work. `StreamAssembler` concatenates, and
+muxes with nothing re-encoded.
+
+Two measurements the shape rests on. Concatenating an fMP4 init segment and its
+media segments gives a file AVFoundation parses natively, so for CMAF — roughly
+90% of modern deployments — assembly is concatenation. And `AVAssetReader`
+passthrough into `AVAssetWriter` passthrough merged separate video and audio
+into one MP4 in 27 milliseconds, which is the `ffmpeg -c copy` step that used to
+cost a subprocess.
+
+Refused by design rather than for now: DRM, detected by EME, `SAMPLE-AES` or
+`ContentProtection`, and turned down before anything is fetched rather than
+producing a file full of ciphertext. And live streams, which have no end and are
+a different problem.
+
+#### YouTube
+
+YouTube no longer serves a manifest to its own player. Measured on a real watch
+page: 40 formats, no URLs, no signature ciphers. The only route to media is a
+protobuf POST whose answer is UMP, a stream of typed parts with audio and video
+woven together.
+
+What makes this an arms race for a command-line tool is not the protocol, it is
+the credentials. A request needs a proof-of-origin token produced by obfuscated
+JavaScript that has to run in something browser-shaped, so yt-dlp needs an
+external provider running a headless browser to simulate what Surf already is.
+
+The design follows from two lines of the schema:
+
+```protobuf
+optional bytes video_playback_ustreamer_config = 5;
+optional StreamerContext streamer_context = 19;
+```
+
+Both are opaque. `StreamTap` captures one of the player's own requests, and
+those two fields are lifted out and written back as bytes, never parsed, so
+YouTube can change their insides freely. What Surf constructs is
+`client_abr_state` and the format ids, which is what lets it ask for the whole
+timeline at the quality it wants instead of what the player wants next — two
+fields of the twenty-one the player sends, measured as accepted.
+
+It is sequential, and that is the protocol rather than a shortcoming: the server
+decides how much to send per request, so a download is a loop. The parallel
+fetcher buys nothing here, which matches yt-dlp's own SABR downloader listing
+concurrency as unsupported. 712&nbsp;MB of 4K AV1 in 29 seconds.
+
+One mistake in that loop is worth keeping, because nothing about the file it
+produced looked wrong. A round's answer interleaves both streams, and asking
+from the furthest point either one reached loses the difference. Audio segments
+run 9.9 seconds against video's 5.16, so the cursor advanced on sound and left a
+quarter of the picture behind. The result opened, played, and reported exactly
+the right duration, because a gap between two fragments is not an error: each
+carries its own timestamp. 28,870 frames of 38,077, and a byte count that
+looked plausible. The cursor is now the least advanced stream, and every
+download reports whether its segments form a run with no holes, because the
+size cannot tell you.
+
+AVFoundation is the one part of the engine this path cannot use. It reads
+25&nbsp;MB of a 538&nbsp;MB fragmented MP4 and reports completion, while ffprobe
+reads the same file correctly, so SABR output is the single case that goes to
+ffmpeg.
+
+#### Which rendition
+
+The engine picks for itself: tallest wins, and the codec breaks a tie between
+equals. That was the other way round first, H.264 preferred outright so a saved
+file would play in anything, and the consequence was a cap nobody chose —
+YouTube offers no H.264 above 1080p, so a rule about codecs had quietly become a
+rule about resolution.
+
+The choice is sometimes the user's, though, because 4K AV1 is two and a half
+times the size of 1080p H.264 for the same ten minutes. So the download button
+opens a short menu: download, choose a quality, or take the sound on its own.
+One row per height rather than one per rendition, since YouTube offers 1080p in
+three codecs and several bitrates, and six rows all saying 1080p is a worse menu
+than three saying different things. WebM is left out because AVFoundation cannot
+read it and ffmpeg is optional, so a row offering 2160p VP9 at 2.1&nbsp;GB was
+offering a file that would not be produced. Sizes come from the format's own
+`contentLength`: estimating from bitrate ran more than double the real file, and
+a menu whose whole job is comparing sizes cannot be out by that much.
+
 ### Helpers
 
-Stream downloads are done by two binaries Surf runs but doesn't build: yt-dlp
-resolves a page to its media, and ffmpeg merges separate video and audio
-streams. Neither is a user-visible feature. Settings shows one number — the
+Two binaries Surf runs but doesn't build sit behind the engine above: yt-dlp,
+for the pages Surf's own engine refuses or cannot read, and ffmpeg, for the
+containers AVFoundation will not write. Neither is on the common path any more,
+which is the point of the engine rather than a side effect of it, and neither is
+a user-visible feature. Settings shows one number — the
 Surf version — and nothing about what's inside it, because a version the user
 can't act on is noise, and "Surf is current" has to mean everything in it is
 current or the number means nothing.
@@ -850,8 +961,8 @@ reporting. A failed update leaves the previous copy alone and tries again next
 week. Resolution runs newest-first — managed copy, then `PATH`, so `swift run`
 works without a bundle. Neither binary ships inside `Surf.app`: yt-dlp was
 dropped from the bundle to keep the app small (it was 37&nbsp;MB of a
-54&nbsp;MB app), so stream downloads start working after the first update
-check, or immediately with a copy on `PATH`.
+54&nbsp;MB app), so the fallback starts working after the first update check, or
+immediately with a copy on `PATH`.
 
 The two are handled differently, and the difference is licensing:
 
@@ -1143,6 +1254,17 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/MediaInspector.swift` — the four facts `SavedMedia` judges
 - `Sources/Surf/StreamTap.swift` — what a page fetched to play what it is
   playing, which is the only way to reach a `blob:` source
+- `Sources/SurfCore/Protobuf.swift` — the wire format with no schema, because
+  the messages worth reading are a handful and the rest should pass through
+- `Sources/SurfCore/UMPReader.swift` — part framing: five of forty-odd types
+  understood, the others skipped rather than treated as a problem
+- `Sources/SurfCore/SABRMessages.swift` — eight messages of about forty, and the
+  two expensive ones deliberately never parsed
+- `Sources/Surf/SABRClient.swift` — one request built from a captured one, so it
+  differs from a working request in exactly one way
+- `Sources/SurfCore/DownloadOption.swift` — what a menu row says, from a format
+  list or a manifest, so it reads the same either way
+- `Sources/Surf/DownloadMenu.swift` — the two pages behind the download button
 - `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
 - `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
