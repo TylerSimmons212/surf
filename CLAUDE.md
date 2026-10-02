@@ -1,6 +1,6 @@
 # Surf
 
-macOS 26 web browser. Swift 6, SwiftUI, WebKit, SwiftPM. [README.md](README.md) is the design record: read the section for the subsystem you're touching before changing it.
+macOS 27 web browser. Swift 6, SwiftUI, WebKit, SwiftPM. [README.md](README.md) is the design record: read the section for the subsystem you're touching before changing it.
 
 ## Layout
 
