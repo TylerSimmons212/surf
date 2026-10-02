@@ -59,6 +59,7 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_DEVTOOLS=<pane>` | open dev tools on `elements/styles/network/storage/tags/performance/console` |
 | `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
 | `SURF_DOWNLOAD=2` | and press retry once if it fails, after a 10s pause |
+| `SURF_DOWNLOAD_PICK=<height>` | take that row from the quality menu; `=audio` for sound alone |
 | `SURF_KEEP_SCRATCH=1` | keep a stream download's working directory for inspection |
 | `SURF_STATE_DIR=<dir>` | replace `~/Library/Application Support/Surf` (launch.sh sets this) |
 
@@ -127,6 +128,14 @@ Standards: drive the real user path (the env drivers go through the same `Tab` m
 ```
 
 Run it after every attempt, failed ones included. It never deletes `.verify/<run>/`; delete that yourself only once the report is written.
+
+A `SURF_DOWNLOAD` run also leaves the saved file in the real `~/Downloads`, and
+that one is not yours to tidy silently: **`~/.Trash` is not writable from an
+agent shell.** macOS TCC answers `mv` with "Operation not permitted", and a
+`find -exec mv` reports the `-print` either way, so a cleanup step can look like
+it worked while several hundred megabytes accumulate per run. Check with `ls`
+rather than trusting the move, and hand the user an `rm` for the artifact
+instead of deleting their file on a guess.
 
 ## Maintenance
 
