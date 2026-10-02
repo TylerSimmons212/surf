@@ -32,7 +32,8 @@
   // happens somewhere this cannot reach from the main thread — a worker — and
   // that is the answer rather than a failure.
   let captured = null;
-  const seen = { fetch: 0, xhr: 0, appends: 0, workers: 0 };
+  const seen = { fetch: 0, xhr: 0, appends: 0, workers: 0, posts: 0,
+    bodyFrom: null, bodyError: null };
   const interesting = new Set();
 
   const note = (method, url) => {
@@ -67,13 +68,34 @@
   const nativeFetch = window.fetch;
   window.fetch = function (input, init) {
     try {
-      const url = (input && typeof input === 'object' && input.url) ? input.url : String(input);
+      const isRequest = !!(input && typeof input === 'object'
+        && typeof input.clone === 'function' && input.url);
+      const url = isRequest ? input.url : String(input);
       const method = String((init && init.method)
-        || (input && input.method) || 'GET').toUpperCase();
+        || (isRequest && input.method) || 'GET').toUpperCase();
       seen.fetch++;
       note(method, url);
       if (method === 'POST' && url.includes('videoplayback')) {
-        keep(url, init && init.body);
+        seen.posts++;
+        if (init && init.body) {
+          seen.bodyFrom = 'init.body:' + (init.body.constructor
+            && init.body.constructor.name);
+          keep(url, init.body);
+        } else if (isRequest) {
+          // The body is on the Request, not in `init` — which is how the first
+          // attempt saw the POST go past and captured nothing from it.
+          //
+          // Cloned before reading. A Request body is a stream and reading it
+          // consumes it, so touching the original would make the player's own
+          // request arrive empty: the probe would break the thing it is
+          // watching, which is the one outcome worse than not catching it.
+          seen.bodyFrom = 'Request.clone()';
+          input.clone().arrayBuffer()
+            .then((b) => keep(url, new Uint8Array(b)))
+            .catch((e) => { seen.bodyError = String(e).slice(0, 80); });
+        } else {
+          seen.bodyFrom = 'nowhere we could see';
+        }
       }
     } catch (e) { /* never break playback to watch it */ }
     return nativeFetch.apply(this, arguments);
@@ -129,6 +151,9 @@
     log('nothing caught. What happened while watching:');
     log('   fetch calls:', seen.fetch, '| XHR sends:', seen.xhr,
       '| appendBuffer calls:', seen.appends, '| workers made:', seen.workers);
+    log('   videoplayback POSTs seen:', seen.posts,
+      '| body found at:', seen.bodyFrom || '(none seen)',
+      seen.bodyError ? '| read failed: ' + seen.bodyError : '');
     log('   media-ish requests seen:',
       interesting.size ? Array.from(interesting).join(', ') : 'none');
     if (seen.appends > 0 && !interesting.size) {
