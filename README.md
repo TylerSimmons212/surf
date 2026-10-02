@@ -3,9 +3,9 @@
 A web browser for macOS, built in Swift + SwiftUI.
 
 Requires macOS 27 or later. The chrome uses the current SF Symbols effects
-(`rotate`, `drawOn`) with no fallbacks, and the tab list and sticker shelf
-reorder through SwiftUI's `reorderable` / `reorderContainer`, which are
-macOS 27 and have no back-deployment.
+(`rotate`, `drawOn`) with no fallbacks, and the sticker shelf reorders through
+SwiftUI's `reorderable` / `reorderContainer`, which are macOS 27 and have no
+back-deployment.
 
 ## Download
 
@@ -1109,3 +1109,21 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
   Island" and "Open Link in New Island" are both waiting on
 - Cross-origin iframes, which are a separate document nothing in the page can
   reach into — theming one means running the whole pass inside it
+- The tab list on `reorderable` / `reorderContainer`, as the sticker shelf
+  already is. It is the better model and not just less code: each section
+  becomes a collection, so reordering a tab and filing it into a folder stop
+  being separate gestures with separate delegates, and the drop reports which
+  folder it meant instead of leaving it to be inferred from whatever row the
+  pointer was over.
+
+  It does not work yet. With a `reorderContainer` on the list, lifting a row
+  dies inside SwiftUI: `DragContainerStorage.payload(for:)` fails a
+  precondition reading *"Expected UUID, got UUID"* — a message that cannot
+  distinguish the two types it is comparing. Six configurations of the list
+  were tried, including with the collection dimension removed entirely, and
+  every one crashes; a standalone harness built to match it, including the
+  enum row type, the class-backed model, a conditional `ForEach` body and an
+  empty region inside the container, does not crash in any of them. The
+  sticker shelf's own container is not involved — removing it changes nothing.
+  Whatever the list does that the harness does not has not been found, and a
+  radar is probably worth more than another afternoon of bisecting.
