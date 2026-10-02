@@ -219,7 +219,7 @@ final class Island: Identifiable {
     /// Rearranges the existing tabs into `ids`.
     ///
     /// Applied only when `ids` is a permutation of what's here — the orders come
-    /// from `TabOrder`, which works on ids alone and can't know that a tab was
+    /// from `ListOrder`, which works on ids alone and can't know that a tab was
     /// closed while a drag was in flight. Rebuilding from a stale list would
     /// drop the tabs missing from it, so a mismatch leaves the list untouched
     /// instead.

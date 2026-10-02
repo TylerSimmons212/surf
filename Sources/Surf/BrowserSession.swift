@@ -1259,7 +1259,7 @@ final class BrowserSession {
             if let leading = tab(new.leading), let trailing = tab(new.trailing) {
                 trailing.groupID = leading.groupID
             }
-            if let order = TabOrder.placing(
+            if let order = ListOrder.placing(
                 new.trailing,
                 immediatelyAfter: new.leading,
                 in: currentIsland.tabs.map(\.id)
@@ -1352,7 +1352,7 @@ final class BrowserSession {
         // group at its first member — a tab joining from above would otherwise
         // pull the whole section up to meet it.
         if let last = members.last,
-           let order = TabOrder.placing(tab.id, immediatelyAfter: last, in: currentIsland.tabs.map(\.id)) {
+           let order = ListOrder.placing(tab.id, immediatelyAfter: last, in: currentIsland.tabs.map(\.id)) {
             currentIsland.reorder(to: order)
         }
         currentIsland.pruneEmptyGroups()
@@ -1392,7 +1392,7 @@ final class BrowserSession {
             target = first
         }
 
-        guard let order = TabOrder.moving(members, before: target, in: currentIsland.tabs.map(\.id))
+        guard let order = ListOrder.moving(members, before: target, in: currentIsland.tabs.map(\.id))
         else { return false }
         currentIsland.reorder(to: order)
         return true
@@ -1402,7 +1402,7 @@ final class BrowserSession {
     func moveGroupToEnd(_ id: UUID) -> Bool {
         let members = TabGrouping.members(of: id, in: currentIsland.slots)
         guard !members.isEmpty,
-              let order = TabOrder.movingToEnd(members, in: currentIsland.tabs.map(\.id))
+              let order = ListOrder.movingToEnd(members, in: currentIsland.tabs.map(\.id))
         else { return false }
         currentIsland.reorder(to: order)
         return true
@@ -1459,7 +1459,7 @@ final class BrowserSession {
     @discardableResult
     func moveSplitPair(before targetID: Tab.ID) -> Bool {
         guard let split else { return false }
-        guard let order = TabOrder.moving(
+        guard let order = ListOrder.moving(
             [split.leading, split.trailing],
             before: targetID,
             in: currentIsland.tabs.map(\.id)
@@ -1471,7 +1471,7 @@ final class BrowserSession {
     @discardableResult
     func moveSplitPairToEnd() -> Bool {
         guard let split else { return false }
-        guard let order = TabOrder.movingToEnd(
+        guard let order = ListOrder.movingToEnd(
             [split.leading, split.trailing],
             in: currentIsland.tabs.map(\.id)
         ) else { return false }

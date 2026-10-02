@@ -1,6 +1,10 @@
 import Foundation
 
-/// Reordering the tab list, as pure list operations.
+/// Reordering a list by identity, as pure list operations.
+///
+/// Named for the tab list, which was its only caller until the sticker shelf
+/// stopped hand-rolling its drags and found that the operations it needed were
+/// already here, already generic, and already under test.
 ///
 /// Index arithmetic is where reordering goes wrong: removing before inserting
 /// shifts every index after the hole, and a group of two makes it worse because
@@ -11,7 +15,7 @@ import Foundation
 /// target is inside the group", and "it is already there" are all answered the
 /// same way, because every caller wants the same thing from all three: leave the
 /// list alone, and don't report a move that didn't happen.
-public enum TabOrder {
+public enum ListOrder {
 
     /// `group` — in the order given — moved to sit where `target` currently is.
     public static func moving<ID: Hashable>(
@@ -48,6 +52,23 @@ public enum TabOrder {
     /// filed three rows apart is a drawing that disagrees with the list it's
     /// drawn from — reorder anything between them and the group appears to
     /// teleport.
+    /// `items` rearranged into `order`.
+    ///
+    /// The other three functions here work on ids, which is what keeps them
+    /// free of any opinion about what is being ordered. This is the one step
+    /// back: a reorder arrives as ids, and what the caller holds is items.
+    ///
+    /// An id in `order` that names nothing is skipped rather than faulted —
+    /// a reorder and a removal can land in either sequence, and a shelf that
+    /// crashed because a sticker was peeled mid-drag would be a worse answer
+    /// than one that quietly leaves it out.
+    public static func resequencing<Item: Identifiable>(
+        _ items: [Item], into order: [Item.ID]
+    ) -> [Item] {
+        let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return order.compactMap { byID[$0] }
+    }
+
     public static func placing<ID: Hashable>(
         _ id: ID,
         immediatelyAfter anchor: ID,
