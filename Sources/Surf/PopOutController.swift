@@ -73,8 +73,45 @@ final class PopOutController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Where the panel was last left.
+    ///
+    /// `SurfDefaults.store` rather than `.standard`, so a verification run
+    /// pointed at a scratch state directory can't move somebody's real panel.
+    private static let frameKey = "popOutFrame"
+
+    private var rememberedFrame: CGRect? {
+        get {
+            guard let text = SurfDefaults.store.string(forKey: Self.frameKey) else { return nil }
+            let rect = NSRectFromString(text)
+            return rect.width > 0 && rect.height > 0 ? rect : nil
+        }
+        set {
+            guard let newValue else { return }
+            SurfDefaults.store.set(NSStringFromRect(newValue), forKey: Self.frameKey)
+        }
+    }
+
+    /// The screen the panel was left on, so a remembered position on a second
+    /// display stays on that display instead of being dragged to the main one.
+    private func visibleFrameForPlacement() -> CGRect {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return NSScreen.main?.visibleFrame ?? .zero }
+        if let saved = rememberedFrame,
+           let index = WindowPlacement.indexOfScreen(
+               holding: saved, among: screens.map(\.visibleFrame)
+           ) {
+            return screens[index].visibleFrame
+        }
+        return NSScreen.main?.visibleFrame ?? screens[0].visibleFrame
+    }
+
     private func presentPanel(for tab: Tab, videoSize: CGSize) {
-        let contentSize = PopOutSizing.panelSize(forVideo: videoSize)
+        let placement = PopOutSizing.placement(
+            remembered: rememberedFrame,
+            forVideo: videoSize,
+            onVisible: visibleFrameForPlacement()
+        )
+        let contentSize = placement.size
         presentedSize = contentSize
 
         // Borderless: a titled panel reads as a mini window, and the whole point
@@ -134,7 +171,7 @@ final class PopOutController: NSObject, NSWindowDelegate {
 
         panel.contentView = root
 
-        positionInBottomTrailingCorner(panel, size: contentSize)
+        panel.setFrameOrigin(placement.origin)
         panel.orderFront(nil)
         self.panel = panel
     }
@@ -175,15 +212,6 @@ final class PopOutController: NSObject, NSWindowDelegate {
         }
     }
 
-    private func positionInBottomTrailingCorner(_ panel: NSPanel, size: NSSize) {
-        guard let screen = NSScreen.main else { return }
-        let margin: CGFloat = 24
-        let frame = screen.visibleFrame
-        panel.setFrameOrigin(
-            NSPoint(x: frame.maxX - size.width - margin, y: frame.minY + margin)
-        )
-    }
-
     // MARK: - Restore
 
     func restore() {
@@ -211,6 +239,19 @@ final class PopOutController: NSObject, NSWindowDelegate {
     // MARK: - NSWindowDelegate
 
     /// The panel's own close button routes here.
+    /// Both of these are how the panel learns where it lives.
+    ///
+    /// They fire for the placement we do ourselves as well, which is harmless:
+    /// re-recording the position it was just given writes back the same frame.
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
+
+    func windowDidEndLiveResize(_ notification: Notification) { rememberFrame() }
+
+    private func rememberFrame() {
+        guard let panel, panel.isVisible else { return }
+        rememberedFrame = panel.frame
+    }
+
     nonisolated func windowWillClose(_ notification: Notification) {
         MainActor.assumeIsolated { restore() }
     }

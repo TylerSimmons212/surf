@@ -54,6 +54,61 @@ public enum PopOutSizing {
 
     /// Whether two sizes describe the same shape, within a tolerance that
     /// ignores sub-pixel drift in the measured video rect.
+    /// How far a panel sits from the screen edge when it has nowhere
+    /// remembered to go.
+    public static let margin: CGFloat = 24
+
+    /// Where the panel should open: where you left it, or the bottom trailing
+    /// corner the first time.
+    ///
+    /// A floating window you have deliberately placed and then sized is a
+    /// window you have said something about, and reopening it in the corner
+    /// every time throws that away once per video.
+    ///
+    /// The size is kept only when the shape matches. A panel you widened for a
+    /// 16:9 clip is the wrong box for a 9:16 one, and the panel's aspect lock
+    /// would fight it the moment it opened — so a different shape gets the
+    /// size its own proportions ask for, and keeps the corner you chose.
+    ///
+    /// Everything is clamped back onto `visible`, because the screen it was
+    /// left on may be smaller now, or gone.
+    public static func placement(
+        remembered: CGRect?,
+        forVideo video: CGSize,
+        onVisible visible: CGRect
+    ) -> CGRect {
+        let natural = panelSize(forVideo: video)
+        guard visible.width > 0, visible.height > 0 else {
+            return CGRect(origin: .zero, size: natural)
+        }
+
+        var size = natural
+        if let remembered, aspectMatches(remembered.size, natural),
+           remembered.width <= visible.width, remembered.height <= visible.height {
+            size = remembered.size
+        }
+        // A natural size can still be too big for a small screen.
+        size.width = min(size.width, visible.width)
+        size.height = min(size.height, visible.height)
+
+        let corner = CGPoint(
+            x: visible.maxX - size.width - margin,
+            y: visible.minY + margin
+        )
+        guard let remembered else {
+            return CGRect(origin: clamped(corner, size: size, in: visible), size: size)
+        }
+        return CGRect(origin: clamped(remembered.origin, size: size, in: visible), size: size)
+    }
+
+    /// An origin that keeps the whole panel on screen.
+    private static func clamped(_ origin: CGPoint, size: CGSize, in visible: CGRect) -> CGPoint {
+        CGPoint(
+            x: min(max(origin.x, visible.minX), visible.maxX - size.width),
+            y: min(max(origin.y, visible.minY), visible.maxY - size.height)
+        )
+    }
+
     public static func aspectMatches(_ a: CGSize, _ b: CGSize, tolerance: CGFloat = 0.02) -> Bool {
         guard a.width > 0, a.height > 0, b.width > 0, b.height > 0 else { return false }
         let left = a.width / a.height

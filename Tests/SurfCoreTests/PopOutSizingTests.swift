@@ -106,3 +106,64 @@ struct PopOutSizingTests {
                                             CGSize(width: 1080, height: 1920)))
     }
 }
+
+@Suite("Pop-out placement")
+struct PopOutPlacementTests {
+
+    /// A 1512x982 screen with the menu bar taken off the top.
+    private let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
+    private let wide = CGSize(width: 1920, height: 1080)
+
+    @Test("With nothing remembered it opens in the bottom trailing corner")
+    func firstTime() {
+        let f = PopOutSizing.placement(remembered: nil, forVideo: wide, onVisible: visible)
+        #expect(f.maxX == visible.maxX - PopOutSizing.margin)
+        #expect(f.minY == visible.minY + PopOutSizing.margin)
+    }
+
+    @Test("A remembered frame is honoured, position and size both")
+    func remembered() {
+        // y chosen so the whole panel fits: 500 + 337.5 is inside 949. The
+        // first draft used 700, which does not, and the clamp was right to
+        // pull it back.
+        let saved = CGRect(x: 60, y: 500, width: 600, height: 337.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(f.origin == saved.origin)
+        #expect(f.size == saved.size)
+    }
+
+    @Test("A different shape keeps the corner but takes its own size")
+    func differentAspect() {
+        // Sized for 16:9, now opening a 9:16 clip. Reusing the box would make
+        // the panel fight its own aspect lock.
+        let saved = CGRect(x: 60, y: 700, width: 600, height: 337.5)
+        let tall = CGSize(width: 1080, height: 1920)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: tall, onVisible: visible)
+        #expect(f.origin.x == saved.origin.x)
+        #expect(f.size == PopOutSizing.panelSize(forVideo: tall))
+    }
+
+    @Test("A frame left on a screen that is gone comes back on")
+    func offScreen() {
+        // Remembered on a second display off to the right.
+        let saved = CGRect(x: 2400, y: 1400, width: 600, height: 337.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(visible.contains(f))
+    }
+
+    @Test("A remembered size too big for this screen is not used")
+    func tooBig() {
+        let saved = CGRect(x: 0, y: 0, width: 3000, height: 1687.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(f.size == PopOutSizing.panelSize(forVideo: wide))
+        #expect(visible.contains(f))
+    }
+
+    @Test("Negative origins are pulled back inside")
+    func negative() {
+        let saved = CGRect(x: -400, y: -300, width: 600, height: 337.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(f.minX == visible.minX)
+        #expect(f.minY == visible.minY)
+    }
+}
