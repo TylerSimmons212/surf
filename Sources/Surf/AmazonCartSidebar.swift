@@ -179,7 +179,7 @@ private struct AmazonCartRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             ThumbnailImage(
-                address: AmazonImage.sized(item.image, width: 160) ?? item.image,
+                address: AmazonImage.sized(item.image, width: 160),
                 maxPixel: 160,
                 contentMode: .fit
             )

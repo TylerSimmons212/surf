@@ -557,8 +557,6 @@ final class Tab: NSObject, Identifiable {
         menu.insertItem(.separator(), at: items.count)
     }
 
-    /// A new tab in this tab's own island, on `url`.
-    @discardableResult
     /// A tab WebKit is about to load into by itself.
     ///
     /// The mode is the point. A popup used to start on the home screen like
@@ -575,6 +573,15 @@ final class Tab: NSObject, Identifiable {
         mode = .browsing
     }
 
+    /// A new tab in this tab's own island, on `url`.
+    ///
+    /// The result is discardable because most of the menu items that open one
+    /// have nothing further to do with it; only "Open Link in Split" needs the
+    /// tab back. The attribute and this comment had drifted up onto
+    /// `willBeLoadedByPage`, which returns nothing, so the compiler was
+    /// complaining about the attribute being pointless there *and* about the
+    /// result going unused at both call sites here.
+    @discardableResult
     private func openInNewTab(_ url: URL, select: Bool) -> Tab? {
         guard let session else { return nil }
         let opened = session.addTab(select: select)
@@ -2639,9 +2646,9 @@ extension Tab: WKScriptMessageHandler {
         _ controller: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        let name = message.name
-        let body = message.body
         MainActor.assumeIsolated {
+            let name = message.name
+            let body = message.body
             switch name {
             case BlockBridge.handlerName:
                 recordRequests(BlockBridge.decode(body))

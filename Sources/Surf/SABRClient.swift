@@ -76,7 +76,7 @@ enum SABRClient {
             guard !videos.isEmpty, !audios.isEmpty else { return nil }
 
             let eligible = maxHeight.map { cap in videos.filter { $0.height <= cap } } ?? videos
-            var candidates = eligible.isEmpty ? videos : eligible
+            let candidates = eligible.isEmpty ? videos : eligible
 
             // Tallest wins, as it does everywhere else in this engine, and the
             // codec only breaks a tie between equals.

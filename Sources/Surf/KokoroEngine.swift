@@ -51,8 +51,19 @@ final class KokoroEngine: NarrationEngine {
     init() {
         audioEngine.attach(player)
         audioEngine.attach(timePitch)
-        audioEngine.connect(player, to: timePitch, format: format)
-        audioEngine.connect(timePitch, to: audioEngine.mainMixerNode, format: format)
+        // `connectNode` rather than `connect`: macOS 27 deprecated the silent
+        // pair in favour of variants that can say why they failed. Worth
+        // reporting rather than swallowing, because a graph that did not wire
+        // is a narrator that never says anything, and the old API gave no way
+        // to tell that apart from a voice with nothing to read.
+        do {
+            try audioEngine.connectNode(player, to: timePitch, format: format)
+            try audioEngine.connectNode(
+                timePitch, to: audioEngine.mainMixerNode, format: format
+            )
+        } catch {
+            debugLog("voice: could not wire the audio graph — \(error)")
+        }
         if ProcessInfo.processInfo.environment["SURF_SILENT"] == "1" {
             audioEngine.mainMixerNode.outputVolume = 0
         }
@@ -74,7 +85,12 @@ final class KokoroEngine: NarrationEngine {
     }
 
     func pause() { player.pause() }
-    func resume() { player.play() }
+
+    func resume() {
+        do { try player.playAudio() } catch {
+            debugLog("voice: could not resume — \(error)")
+        }
+    }
 
     func stop() {
         generation += 1
@@ -95,7 +111,10 @@ final class KokoroEngine: NarrationEngine {
             return
         }
         let generation = generation
-        Task { @MainActor in
+        // `[self]` spelled out rather than left implicit, because the
+        // completion handler further down is deliberately weak and the
+        // compiler cannot tell a considered difference from an oversight.
+        Task { @MainActor [self] in
             // In-flight prefetch of exactly this index: wait for it rather
             // than racing it with a second synthesis of the same text.
             if prefetchIndex == index, let task = prefetchTask {
@@ -127,13 +146,19 @@ final class KokoroEngine: NarrationEngine {
             }
 
             onUtteranceStart?(index)
+            // Weak, and it has to be: the player node holds this handler until
+            // the buffer finishes, the node belongs to `self`, and a strong
+            // capture here is `self` → player → handler → `self` for as long as
+            // the sentence lasts.
             player.scheduleBuffer(buffer) { [weak self] in
-                Task { @MainActor [weak self] in
+                Task { @MainActor in
                     guard let self, generation == self.generation else { return }
                     self.advance(to: index + 1)
                 }
             }
-            player.play()
+            do { try player.playAudio() } catch {
+                debugLog("voice: could not start playback — \(error)")
+            }
             prefetchNext(after: index, generation: generation)
         }
     }

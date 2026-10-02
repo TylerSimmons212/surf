@@ -20,7 +20,7 @@ enum DevToolsAgent {
     /// *different* world than the script leaves `messageHandlers.x` undefined
     /// and the agent fails completely silently.
     static let worldName = "surf.devtools"
-    static var world: WKContentWorld { .world(name: worldName) }
+    @MainActor static var world: WKContentWorld { .world(name: worldName) }
 
     /// One-way, agent → Surf.
     static let eventHandlerName = "surfDevToolsEvents"

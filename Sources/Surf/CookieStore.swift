@@ -114,7 +114,6 @@ enum CookieStore {
         case WKWebsiteDataTypeSessionStorage: "Session storage"
         case WKWebsiteDataTypeIndexedDBDatabases: "IndexedDB"
         case WKWebsiteDataTypeServiceWorkerRegistrations: "Service workers"
-        case WKWebsiteDataTypeOfflineWebApplicationCache: "App cache"
         case WKWebsiteDataTypeFetchCache: "Fetch cache"
         case WKWebsiteDataTypeWebSQLDatabases: "WebSQL"
         default: type
