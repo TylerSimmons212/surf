@@ -262,6 +262,10 @@ final class Tab: NSObject, Identifiable {
             // video players does nothing without it. Off by default in
             // WKWebView; Safari has it on.
             config.preferences.isElementFullscreenEnabled = true
+            // Repairs a standard web API rather than adding a feature: without
+            // this, every site's own Picture-in-Picture button throws, while
+            // `document.pictureInPictureEnabled` still claims otherwise.
+            NativePictureInPicture.enable(on: config.preferences)
         }
         providedConfiguration = nil
 
@@ -901,6 +905,74 @@ final class Tab: NSObject, Identifiable {
     func skipMedia(by seconds: Double) {
         Task { @MainActor in
             _ = await runInMediaFrame(.mediaSkip, ["delta": seconds], as: PageProtocol.Empty.self)
+        }
+    }
+
+    /// Whether this tab's video is in the system's Picture-in-Picture window.
+    ///
+    /// Tracked rather than asked, because the question is only answerable
+    /// through the page and every caller here is synchronous. It can drift if
+    /// somebody closes the system window by its own button — the next attempt
+    /// to enter simply re-enters, which is harmless.
+    private(set) var isInNativePictureInPicture = false
+
+    /// Puts the chosen video into macOS's Picture-in-Picture window.
+    ///
+    /// Returns whether it took, because the caller has somewhere else to go if
+    /// it didn't: Surf's own pop-out panel, which needs no private API and
+    /// works on pages where no single element is cleanly addressable.
+    @discardableResult
+    func enterNativePictureInPicture() async -> Bool {
+        guard NativePictureInPicture.isAvailable, let id = mediaElementID,
+              let webView = liveWebView
+        else { return false }
+
+        // Dispatched through the page agent's own runtime, so the element is
+        // resolved by Surf's registry — the same element the ranking chose, not
+        // whatever `querySelector('video')` happens to find first.
+        let script = """
+            return await globalThis['\(PageRuntime.handle)']
+              ?.dispatch('\(PageProtocol.Method.mediaPictureInPicture.rawValue)',
+                         { id: '\(id)', on: true })
+            """
+        _ = await NativePictureInPicture.runAsUser(
+            script, in: mediaFrame, on: webView, reading: "mode"
+        )
+
+        // Asked again, a beat later, because the answer changes after the
+        // question. `webkitPresentationMode` read straight after the call is
+        // still "inline" — which read as a refusal, so the panel opened on top
+        // of a Picture-in-Picture window that had started perfectly well.
+        try? await Task.sleep(for: .milliseconds(450))
+        let readBack = """
+            return await globalThis['\(PageRuntime.handle)']
+              ?.dispatch('\(PageProtocol.Method.mediaPictureInPicture.rawValue)', { id: '\(id)' })
+            """
+        let mode = await NativePictureInPicture.runAsUser(
+            readBack, in: mediaFrame, on: webView, reading: "mode"
+        )
+        isInNativePictureInPicture = mode == "picture-in-picture"
+        debugLog("pip: enter -> \(mode ?? "refused")")
+        return isInNativePictureInPicture
+    }
+
+    /// Brings it back inline. No gesture is needed to leave, but the same door
+    /// is used so there is only one path to maintain.
+    func exitNativePictureInPicture() {
+        guard isInNativePictureInPicture, let id = mediaElementID,
+              let webView = liveWebView
+        else { return }
+        isInNativePictureInPicture = false
+        debugLog("pip: exit")
+        let script = """
+            return await globalThis['\(PageRuntime.handle)']
+              ?.dispatch('\(PageProtocol.Method.mediaPictureInPicture.rawValue)',
+                         { id: '\(id)', on: false })
+            """
+        Task { @MainActor in
+            _ = await NativePictureInPicture.runAsUser(
+                script, in: mediaFrame, on: webView, reading: "mode"
+            )
         }
     }
 

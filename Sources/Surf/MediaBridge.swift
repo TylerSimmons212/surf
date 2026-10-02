@@ -421,6 +421,18 @@ enum MediaBridge {
           document.getElementById('__surf_stage')?.remove();
         }
 
+        // Picture-in-Picture. Omitting `on` reports the mode without setting it;
+        // the reasoning for both halves is on the Swift side.
+        runtime.define('media.pictureInPicture', ({ id, on }) => {
+          const el = mediaById(id);
+          if (!el || typeof el.webkitSetPresentationMode !== 'function') { return null; }
+          if (!el.webkitSupportsPresentationMode('picture-in-picture')) { return null; }
+          if (on !== undefined && on !== null) {
+            el.webkitSetPresentationMode(on ? 'picture-in-picture' : 'inline');
+          }
+          return { mode: el.webkitPresentationMode };
+        });
+
         runtime.define('media.stage', ({ id }) => {
           const el = mediaById(id);
           if (!el) { return null; }

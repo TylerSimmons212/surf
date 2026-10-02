@@ -51,6 +51,7 @@ public enum PageProtocol {
         case mediaLockScroll = "media.lockScroll"
         case mediaUnlockScroll = "media.unlockScroll"
         case mediaStage = "media.stage"
+        case mediaPictureInPicture = "media.pictureInPicture"
         case mediaUnstage = "media.unstage"
         case findCount = "find.count"
         case findClearSelection = "find.clearSelection"
@@ -85,7 +86,7 @@ public enum PageProtocol {
                 return .isolated
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,
-                 .mediaStage, .mediaUnstage,
+                 .mediaStage, .mediaUnstage, .mediaPictureInPicture,
                  .findCount, .findClearSelection,
                  .youtubePage, .youtubeStage, .youtubeUnstage,
                  .youtubeRate, .youtubeCaptions,

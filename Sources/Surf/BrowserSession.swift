@@ -654,7 +654,7 @@ final class BrowserSession {
         // Same courtesy as switching tabs: don't take a video off screen
         // without leaving it somewhere watchable.
         if shouldAutoPopOut(selectedTab) {
-            PopOutController.shared.popOut(selectedTab)
+            floatVideo(selectedTab)
         }
         currentIsland.rememberedSelection = selectedTabID
         currentIsland = island
@@ -1535,10 +1535,12 @@ final class BrowserSession {
         // selects a tab that deliberately has no row.
         guard let incoming = currentIsland.tabs.first(where: { $0.id == id }) else { return }
 
-        // Coming back to a popped-out tab folds it back into the window.
+        // Coming back to a floating tab folds it back into the window —
+        // either floating window.
         if PopOutController.shared.isPoppedOut(incoming) {
             PopOutController.shared.restore()
         }
+        incoming.exitNativePictureInPicture()
 
         // Leaving a tab mid-video pops it out so it stays watchable. Measured
         // before the selection changes, while the web view is still laid out.
@@ -1551,7 +1553,7 @@ final class BrowserSession {
             $0.contains(outgoing.id) && $0.contains(id)
         } ?? false
         if !outgoingStaysVisible, shouldAutoPopOut(outgoing) {
-            PopOutController.shared.popOut(outgoing)
+            floatVideo(outgoing)
         }
 
         adoptSelection(incoming)
@@ -1577,11 +1579,31 @@ final class BrowserSession {
         }
     }
 
+    /// Keeps a video watchable when its tab leaves the screen.
+    ///
+    /// macOS's own Picture-in-Picture first: it is the window people already
+    /// know, it snaps and tucks the way every other app's does, and it is the
+    /// same window a site's own button would open — so one video never has two
+    /// different floating homes depending on how it got there.
+    ///
+    /// Surf's panel is the fallback, and not a vestigial one. It needs no
+    /// private API, it carries a scrubber the system window has no room for,
+    /// and it shows the real page rather than one element, which is the only
+    /// thing that works when a player has no single addressable video.
+    private func floatVideo(_ tab: Tab) {
+        Task { @MainActor in
+            guard await tab.enterNativePictureInPicture() == false else { return }
+            PopOutController.shared.popOut(tab)
+        }
+    }
+
     private func shouldAutoPopOut(_ tab: Tab) -> Bool {
         guard MediaPreferences.autoPopOut else { return false }
         // A tab being closed is already torn down — nothing to pop out.
         guard currentIsland.tabs.contains(where: { $0.id == tab.id }) else { return false }
-        guard !PopOutController.shared.isPoppedOut(tab) else { return false }
+        guard !PopOutController.shared.isPoppedOut(tab),
+              !tab.isInNativePictureInPicture
+        else { return false }
         // Audio-only playback has no rectangle to crop to.
         guard let media = tab.media, media.isPlaying, media.hasVideo else { return false }
         // And silence is not worth floating over everything you own. A muted
