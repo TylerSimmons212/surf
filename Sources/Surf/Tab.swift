@@ -528,7 +528,7 @@ final class Tab: NSObject, Identifiable {
         if hit.mediaIsVideo, media?.hasVideo == true {
             items.append(ActionMenuItem("Pop Out Video") { [weak self] in
                 guard let self else { return }
-                PopOutController.shared.toggle(self)
+                session?.toggleFloatingVideo(self)
             })
         }
 

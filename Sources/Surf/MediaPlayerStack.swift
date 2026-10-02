@@ -313,18 +313,20 @@ struct MediaRow: View {
     @ViewBuilder
     private func popOutControl(_ media: MediaState) -> some View {
         if media.hasVideo {
+            let floating = session.isVideoFloating(tab)
             IconButton(
-                systemName: PopOutController.shared.isPoppedOut(tab)
+                systemName: floating
                     ? "arrow.down.right.and.arrow.up.left"
                     : "rectangle.on.rectangle",
                 size: 12,
                 width: 26,
                 height: 26,
                 cornerRadius: 13,
-                help: PopOutController.shared.isPoppedOut(tab) ? "Bring Back" : "Pop Out Video"
+                help: floating ? "Bring Back" : "Pop Out Video"
             ) {
-                PopOutController.shared.toggle(tab)
+                session.toggleFloatingVideo(tab)
             }
+
         }
     }
 

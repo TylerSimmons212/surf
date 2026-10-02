@@ -655,8 +655,8 @@ private struct TabRowMenu: View {
         // Pop-out stages a video element; there is nothing to float for a tab
         // that has none.
         if tab.media?.hasVideo == true {
-            Button(PopOutController.shared.isPoppedOut(tab) ? "Put Back" : "Pop Out") {
-                PopOutController.shared.toggle(tab)
+            Button(session.isVideoFloating(tab) ? "Put Back" : "Pop Out") {
+                session.toggleFloatingVideo(tab)
             }
         }
 

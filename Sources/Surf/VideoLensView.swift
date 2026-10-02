@@ -167,7 +167,7 @@ struct VideoLensView: View {
                     Task { @MainActor in
                         tab.exitVideoStage()
                         try? await Task.sleep(for: .milliseconds(200))
-                        PopOutController.shared.popOut(tab)
+                        tab.session?.floatVideo(tab)
                     }
                 }
             }

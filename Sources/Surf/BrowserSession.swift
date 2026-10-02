@@ -600,7 +600,7 @@ final class BrowserSession {
         island.rememberedSelection = island.tabs.first?.id
 
         for tab in outgoing {
-            if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+            unfloatVideo(tab)
             DevToolsController.shared.close(for: tab)
             tab.teardown()
         }
@@ -672,10 +672,8 @@ final class BrowserSession {
         }
 
         // Arriving at a tab that's floating in its own window folds it back in,
-        // exactly as selecting it from the list would.
-        if PopOutController.shared.isPoppedOut(target) {
-            PopOutController.shared.restore()
-        }
+        // exactly as selecting it from the list would — either window.
+        unfloatVideo(target)
 
         adoptSelection(target)
         scheduleSave()
@@ -772,7 +770,7 @@ final class BrowserSession {
         }
 
         for tab in island.tabs {
-            if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+            unfloatVideo(tab)
             DevToolsController.shared.close(for: tab)
             tab.teardown()
         }
@@ -1037,11 +1035,9 @@ final class BrowserSession {
     func close(_ tab: Tab) {
         guard let island = island(holding: tab), let index = island.index(of: tab) else { return }
 
-        // A popped-out tab still owns its panel; tearing it down first would
-        // leave a floating window with a dead web view inside.
-        if PopOutController.shared.isPoppedOut(tab) {
-            PopOutController.shared.restore()
-        }
+        // A floating tab still owns its window; tearing it down first would
+        // leave one showing a dead web view.
+        unfloatVideo(tab)
 
         // Before teardown, or the panel would be left showing a dead page.
         DevToolsController.shared.close(for: tab)
@@ -1535,12 +1531,8 @@ final class BrowserSession {
         // selects a tab that deliberately has no row.
         guard let incoming = currentIsland.tabs.first(where: { $0.id == id }) else { return }
 
-        // Coming back to a floating tab folds it back into the window —
-        // either floating window.
-        if PopOutController.shared.isPoppedOut(incoming) {
-            PopOutController.shared.restore()
-        }
-        incoming.exitNativePictureInPicture()
+        // Coming back to a floating tab folds it back in, from either window.
+        unfloatVideo(incoming)
 
         // Leaving a tab mid-video pops it out so it stays watchable. Measured
         // before the selection changes, while the web view is still laid out.
@@ -1590,7 +1582,27 @@ final class BrowserSession {
     /// private API, it carries a scrubber the system window has no room for,
     /// and it shows the real page rather than one element, which is the only
     /// thing that works when a player has no single addressable video.
-    private func floatVideo(_ tab: Tab) {
+    /// Whether this tab's video is floating anywhere — the system's window or
+    /// Surf's panel. Callers that only want to offer the opposite verb should
+    /// ask this rather than either one.
+    func isVideoFloating(_ tab: Tab) -> Bool {
+        PopOutController.shared.isPoppedOut(tab) || tab.isInNativePictureInPicture
+    }
+
+    /// Puts it back, from wherever it went.
+    func unfloatVideo(_ tab: Tab) {
+        if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+        tab.exitNativePictureInPicture()
+    }
+
+    /// What every explicit control does, so the button in the media row, the
+    /// tab's context menu and the video lens cannot disagree about which
+    /// window a video floats into.
+    func toggleFloatingVideo(_ tab: Tab) {
+        isVideoFloating(tab) ? unfloatVideo(tab) : floatVideo(tab)
+    }
+
+    func floatVideo(_ tab: Tab) {
         Task { @MainActor in
             guard await tab.enterNativePictureInPicture() == false else { return }
             PopOutController.shared.popOut(tab)
