@@ -46,6 +46,22 @@ enum StreamTap {
         /// never defeated: it is here so a protected stream is refused before
         /// anything is fetched rather than producing an unplayable file.
         var isProtected = false
+        /// One streaming request the page made, kept whole.
+        var abr: ABRRequest?
+    }
+
+    /// A `videoplayback` POST the player made, which on YouTube is the only
+    /// route to its media: nothing is served by URL any more.
+    ///
+    /// Base64 because the bridge carries JSON. A couple of kilobytes, once per
+    /// page, so the encoding costs nothing worth measuring — unlike the media
+    /// itself, which is why that is fetched natively and never crosses here.
+    struct ABRRequest: Decodable {
+        var url: String
+        var body: String
+
+        /// The request as it was sent.
+        var bytes: Data? { Data(base64Encoded: body) }
     }
 
     /// Resident, page world, every frame.
@@ -72,6 +88,7 @@ enum StreamTap {
           const manifests = [];
           const codecs = [];
           let encrypted = false;
+          let abr = null;
 
           // Extension on the path, not anywhere in the string: a signed segment
           // URL routinely carries a policy with dots in it, and matching the
@@ -102,7 +119,8 @@ enum StreamTap {
           runtime.define('stream.tap', () => ({
             manifests: manifests.slice(),
             codecs: codecs.slice(),
-            isProtected: encrypted
+            isProtected: encrypted,
+            abr: abr
           }));
 
           // Every request the document made, including the ones a <video>
@@ -149,6 +167,65 @@ enum StreamTap {
           try {
             document.addEventListener('encrypted', () => { encrypted = true; }, true);
           } catch (error) { /* no document to listen on */ }
+
+          // One streaming request, kept whole.
+          //
+          // The only place this file wraps anything, and the only request whose
+          // *contents* matter: YouTube serves nothing by URL any more, so the
+          // bytes the player posts are the only route to its own media. Gated to
+          // YouTube because that is the only site this protocol exists on, which
+          // keeps the no-wrapping property everywhere else — this script runs in
+          // every frame of every page and a global fetch wrapper is both a cost
+          // and a surface.
+          // Suffix checks rather than a regular expression: a backslash inside a
+          // Swift multi-line literal is an escape before it is ever JavaScript,
+          // and the pattern needed for this is nothing but backslashes.
+          const host = location.hostname || '';
+          const endsWith = (suffix) => host === suffix || host.endsWith('.' + suffix);
+          const isYouTube = endsWith('youtube.com') || endsWith('youtube-nocookie.com');
+          if (isYouTube) {
+            try {
+              const native = window.fetch;
+              window.fetch = function (input, init) {
+                try {
+                  const asRequest = (input && typeof input === 'object'
+                    && typeof input.clone === 'function' && input.url) ? input : null;
+                  const url = asRequest ? asRequest.url : String(input);
+                  if (!abr && url.indexOf('videoplayback') !== -1) {
+                    const method = String((init && init.method)
+                      || (asRequest && asRequest.method) || 'GET').toUpperCase();
+                    if (method === 'POST') {
+                      const take = (bytes) => {
+                        if (abr || !bytes || !bytes.length) { return; }
+                        let text = '';
+                        for (let i = 0; i < bytes.length; i++) {
+                          text += String.fromCharCode(bytes[i]);
+                        }
+                        abr = { url: url, body: btoa(text) };
+                      };
+                      if (init && init.body) {
+                        const body = init.body;
+                        if (body instanceof Uint8Array) { take(body); }
+                        else if (body instanceof ArrayBuffer) { take(new Uint8Array(body)); }
+                        else if (ArrayBuffer.isView(body)) {
+                          take(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+                        }
+                      } else if (asRequest) {
+                        // Cloned, never read directly. The body is a stream and
+                        // reading it consumes it, so taking the original would
+                        // leave the player's own request arriving empty — the tap
+                        // breaking the playback it exists to observe.
+                        asRequest.clone().arrayBuffer()
+                          .then((buffer) => { take(new Uint8Array(buffer)); })
+                          .catch(() => { /* gone before we could read it */ });
+                      }
+                    }
+                  }
+                } catch (error) { /* never break a page to watch it */ }
+                return native.apply(this, arguments);
+              };
+            } catch (error) { /* fetch is not replaceable here */ }
+          }
         })();
         """
     }

@@ -180,6 +180,44 @@ final class SegmentFetcher: Sendable {
         )
     }
 
+    /// One POST, for a protocol that asks rather than addresses.
+    ///
+    /// Separate from `fetch` because everything else here is a ranged GET of a
+    /// segment whose URL says what it is. YouTube's streaming endpoint is the
+    /// opposite: one URL, and what you get depends entirely on the body you send.
+    ///
+    /// Carries the same credentials as everything else — the tab's cookies
+    /// matched per request, its referrer, its user agent — because the signed URL
+    /// alone is not what makes the server answer.
+    func post(_ body: Data, to url: URL) async -> Data? {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        if let referer = credentials.referer {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        if let userAgent = credentials.userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        let cookies = CookieMatching.cookies(
+            for: url.absoluteString, from: credentials.cookies
+        )
+        if !cookies.isEmpty {
+            request.setValue(CookieMatching.header(for: cookies), forHTTPHeaderField: "Cookie")
+        }
+
+        guard let (data, response) = try? await session.data(for: request) else { return nil }
+        guard let http = response as? HTTPURLResponse else { return data }
+        guard (200..<300).contains(http.statusCode) else {
+            // 403 here is the one worth recognising: it is what a request with no
+            // proof-of-origin token gets, and it arrives with an empty body so
+            // there is no error part inside to read.
+            debugLog("sabr: POST refused — HTTP \(http.statusCode), \(data.count) bytes")
+            return nil
+        }
+        return data
+    }
+
     /// A whole manifest, as text.
     func text(at url: URL) async -> String? {
         guard case .success(let data) = await fetch(StreamSegment(url: url)) else { return nil }

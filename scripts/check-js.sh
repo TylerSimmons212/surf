@@ -310,11 +310,23 @@ check_size block.js              30000
 # staging, ancestor neutralisation, and lights-out all have to run where the
 # element lives, which is here.
 check_size media.js              16000
-# Every frame of every page, at document start, which is why it is this small.
-# It installs one PerformanceObserver and two one-line wrappers, records URLs,
-# and reads no bodies. Growth here is paid on every page load including ad
-# iframes, so a rise wants a reason.
-check_size stream.js              4000
+# Every frame of every page, at document start. Growth here is paid on every page
+# load including ad iframes, so a rise wants a reason.
+#
+# Raised from 4000 when the tap learned to keep one streaming request. YouTube
+# serves no media by URL any more — every format in a player response arrives
+# with no url and no cipher — so the bytes its player posts are the only route to
+# its own media, and that is a body rather than an address. It is the one request
+# in the file whose contents matter and the only thing here that wraps anything.
+#
+# Most of the rise is the wrapper and the comment explaining why the request must
+# be cloned before it is read: the body is a stream, reading consumes it, and
+# consuming it would leave the player's own request arriving empty. That is a
+# mistake worth paying several hundred bytes to stop someone making again.
+#
+# The wrapper is gated to YouTube, so every other page in the world still gets a
+# tap that wraps nothing.
+check_size stream.js              7000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000
