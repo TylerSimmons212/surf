@@ -20,7 +20,7 @@ swift test --filter <TypeName>Tests
 SURF_URL=<url> swift run     # open straight to a page; enables [surf] stderr logs
 ```
 
-Other launch drivers: `SURF_FOCUS=1|2`, `SURF_SILENT=1`, `SURF_DEVTOOLS=<pane>`, `SURF_DOWNLOAD=1|2` (with `SURF_DOWNLOAD_PICK=<height>` to take one row of the quality menu), `SURF_DUMP_SCRIPTS=<dir>` (defined in `Sources/Surf/ContentView.swift`), and `SURF_STATE_DIR=<dir>` to keep a run out of your real Application Support (`SupportDirectory` in SurfCore).
+Other launch drivers: `SURF_FOCUS=1|2`, `SURF_SILENT=1`, `SURF_DEVTOOLS=<pane>` (with `SURF_CONSOLE=<lines>` to type at the prompt), `SURF_DOWNLOAD=1|2` (with `SURF_DOWNLOAD_PICK=<height>` to take one row of the quality menu), `SURF_DUMP_SCRIPTS=<dir>` (defined in `Sources/Surf/ContentView.swift`), and `SURF_STATE_DIR=<dir>` to keep a run out of your real Application Support (`SupportDirectory` in SurfCore).
 
 ## The contract the compiler can't see
 

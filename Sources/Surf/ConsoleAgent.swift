@@ -506,6 +506,71 @@ enum ConsoleAgent {
 
       // ---- Evaluation and expansion ---------------------------------------
 
+      /// A Trusted Types policy, made once and only when something needs one.
+      ///
+      /// A document sending `require-trusted-types-for 'script'` refuses a bare
+      /// string at every code sink, and the prompt is a code sink — so on
+      /// YouTube, typing anything answered "Refused to evaluate a string as
+      /// JavaScript" and the console was useless on exactly the sites worth
+      /// debugging. A policy is the mechanism the spec provides for code that
+      /// means it: `createScript` hands back a `TrustedScript` that `eval`
+      /// accepts.
+      ///
+      /// Lazy, and cached either way. `createPolicy` throws on a duplicate
+      /// name, so it can only be called once; and a page whose `trusted-types`
+      /// directive does not list us will refuse every time, so the failure is
+      /// remembered too rather than adding a fresh violation to every line
+      /// someone types.
+      ///
+      /// Lazy also because a policy is observable — it shows up in
+      /// `trustedTypes.getPolicyNames()`. Registering one on every page would
+      /// leave a mark on pages where nobody ever opened the console.
+      let trustedPolicy;
+      function __surfTrustedPolicy() {
+        if (trustedPolicy !== undefined) { return trustedPolicy; }
+        trustedPolicy = null;
+        try {
+          if (window.trustedTypes && window.trustedTypes.createPolicy) {
+            trustedPolicy = window.trustedTypes.createPolicy('surf-console', {
+              createScript: function (source) { return source; }
+            });
+          }
+        } catch (e) {}
+        return trustedPolicy;
+      }
+
+      /// Whether a bare string has already been refused on this document.
+      ///
+      /// Remembered so the plain attempt happens once rather than once per
+      /// line. Provoking the policy raises a `securitypolicyviolation`, our own
+      /// listener above reports it, and a command that then succeeded would
+      /// carry a red CSP error next to its answer — every time. Once is true
+      /// and worth saying: a sink really was blocked, and the person is now
+      /// told the page works this way. Every time after that is noise.
+      let bareEvalRefused = false;
+
+      /// Evaluates in global scope, through a policy if this document demands
+      /// one. Throws what the page threw.
+      function __surfRunSource(src) {
+        if (!bareEvalRefused) {
+          try {
+            return (0, eval)(src);
+          } catch (e) {
+            // A refusal arrives as an `EvalError`, which is otherwise close to
+            // extinct in modern JavaScript. The name rather than the message,
+            // because the wording belongs to the engine.
+            if (!e || e.name !== 'EvalError' || !__surfTrustedPolicy()) { throw e; }
+            bareEvalRefused = true;
+          }
+        }
+        const policy = __surfTrustedPolicy();
+        if (!policy) { return (0, eval)(src); }
+        // Still an indirect eval, so global scope survives: `var x = 1` typed
+        // on one line is there on the next. A function body injected from
+        // outside the page would have run, and would have lost that.
+        return (0, eval)(policy.createScript(src));
+      }
+
       /// Runs what someone typed at the prompt.
       ///
       /// An *indirect* eval — `(0, eval)` rather than `eval` — so the code runs
@@ -519,7 +584,7 @@ enum ConsoleAgent {
 
         let value;
         try {
-          value = (0, eval)(src);
+          value = __surfRunSource(src);
         } catch (e) {
           return ({ thrown: true, value: describe(e, false) });
         }

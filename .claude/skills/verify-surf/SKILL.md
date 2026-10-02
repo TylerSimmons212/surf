@@ -57,6 +57,7 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_FOCUS=1` | enter Focus once the page settles; `2` also starts narration |
 | `SURF_SILENT=1` | mute narration (launch.sh sets this by default) |
 | `SURF_DEVTOOLS=<pane>` | open dev tools on `elements/styles/network/storage/tags/performance/console` |
+| `SURF_CONSOLE=<lines>` | type these at the console prompt, newline-separated, and log each answer |
 | `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
 | `SURF_DOWNLOAD=2` | and press retry once if it fails, after a 10s pause |
 | `SURF_DOWNLOAD_PICK=<height>` | take that row from the quality menu; `=audio` for sound alone |

@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- The whole point of this fixture. `require-trusted-types-for 'script'`
+     makes every string-to-code sink in the document throw, which is what
+     YouTube, GitHub and an increasing number of large sites ship. The dev
+     tools console evaluates what you type, so the prompt is a sink. -->
+<meta http-equiv="Content-Security-Policy" content="require-trusted-types-for 'script'">
+<title>Trusted Types</title>
+<style>
+  body { font: 16px/1.5 -apple-system, system-ui, sans-serif; margin: 3rem auto; max-width: 34rem; }
+  code { background: #f1f1f4; padding: 0.1em 0.35em; border-radius: 4px; }
+  #out { font-family: ui-monospace, monospace; }
+</style>
+</head>
+<body>
+<h1>Trusted Types</h1>
+<p>This document sends
+<code>Content-Security-Policy: require-trusted-types-for 'script'</code>,
+so any string passed to a code sink throws.</p>
+<p id="out">marker: not set</p>
+<script>
+  // Something real for the console to read, so a working prompt has a visible
+  // answer and a blocked one cannot be mistaken for an empty page.
+  window.surfFixture = { answer: 42, where: 'trusted-types' };
+  document.getElementById('out').textContent = 'marker: ready';
+
+  // Proof the page itself is under the policy, independent of anything Surf
+  // does. If this does not throw, the fixture is not testing what it claims.
+  try {
+    (0, eval)('1 + 1');
+    console.log('fixture: eval was allowed — the policy is NOT in force');
+  } catch (e) {
+    console.log('fixture: eval blocked as expected (' + e.name + ')');
+  }
+</script>
+</body>
+</html>
