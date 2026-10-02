@@ -56,6 +56,23 @@ struct StorageModelTests {
         #expect(Set([a.id, b.id, c.id]).count == 3)
     }
 
+    /// The batched delete can't hold a `StorageCookie` for each candidate it is
+    /// matching — it has WebKit's own `HTTPCookie` objects — so it builds the
+    /// key from the three fields instead. If that formula and `id` ever drift
+    /// apart, the set lookup matches nothing and signing out of a site quietly
+    /// succeeds at doing nothing.
+    @Test("The standalone key agrees with the one on the cookie")
+    func identityMatchesID() {
+        let cookie = StorageCookie(name: "id", value: "1", domain: "example.com", path: "/admin")
+
+        #expect(
+            StorageCookie.identity(domain: "example.com", path: "/admin", name: "id") == cookie.id
+        )
+        #expect(
+            StorageCookie.identity(domain: "example.com", path: "/", name: "id") != cookie.id
+        )
+    }
+
     @Test("A cookie's size counts both halves")
     func cookieSize() {
         #expect(cookie(value: "abcd").size == "session".utf8.count + 4)

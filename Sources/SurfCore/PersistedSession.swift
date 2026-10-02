@@ -42,6 +42,20 @@ public struct PersistedTab: Codable, Equatable, Sendable {
         guard let url, !url.isEmpty else { return false }
         return true
     }
+
+    /// What a menu row calls this tab.
+    ///
+    /// The closed-tab buffer is the one place a `PersistedTab` is shown to
+    /// somebody, and its title can be empty — closed before one arrived, or
+    /// redacted along with the history it was saved with. A blank row is one
+    /// nobody can read or aim at, so it degrades the way `Tab.displayTitle`
+    /// does: the title, then the host, then whatever address there is.
+    public var rowTitle: String {
+        if !title.isEmpty { return title }
+        guard let url, !url.isEmpty else { return "Untitled" }
+        if let host = URL(string: url)?.host, !host.isEmpty { return host }
+        return url
+    }
 }
 
 public struct PersistedSession: Codable, Equatable, Sendable {

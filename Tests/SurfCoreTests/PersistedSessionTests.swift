@@ -81,4 +81,35 @@ struct PersistedSessionTests {
         let url = URL(fileURLWithPath: "/nonexistent/surf/session.json")
         #expect(SessionFile.load(from: url) == nil)
     }
+
+    // MARK: - What a closed tab is called
+
+    /// The closed-tab buffer is the one place a `PersistedTab` is shown to
+    /// somebody — the island menu lists it — and a row with no text is a row
+    /// nobody can read or aim at.
+    @Test("A closed tab's row prefers its title")
+    func rowTitlePrefersTitle() {
+        let tab = PersistedTab(url: "https://github.com/a/b", title: "Pull #1482")
+        #expect(tab.rowTitle == "Pull #1482")
+    }
+
+    @Test("With no title, a closed tab's row falls back to the host")
+    func rowTitleFallsBackToHost() {
+        let tab = PersistedTab(url: "https://github.com/a/b", title: "")
+        #expect(tab.rowTitle == "github.com")
+    }
+
+    /// A title can be missing because history was redacted along with it, and
+    /// an address with no host still beats an empty row.
+    @Test("With no host, a closed tab's row falls back to the address")
+    func rowTitleFallsBackToAddress() {
+        let tab = PersistedTab(url: "about:blank", title: "")
+        #expect(tab.rowTitle == "about:blank")
+    }
+
+    @Test("With nothing at all, a closed tab's row is still readable")
+    func rowTitleNeverBlank() {
+        #expect(PersistedTab(url: nil, title: "").rowTitle == "Untitled")
+        #expect(PersistedTab(url: "", title: "").rowTitle == "Untitled")
+    }
 }

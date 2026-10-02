@@ -111,6 +111,17 @@ public enum IslandLayout {
         }
     }
 
+    /// What an island shares, in one clause.
+    ///
+    /// The whole point of the line: an island that shares a cookie jar has to
+    /// be able to say *whose*, or the only place that answer ever existed was a
+    /// sheet somebody saw once while making it. It stays one clause because the
+    /// long version belongs in the sign-out confirmation, where it is
+    /// load-bearing, rather than in a header nobody reads twice.
+    public static func sharingLine(with names: [String]) -> String {
+        names.isEmpty ? "Signed in on its own" : "Shares logins with \(nameList(names))"
+    }
+
     /// The index to select after deleting the island at `deletedIndex`.
     /// Returns nil when nothing is left — which callers must refuse, since
     /// there is always at least one island.
