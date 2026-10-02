@@ -54,8 +54,15 @@ over to the other. Load progress is drawn around the
 window's edge as two crests leaving twelve o'clock in opposite directions and
 meeting at six. Nothing is drawn for a load that finishes inside 120 ms, which
 covers most cached pages, so the border only appears when there's something to
-wait for. A successful load ends in a wash of foam where the crests meet. A
-failed one fades from wherever it stopped.
+wait for. A successful load ends in a wash of foam where the crests meet, and
+the page ripples outward from that point as though it were water: a snapshot of
+the page, bent by a Metal shader for under a second and faded back to the live
+page. A failed one fades from wherever it stopped. The ripple and the sticker
+peel are ports of Canvas UI's WebGL effects, which can't run as they are: they
+capture HTML into a canvas with Chrome's HTML-in-Canvas API, which WebKit
+doesn't have, and the chrome they would bend here isn't HTML. Their shader maths
+carries over; the shaders are compiled from source at runtime, since
+`swift build` doesn't compile `.metal` files.
 
 A tab that's playing media shows a now-playing strip at the bottom of the
 sidebar, with play/pause and a button to pop video out into a floating
@@ -84,20 +91,50 @@ that combining is the only step that isn't plain concatenation: an
 initialisation segment followed by its media segments already *is* a file
 AVFoundation reads.
 
-Measured on Apple's 4K reference stream: 295MB at 25.6 MB/s, and the muxing
-itself takes 77 milliseconds.
+How many requests run at once is found rather than chosen. A fixed number is
+wrong both ways: four is slower than it needs to be on a fast link, and eight is
+how a CDN decides one address is leeching. So it climbs one at a time, keeps a
+rise only when it earned a clear margin, halves on a 429, and stops climbing for
+good once either has happened.
 
-Everything else — a `blob:` source from Media Source Extensions, a transport
-stream, a fetchable AES-128 key, a live stream with no end, a manifest Surf
-could not parse — is handed to yt-dlp without a word to anyone, because a
-download that succeeds by another route is not an error. Only the cookies for
+A large plain file is split into byte ranges and fetched the same way, because one
+connection is the slowest way to move one. Only when the server will serve ranges
+and the file is worth the extra requests; otherwise WebKit keeps it, as it always
+did.
+
+Measured on Apple's 4K reference stream, 295MB: 25.6 MB/s at a fixed four
+connections, 28.0 MB/s when allowed to find its own number, and 77 milliseconds
+to mux the result. On a 114MB plain file: 4.58s on one connection, 2.74s split
+eight ways, and the two results hash identically.
+
+A `blob:` source is the same thing arrived at differently. Media Source
+Extensions means the page assembled the stream in its own buffer, so the element
+has no URL to give — but what the page *fetched* to fill that buffer is a
+different question, and Surf has been recording the answer since the document
+started. It records only URLs, from Resource Timing, which already sees every
+request a document made including the ones a `<video>` element issued for itself.
+Nothing is wrapped to collect them and no response is read: the manifest is
+re-fetched properly afterwards, with cookies a script could not have seen.
+
+Everything else — a transport stream, a fetchable AES-128 key, a live stream with
+no end, a manifest Surf could not parse, a page that assembled its video from
+something we never saw it fetch — is handed to yt-dlp without a word to anyone,
+because a download that succeeds by another route is not an error. Only the cookies for
 the site being downloaded from are handed over, in a temp file deleted when the
 run ends.
 
 Protected video is the one refusal. Widevine and FairPlay encrypt the samples
 before they reach the decoder and there is no key to ask for, so it is refused
 immediately and said so, rather than handed to a subprocess that will fail
-slower and more obscurely.
+slower and more obscurely. A page asking for a key system at all is enough —
+noticed, not defeated — and that is checked before a manifest is even fetched.
+
+A download that stops partway keeps what it got. Retrying carries on from the
+segment it reached rather than starting again, and a file resumed that way is
+byte-for-byte one fetched in a single pass. This is the one failure Surf does not
+hand to yt-dlp: the subprocess would begin from nothing, and the bytes already on
+disk are worth more than another engine's fresh start. It lasts for the session,
+like the downloads list itself.
 
 A finished file is checked against what the page said it was before it is
 allowed into `~/Downloads`. A video download that came back with only audio, or
@@ -1128,6 +1165,12 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/SurfCore/SegmentSchedule.swift` — a cursor rather than a worklist, so
   the buffer is bounded, the output is an in-order append, and resuming is seeding
   what is already done
+- `Sources/SurfCore/Parallelism.swift` — how many connections to use, found by
+  climbing slowly and giving ground fast
+- `Sources/SurfCore/ByteRanges.swift` — where to cut a plain file so it can be
+  fetched like a segmented one
+- `Sources/SurfCore/StreamProgress.swift` — how far a download got, and whether
+  that describes the work in front of it
 - `Sources/SurfCore/SavedMedia.swift` — whether the finished file is the file that
   was asked for
 - `Sources/Surf/SegmentFetcher.swift` — the tab's own session behind each request
@@ -1136,6 +1179,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/StreamDownload.swift` — one download start to finish; decides
   nothing itself
 - `Sources/Surf/MediaInspector.swift` — the four facts `SavedMedia` judges
+- `Sources/Surf/StreamTap.swift` — what a page fetched to play what it is
+  playing, which is the only way to reach a `blob:` source
 - `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
 - `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
@@ -1207,15 +1252,12 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
-- Watching a page for the manifest behind a `blob:` source. DASH is parsed,
-  planned and tested against five real manifests, and is unreachable: WebKit
-  cannot play it, so the element never reports and `tab.media` stays nil. Real
-  DASH sites play through dash.js or Shaka, which means Media Source Extensions
-  and a source with no URL in it, so the manifest has to be found from what the
-  page fetched rather than from what the element says it is playing.
-  `testpages/dash-native.html` is the regression test: today it logs `download:
-  nothing playing to save`, and it should one day log a plan. The same tap is
-  what would let a stream in a cross-origin iframe be saved at all.
+- Saving a stream playing inside a cross-origin iframe. The tap is injected into
+  every frame and records what each one fetched, so the facts exist — but the
+  download is started from `tab.media`, which is chosen across frames by
+  `MediaRanking` and then addressed through `mediaFrame`. Whether that reaches an
+  embedded player has not been tested, and claiming it does without a fixture
+  would be a guess.
 - Registering as a browser, so links from other apps arrive — and land in a
   mini window, which is the case that feature exists for
 - A back/forward menu on long-press

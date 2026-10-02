@@ -86,6 +86,19 @@ final class DownloadItem: Identifiable {
     /// `extraction` for the same reason those two are with each other.
     @ObservationIgnored var stream: StreamDownload?
 
+    /// The manifests a stream download was started from, kept so a retry can go
+    /// back through the same engine.
+    ///
+    /// Without this a failed stream item fell through to the WebKit branch of
+    /// `retry` with the manifest URL as its source, and saved the playlist as a
+    /// video — the exact bug the content-type reroute exists to prevent, arriving
+    /// by a route that bypasses it.
+    @ObservationIgnored var manifests: [URL] = []
+
+    /// A failed attempt's scratch directory, when it left partial output behind.
+    /// A retry continues in it instead of starting the transfer again.
+    @ObservationIgnored var resumeDirectory: URL?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
@@ -172,6 +185,14 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func remove(_ item: DownloadItem) {
         if item.isActive { cancel(item) }
+        // A partial transfer the user has dismissed is garbage, and /var/folders
+        // is only swept by the system eventually. `retry` clears this first,
+        // precisely so the directory it is about to resume from survives being
+        // removed from the list.
+        if let resuming = item.resumeDirectory {
+            try? FileManager.default.removeItem(at: resuming)
+            item.resumeDirectory = nil
+        }
         items.removeAll { $0 === item }
         itemsByTab = itemsByTab.filter { $0.value !== item }
     }
@@ -182,6 +203,30 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func retry(_ item: DownloadItem, in tab: Tab?) {
+        // A stream download goes back through the stream engine, and continues in
+        // the directory the last attempt left if it left one. Checked before the
+        // extraction branch because a stream item that fell through to the WebKit
+        // branch below would be handed its manifest URL as a plain file and save
+        // the playlist.
+        if !item.manifests.isEmpty {
+            let manifests = item.manifests
+            let pageURL = item.pageURL
+            let expectation = item.expectation
+            let resuming = item.resumeDirectory
+            let title = (item.filename as NSString).deletingPathExtension
+            // Cleared before `remove`, which deletes it otherwise — the whole
+            // point of this branch is to keep the directory the next attempt
+            // continues in. Written the other way round first, and the comment in
+            // `remove` claiming it had been handled is what caught it.
+            item.resumeDirectory = nil
+            remove(item)
+            startStreamDownload(
+                from: manifests, page: pageURL, title: title, tab: tab,
+                expecting: expectation, resuming: resuming
+            )
+            return
+        }
+
         // An extracted download's input was the page, and re-running yt-dlp
         // against it needs none of the web view's help.
         if item.isExtracted, let pageURL = item.pageURL {
@@ -265,7 +310,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             // of the stream rather than a site to be reverse engineered.
             guard let manifestURL = URL(string: media.sourceURL) else { return }
             startStreamDownload(
-                from: manifestURL, page: tab.webView.url,
+                from: [manifestURL], page: tab.webView.url,
                 title: media.title, tab: tab,
                 expecting: SavedMedia.Expectation(
                     wantsVideo: media.hasVideo,
@@ -275,20 +320,54 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         case .streamed:
             // A `blob:` source is Media Source Extensions: the page assembled the
-            // stream in its own buffer and there is no URL to read. Finding the
-            // manifest behind one needs the page watched rather than asked, which
-            // is a later stage; until then this is yt-dlp's.
+            // stream in its own buffer, so the element has no URL to give. What
+            // the page *fetched* to fill that buffer is a different question, and
+            // the tap has been recording the answer since document start.
             guard let pageURL = tab.webView.url else { return }
-            startExtraction(
-                from: pageURL, title: media.title, tab: tab,
-                // Taken from the page while the video is still playing in it.
-                // This is the only description of what we are saving that does
-                // not come from the thing doing the saving.
-                expecting: SavedMedia.Expectation(
-                    wantsVideo: media.hasVideo,
-                    declaredDuration: media.duration > 0 ? media.duration : nil
-                )
+            let expectation = SavedMedia.Expectation(
+                wantsVideo: media.hasVideo,
+                declaredDuration: media.duration > 0 ? media.duration : nil
             )
+            Task { @MainActor in
+                let seen = await tab.streamTap()
+
+                // Refused before anything is fetched, and refused here rather
+                // than handed on: the subprocess will also fail, slower and with
+                // a worse message, and the page has already told us why.
+                if seen?.isProtected == true {
+                    debugLog("download: a key system was requested; refusing")
+                    let item = DownloadItem(filename: self.sanitize(media.title) + ".mp4")
+                    item.host = pageURL.host
+                    item.pageURL = pageURL
+                    item.tab = tab
+                    item.state = .failed(StreamRefusal.protected.message)
+                    self.items.insert(item, at: 0)
+                    self.itemsByTab[tab.id] = item
+                    self.releaseTabBinding(for: item, after: .seconds(6))
+                    return
+                }
+
+                let candidates = (seen?.manifests ?? []).compactMap { URL(string: $0) }
+                if !candidates.isEmpty {
+                    debugLog("download: tap found \(candidates.count) manifest(s)"
+                        + (seen?.codecs.isEmpty == false
+                            ? ", codecs \(seen?.codecs.joined(separator: " ") ?? "")" : ""))
+                    self.startStreamDownload(
+                        from: candidates, page: pageURL,
+                        title: media.title, tab: tab, expecting: expectation
+                    )
+                    return
+                }
+
+                // The page assembled this from something we never saw it fetch —
+                // a custom protocol, a worker, or a request made before the tap
+                // was armed. yt-dlp knows sites; we only know what we watched.
+                debugLog("download: nothing in the tap; handing over")
+                self.startExtraction(
+                    from: pageURL, title: media.title, tab: tab, expecting: expectation
+                )
+            }
+
         case .none, .unsupported:
             return
         }
@@ -309,6 +388,68 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         items.insert(item, at: 0)
         itemsByTab[tab.id] = item
 
+        // A large file that the server will serve in pieces is fetched in pieces,
+        // because one connection is the slowest way to move one. Everything else
+        // stays with WebKit, which is where this has always been and which
+        // inherits the session rather than replaying it.
+        Task { @MainActor in
+            if await self.splitIfWorthwhile(item, url: url, tab: tab) { return }
+            self.handToWebKit(item, url: url, tab: tab)
+        }
+    }
+
+    /// Fetches a plain file in parallel, or answers false and leaves it alone.
+    ///
+    /// Every doubt resolves to false. The probe inside `startProgressive` runs
+    /// through the same session and URL the parallel fetch would use, so it
+    /// answering at all is the evidence that taking the download away from WebKit
+    /// is safe — a file behind a session we cannot replay fails the probe and
+    /// never leaves the path it works on.
+    private func splitIfWorthwhile(
+        _ item: DownloadItem, url: URL, tab: Tab
+    ) async -> Bool {
+        let download = StreamDownload(
+            onDetail: { [weak item] detail in
+                guard let item, item.isActive else { return }
+                item.detail = detail
+            },
+            onProgress: { [weak item] fraction, bytes in
+                guard let item, item.isActive else { return }
+                item.fraction = max(item.fraction, min(fraction, 0.95))
+                item.bytesWritten = Int64(bytes)
+            }
+        )
+        item.stream = download
+
+        let result = await download.startProgressive(
+            url: url, pageURL: tab.webView.url,
+            title: (item.filename as NSString).deletingPathExtension, tab: tab
+        )
+        item.stream = nil
+        item.detail = nil
+
+        guard item.isActive else {
+            download.cleanUp()
+            return true
+        }
+
+        switch result {
+        case .success(let produced):
+            await accept(item, produced: produced.url, expecting: produced.expectation)
+            download.cleanUp()
+            return true
+        case .failure:
+            // Not reported anywhere. This is not an error, it is the ordinary
+            // answer for a small file or a server that will not serve ranges, and
+            // the download is about to happen the way it always did.
+            download.cleanUp()
+            item.fraction = 0
+            item.bytesWritten = 0
+            return false
+        }
+    }
+
+    private func handToWebKit(_ item: DownloadItem, url: URL, tab: Tab) {
         var request = URLRequest(url: url)
         // Some CDNs reject media requests that arrive without the page referrer.
         if let pageURL = tab.webView.url {
@@ -330,23 +471,28 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// was half one engine and half the other would have two progress models and
     /// no honest way to describe itself in a row ten points tall.
     func startStreamDownload(
-        from manifestURL: URL,
+        from manifests: [URL],
         page pageURL: URL?,
         title: String,
         tab: Tab?,
-        expecting expectation: SavedMedia.Expectation?
+        expecting expectation: SavedMedia.Expectation?,
+        resuming: URL? = nil
     ) {
-        let placeholder = sanitize(title.isEmpty ? (manifestURL.host ?? "video") : title)
+        guard let first = manifests.first else { return }
+        let placeholder = sanitize(title.isEmpty ? (first.host ?? "video") : title)
         let item = DownloadItem(filename: placeholder + ".mp4")
-        item.sourceURL = manifestURL
-        item.host = pageURL?.host ?? manifestURL.host
+        item.sourceURL = first
+        item.host = pageURL?.host ?? first.host
         item.pageURL = pageURL
         item.tab = tab
         item.expectation = expectation
+        item.manifests = manifests
+        item.resumeDirectory = resuming
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
 
         let download = StreamDownload(
+            resuming: resuming,
             onDetail: { [weak item] detail in
                 guard let item, item.isActive else { return }
                 item.detail = detail
@@ -365,7 +511,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         Task { @MainActor in
             let result = await download.start(
-                manifestURL: manifestURL, pageURL: pageURL, title: title, tab: tab
+                manifests: manifests, pageURL: pageURL, title: title, tab: tab
             )
             item.stream = nil
             item.detail = nil
@@ -384,9 +530,21 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // plan in the log and no file and no error anywhere.
                 await self.accept(item, produced: produced.url, expecting: produced.expectation)
                 download.cleanUp()
+                item.resumeDirectory = nil
 
             case .failure(let refusal):
-                download.cleanUp()
+                // Kept only when there is partial output to come back to.
+                // Keeping every failure's directory would leave most of a
+                // download on disk for every plan that was never going to work;
+                // keeping none makes resuming unreachable.
+                if download.hasPartialOutput, refusal == .interrupted {
+                    item.resumeDirectory = download.workingDirectory
+                    debugLog("stream: keeping \(download.workingDirectory.lastPathComponent)"
+                        + " for a retry")
+                } else {
+                    download.cleanUp()
+                    item.resumeDirectory = nil
+                }
                 debugLog("stream: refused — \(refusal) fallback=\(refusal.allowsFallback)")
                 guard refusal.allowsFallback, let pageURL else {
                     item.state = .failed(refusal.message)
@@ -525,6 +683,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         _ item: DownloadItem, produced: URL,
         expecting override: SavedMedia.Expectation? = nil
     ) async {
+        // `override` nil falls through to the item's own, which is what a plain
+        // file wants: nothing promised it tracks, but the page said whether it was
+        // playing a video.
         guard item.isActive else { return }
 
         // The manifest's expectation beats the page's where there is one: only

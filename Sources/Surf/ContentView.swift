@@ -168,6 +168,10 @@ struct ContentView: View {
         // Hidden titlebar with full-size content, so the page runs to every
         // window edge — nothing is reserved above it any more.
         .ignoresSafeArea()
+        // So a view deep inside a pane can find the window's own edges: the
+        // page's ripple starts where the border's crests meet, which is the
+        // window's bottom centre, not the pane's.
+        .coordinateSpace(.named(PageRipple.windowSpace))
         // The title lives on a leaf view so that only it observes
         // `displayTitle` — a page animating its title ("(3) Inbox…") would
         // otherwise re-evaluate this entire chrome body every tick.
@@ -471,7 +475,10 @@ struct ContentView: View {
     }
 
     /// Dev affordance: `SURF_DOWNLOAD=1` alongside `SURF_URL` saves whatever is
-    /// playing on that page, once it is playing.
+    /// playing on that page, once it is playing. `SURF_DOWNLOAD=2` also presses
+    /// retry once if it fails, which is the only way to reach the resume path
+    /// without a human clicking — resuming only exists within a session, so a
+    /// fresh launch has nothing to come back to.
     ///
     /// Downloads were the one feature with no way in from the command line, which
     /// made the whole stream engine — manifest, plan, segments, mux, check —
@@ -482,7 +489,8 @@ struct ContentView: View {
     /// It goes through `downloadMedia(from:)`, the same method the button calls,
     /// so what it exercises is the real routing rather than a path of its own.
     private func downloadMediaIfAsked(on tab: Tab) {
-        guard ProcessInfo.processInfo.environment["SURF_DOWNLOAD"] == "1" else { return }
+        let want = ProcessInfo.processInfo.environment["SURF_DOWNLOAD"]
+        guard want == "1" || want == "2" else { return }
         Task { @MainActor in
             // Waits for a media report rather than for the load, because the
             // routing reads `tab.media` and a page that has loaded has not
@@ -497,6 +505,29 @@ struct ContentView: View {
             }
             debugLog("download: saving \(media.kind) \(media.sourceURL)")
             DownloadManager.shared.downloadMedia(from: tab)
+            guard want == "2" else { return }
+
+            // The row is created synchronously by the start, so it is already
+            // there to watch.
+            guard let item = DownloadManager.shared.activeItem(for: tab) else {
+                debugLog("download: nothing to retry")
+                return
+            }
+            for _ in 0..<240 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if !item.isActive { break }
+            }
+            guard case .failed(let message) = item.state else {
+                debugLog("download: finished without needing a retry")
+                return
+            }
+            debugLog("download: failed — \(message)")
+            // A pause before retrying, both because a person would take one and
+            // because a test needs a window in which to change what the server
+            // will do. Without it the retry races the failure it is reacting to.
+            try? await Task.sleep(for: .seconds(10))
+            debugLog("download: retrying")
+            DownloadManager.shared.retry(item, in: tab)
         }
     }
 
@@ -757,6 +788,9 @@ private struct TabContent: View {
                             isInert: isInert,
                             viewportOverride: tab.emulatedViewport
                         )
+                        // On the web view itself, so the snapshot it ripples
+                        // lines up with the page pixel for pixel.
+                        .overlay { PageRipple(tab: tab) }
                     }
                     if let error = tab.lastError {
                         ErrorOverlay(message: error) { tab.reload() }

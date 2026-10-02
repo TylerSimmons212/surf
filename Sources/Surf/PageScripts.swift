@@ -137,6 +137,12 @@ enum PageScripts {
         add(
             PageRuntime.source(for: .page),
             MediaBridge.domainScript,
+            // Beside the media domain rather than inside it: the two answer
+            // different questions, and media.js has 233 bytes left against its
+            // budget. A separate budget also keeps each one's growth legible —
+            // this is a tap and will want more taps, and a combined number would
+            // say nothing about either.
+            StreamTap.domainScript,
             FindBridge.domainScript,
             to: controller, world: .page, mainFrameOnly: false
         )
@@ -264,6 +270,7 @@ extension PageScripts {
             // is not a page-load cost.
             "capture.js": CaptureDomain.installScript,
             "media.js": MediaBridge.domainScript,
+            "stream.js": StreamTap.domainScript,
             "find.js": FindBridge.domainScript,
             "focus.js": FocusBridge.domainScript,
             // Not resident — evaluated on demand — but it registers half the

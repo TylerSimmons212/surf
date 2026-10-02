@@ -58,6 +58,7 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_SILENT=1` | mute narration (launch.sh sets this by default) |
 | `SURF_DEVTOOLS=<pane>` | open dev tools on `elements/styles/network/storage/tags/performance/console` |
 | `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
+| `SURF_DOWNLOAD=2` | and press retry once if it fails, after a 10s pause |
 | `SURF_STATE_DIR=<dir>` | replace `~/Library/Application Support/Surf` (launch.sh sets this) |
 
 Fixtures live in `testpages/`; pass them as `file://$PWD/testpages/<name>.html`.
@@ -77,6 +78,26 @@ Healthy: process alive, first lines are `[surf] rules …` then `[surf] loaded <
 ## Drive
 
 Everything reachable by environment is driven at launch; there is no IPC into a running instance. A feature that needs a click (pop-out, split panes, capture) is driven by a human: hand them the exact sequence from the feature file and the log line that proves it, using `diagnosing-bugs`' HITL loop if it's a bug hunt.
+
+A page that fetches cross-origin needs serving over HTTP, not `file://`. A
+`file://` page has a null origin, so the fetches an MSE fixture makes are refused
+and nothing plays — which surfaces as `download: nothing playing to save` and
+looks like a bug in the tap rather than in the fixture.
+`python3 -m http.server 8787` inside `testpages/` and a `http://127.0.0.1:8787/`
+URL is enough.
+
+`SURF_DOWNLOAD=2` exists for resume, which cannot be reached otherwise: resuming
+is a within-session idea, so a fresh launch has nothing to come back to and the
+retry has to happen in the same run. The 10-second pause before it is what gives
+a test time to change what the server will do.
+
+Serving the stream yourself is the only way to interrupt one deliberately. Two
+things learned doing it. Counting requests to decide when to refuse does not
+work — WebKit's own player is playing the same stream from the same server, its
+fetches are indistinguishable from the downloader's, and it eats the budget. Use
+a handshake instead: refuse until a file appears, and create the file once the
+failure shows up in the log. And three refusals is the schedule's attempt limit,
+so that is what it takes to fail a download rather than merely delay it.
 
 Downloads used to be in that list. `SURF_DOWNLOAD=1` takes them out of it: it waits for a media report and then calls `downloadMedia(from:)`, the same method the button calls, so the routing it exercises is the real one. It is there because the stream engine — manifest, plan, several hundred parallel requests, a muxer — is not something a human can verify by describing what they saw. Two things to know when using it: the file lands in the real `~/Downloads`, because `SURF_STATE_DIR` does not redirect that, so a 4K fixture leaves 300MB behind per run. And `WKWebsiteDataStore` keeps cookies outside Application Support, so a run reports the account's cookies rather than an empty jar.
 

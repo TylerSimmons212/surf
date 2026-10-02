@@ -168,29 +168,15 @@ private struct StickerTile: View {
             : nil
 
         Button(action: onOpen) {
-            ZStack {
-                backing(plate: press.plate.map(Color.init), wash: wash)
-                art(icon)
-            }
-            .compositingGroup()
             // The peel. As `peelProgress` runs 0→1 the fold line sweeps from
-            // the bottom-trailing corner across the whole sticker: the art is
-            // cut away along the diagonal and the white adhesive underside
-            // folds over it, its tail overhanging the tile's edge the way
-            // half-peeled vinyl does. (After bsehovac's peel.)
-            .mask { FoldCutout(fold: foldSize) }
-            .overlay {
-                FoldUnderside(fold: foldSize)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color.white, Color(white: 0.8)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    // Thrown back onto the sticker, where the lifted corner
-                    // would shade it.
-                    .shadow(color: .black.opacity(0.3), radius: 1.5, x: -1, y: -1)
+            // the bottom-trailing corner across the whole sticker, and the
+            // vinyl curls back over itself along it. (After bsehovac's peel.)
+            PeelingSticker(progress: peelProgress, size: StickerShelf.tileSize) {
+                ZStack {
+                    backing(plate: press.plate.map(Color.init), wash: wash)
+                    art(icon)
+                }
+                .compositingGroup()
             }
             .frame(width: StickerShelf.tileSize, height: StickerShelf.tileSize)
             .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
@@ -245,11 +231,6 @@ private struct StickerTile: View {
         .help(sticker.title.isEmpty ? sticker.host : sticker.title)
         .task(id: sticker.host) { await load() }
     }
-
-    /// How far the fold line has swept. Zero until "Peel Off" — the cutout's
-    /// diagonal sits exactly on the corner, so nothing shows. The full sweep
-    /// is both legs of the tile, which is when the last of the front is gone.
-    private var foldSize: CGFloat { peelProgress * StickerShelf.tileSize * 2 }
 
     /// The whole peel, in order: fold the sticker over itself, then hand the
     /// model the removal — whose transition flicks the folded wad away.
@@ -483,6 +464,136 @@ extension Color {
 }
 
 // MARK: - Corner fold
+
+/// A sticker that can be peeled: flat views at rest, a `Canvas` while it peels.
+///
+/// The peel used to be a mask and a flat triangle — the face cut away along
+/// the crease and a gradient-filled shape laid over it — which read as paper
+/// folding rather than vinyl curling. Drawing it lets the lifted part be shaded
+/// like a curl: dark deep in the bend, a highlight where the curve catches the
+/// light, then the flat back easing off toward the tip. The flap is
+/// foreshortened mid-peel, as though bending up out of the surface, and it
+/// throws a shadow across what's still stuck down.
+///
+/// Animatable, so the body is asked for again at every step of the peel with
+/// the progress so far, and can be plain views at zero. The shelf holds a dozen
+/// stickers and only one is ever peeling; the rest shouldn't be canvases.
+private struct PeelingSticker<Face: View>: View, Animatable {
+    /// 0 = stuck down flat; 1 = fully folded over itself.
+    var progress: CGFloat
+    let size: CGFloat
+    let face: Face
+
+    init(progress: CGFloat, size: CGFloat, @ViewBuilder face: () -> Face) {
+        self.progress = progress
+        self.size = size
+        self.face = face()
+    }
+
+    nonisolated var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        if progress <= 0 {
+            face.frame(width: size, height: size)
+        } else if MetalEffects.isAvailable {
+            // A real sheet, bent round the curl in perspective. Same canvas
+            // arrangement as below, for the same reason.
+            PeelMetalView(face: AnyView(face), size: size, progress: progress)
+                .frame(width: size, height: size)
+        } else {
+            // Three tiles across, the sticker in the middle: past halfway the
+            // folded part overhangs the tile's top-leading edge, and a canvas
+            // only draws inside its own bounds. The outer frame keeps the
+            // sticker's own size for layout, so the shelf doesn't move.
+            Canvas { context, canvasSize in
+                draw(in: &context, canvas: canvasSize)
+            } symbols: {
+                face.frame(width: size, height: size).tag(0)
+            }
+            .frame(width: size * 3, height: size * 3)
+            .frame(width: size, height: size)
+        }
+    }
+
+    private func draw(in context: inout GraphicsContext, canvas: CGSize) {
+        let tile = CGRect(x: size, y: size, width: size, height: size)
+        // How far the crease has swept: the full sweep is both legs of the
+        // tile, which is when the last of the front is gone.
+        let fold = progress * size * 2
+        // The crease is x + y = crease in the canvas's coordinates; `n` is the
+        // unit normal pointing from it toward the bottom-trailing corner.
+        let crease = creaseConstant(fold: fold, in: tile) + tile.minX + tile.minY
+        let n = CGVector(dx: 1 / 2.squareRoot(), dy: 1 / 2.squareRoot())
+        let onCrease = CGPoint(x: crease / 2, y: crease / 2)
+        // Lifted highest in the middle of the peel, flat again once it has
+        // folded right over.
+        let lift = sin(.pi * min(progress, 1))
+
+        // What's still stuck down.
+        let stuck = FoldCutout(fold: fold).path(in: tile)
+        if let symbol = context.resolveSymbol(id: 0) {
+            var face = context
+            face.clip(to: stuck)
+            face.draw(symbol, in: tile)
+        }
+
+        // The crease's own shadow, on the stuck side: the curl blocks the light
+        // there, darkest right at the bend.
+        var creaseShade = context
+        creaseShade.clip(to: stuck)
+        let shadeDepth = 3 + 5 * lift
+        creaseShade.fill(
+            Path(CGRect(origin: .zero, size: canvas)),
+            with: .linearGradient(
+                Gradient(colors: [.black.opacity(0.28 * lift + 0.08), .black.opacity(0)]),
+                startPoint: onCrease,
+                endPoint: CGPoint(x: onCrease.x - n.dx * shadeDepth, y: onCrease.y - n.dy * shadeDepth)
+            )
+        )
+
+        // The flap: what's peeled, folded back over the sticker — squashed
+        // toward the crease mid-peel, since the part nearest the bend is
+        // standing up off the surface and is seen end-on.
+        let squash = 1 - 0.22 * lift
+        let a = (1 - squash) / 2
+        let foreshorten = CGAffineTransform(
+            a: 1 - a, b: -a, c: -a, d: 1 - a,
+            tx: a * crease, ty: a * crease
+        )
+        let flap = FoldUnderside(fold: fold).path(in: tile).applying(foreshorten)
+        guard !flap.isEmpty else { return }
+
+        // Raised off the sticker, so it shades what's under it. Thrown toward
+        // the crease, away from a light up and to the left.
+        context.drawLayer { shadow in
+            shadow.addFilter(.blur(radius: 1.5 + 2.5 * lift))
+            shadow.translateBy(x: 1 + 2 * lift, y: 1.5 + 2.5 * lift)
+            shadow.fill(flap, with: .color(.black.opacity(0.22 + 0.12 * lift)))
+        }
+
+        // The adhesive back, shaded across the curl. Measured from the crease
+        // out to the flap's far tip.
+        let depth = max(1, fold / 2.squareRoot() * squash)
+        context.fill(
+            flap,
+            with: .linearGradient(
+                Gradient(stops: [
+                    .init(color: Color(white: 0.6), location: 0),
+                    .init(color: .white, location: 0.14),
+                    .init(color: Color(white: 0.97), location: 0.4),
+                    .init(color: Color(white: 0.8), location: 1),
+                ]),
+                startPoint: onCrease,
+                endPoint: CGPoint(x: onCrease.x - n.dx * depth, y: onCrease.y - n.dy * depth)
+            )
+        )
+        // The vinyl's cut edge, catching the light along the flap's rim.
+        context.stroke(flap, with: .color(.white.opacity(0.6)), lineWidth: 0.5)
+    }
+}
 
 /// The fold line is `x + y = c` in the tile's local coordinates, sweeping from
 /// the bottom-trailing corner (`c = w + h`, fold = 0) up across the whole

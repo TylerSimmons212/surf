@@ -95,11 +95,17 @@ struct PageProtocolTests {
     /// they cannot run anywhere but the page world; the theme cannot run in
     /// it. YouTube joins them for the same reason: `ytInitialData` and the
     /// player's own methods are the site's globals, and an isolated world
-    /// has neither. Asserting the split here means a new method can't
+    /// has neither. The stream tap joins them too: it wraps `MediaSource` and
+    /// `navigator.requestMediaKeySystemAccess`, and an isolated world has its
+    /// own copies of both with nothing in them — so a tap installed there would
+    /// record nothing and report it as an absence of DRM, which is the one wrong
+    /// answer that matters. Asserting the split here means a new method can't
     /// quietly pick the wrong one.
     @Test("Worlds are assigned by domain, not case by case")
     func worldsFollowDomain() {
-        let pageWorldDomains: Set<Substring> = ["media", "find", "youtube", "amazon"]
+        let pageWorldDomains: Set<Substring> = [
+            "media", "stream", "find", "youtube", "amazon",
+        ]
         for method in PageProtocol.Method.allCases {
             let domain = method.rawValue.split(separator: ".")[0]
             let expected: PageProtocol.World =

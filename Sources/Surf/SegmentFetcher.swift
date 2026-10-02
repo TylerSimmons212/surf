@@ -126,6 +126,60 @@ final class SegmentFetcher: Sendable {
         }
     }
 
+    /// What the server will say about a file before any of it is fetched.
+    ///
+    /// A one-byte ranged GET rather than a HEAD, for two reasons. Some CDNs refuse
+    /// HEAD outright or answer it without the headers that matter, and a range
+    /// request is the thing being tested anyway — a server that answers this with
+    /// 206 and a `Content-Range` has demonstrated the capability rather than
+    /// promised it.
+    ///
+    /// It doubles as the safety gate for taking a download away from WebKit. The
+    /// existing path uses `WKWebView.startDownload` precisely so it inherits the
+    /// session, and a comment there warns that a separate `URLSession` would be
+    /// logged out and get a 403. This probe runs through exactly the session the
+    /// parallel fetch would use, against exactly the URL it would use, so a
+    /// success means the credentials work for this file. Anything else, and the
+    /// download stays where it was.
+    struct Probe: Sendable {
+        var length: Int?
+        var acceptsRanges: String?
+    }
+
+    func probe(_ url: URL) async -> Probe? {
+        var request = URLRequest(url: url)
+        request.setValue("bytes=0-0", forHTTPHeaderField: "Range")
+        if let referer = credentials.referer {
+            request.setValue(referer, forHTTPHeaderField: "Referer")
+        }
+        if let userAgent = credentials.userAgent {
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        }
+        let cookies = CookieMatching.cookies(
+            for: url.absoluteString, from: credentials.cookies
+        )
+        if !cookies.isEmpty {
+            request.setValue(CookieMatching.header(for: cookies), forHTTPHeaderField: "Cookie")
+        }
+
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              http.statusCode == 206
+        else { return nil }
+
+        // `Content-Range: bytes 0-0/304608906`. The total after the slash is the
+        // only reliable length here: `Content-Length` on a 206 describes the one
+        // byte that came back.
+        let contentRange = http.value(forHTTPHeaderField: "Content-Range")
+        let total = contentRange?.components(separatedBy: "/").last.flatMap { Int($0) }
+        return Probe(
+            length: total,
+            // A 206 is itself the promise, whatever the header says — but prefer
+            // the header when it is there, since that is what the pure check reads.
+            acceptsRanges: http.value(forHTTPHeaderField: "Accept-Ranges") ?? "bytes"
+        )
+    }
+
     /// A whole manifest, as text.
     func text(at url: URL) async -> String? {
         guard case .success(let data) = await fetch(StreamSegment(url: url)) else { return nil }

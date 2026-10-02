@@ -53,6 +53,11 @@ public enum PageProtocol {
         case mediaStage = "media.stage"
         case mediaPictureInPicture = "media.pictureInPicture"
         case mediaUnstage = "media.unstage"
+        /// What the page fetched to play what it is playing, which is the only
+        /// way to find a manifest behind a `blob:` source. Page world: the facts
+        /// it collects come from `MediaSource` and `navigator`, both of which an
+        /// isolated world has its own empty copies of.
+        case streamTap = "stream.tap"
         case findCount = "find.count"
         case findClearSelection = "find.clearSelection"
         // The YouTube lens reads `ytInitialData` and drives `#movie_player`,
@@ -87,6 +92,7 @@ public enum PageProtocol {
             case .mediaToggle, .mediaSeek, .mediaSkip, .mediaFrame,
                  .mediaLockScroll, .mediaUnlockScroll,
                  .mediaStage, .mediaUnstage, .mediaPictureInPicture,
+                 .streamTap,
                  .findCount, .findClearSelection,
                  .youtubePage, .youtubeStage, .youtubeUnstage,
                  .youtubeRate, .youtubeCaptions,

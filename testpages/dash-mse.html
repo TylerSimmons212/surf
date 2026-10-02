@@ -1,0 +1,58 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DASH through MSE</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px -apple-system}video{width:100%;max-width:900px;display:block;margin:0 auto}p{text-align:center;padding:8px;font-size:12px}</style>
+<!--
+  The case the tap exists for.
+
+  This plays DASH by hand through Media Source Extensions: fetch the manifest,
+  fetch the init segment, append both to a SourceBuffer. The element's source is
+  therefore a `blob:`, so `MediaSource.kind` classifies it `.streamed` and
+  `currentSrc` names nothing fetchable — which is exactly the shape every real
+  DASH site has, and the shape that used to go straight to the subprocess.
+
+  Hand-rolled rather than loading dash.js or Shaka: a fixture that depends on a
+  third-party player from a CDN is a fixture that breaks for reasons having
+  nothing to do with Surf.
+
+  Driven with SURF_DOWNLOAD=1 the log should show the tap finding the .mpd and a
+  plan being made from it, not `nothing in the tap`.
+-->
+<video controls autoplay muted playsinline></video>
+<p id="status">starting…</p>
+<script>
+const MPD = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
+const BASE = 'https://dash.akamaized.net/akamai/bbb_30fps/';
+const REP = 'bbb_30fps_640x360_800k';
+const say = (m) => { document.getElementById('status').textContent = m; };
+
+(async () => {
+  try {
+    // The fetch the tap is here to notice. Resource Timing records it whether
+    // or not anything reads the body.
+    const mpd = await (await fetch(MPD)).text();
+    say('manifest ' + mpd.length + ' bytes');
+
+    const source = new MediaSource();
+    const video = document.querySelector('video');
+    video.src = URL.createObjectURL(source);
+
+    await new Promise((r) => source.addEventListener('sourceopen', r, { once: true }));
+    // The mime the tap records: with a blob source this is the only place a
+    // codec string appears.
+    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.64001e"');
+
+    const append = async (url) => {
+      const bytes = await (await fetch(url)).arrayBuffer();
+      buffer.appendBuffer(bytes);
+      await new Promise((r) => buffer.addEventListener('updateend', r, { once: true }));
+    };
+
+    await append(BASE + REP + '/' + REP + '_0.m4v');
+    for (let n = 1; n <= 3; n++) await append(BASE + REP + '/' + REP + '_' + n + '.m4v');
+    say('playing from a blob: ' + video.currentSrc.slice(0, 24) + '…');
+  } catch (error) {
+    say('failed: ' + error);
+  }
+})();
+</script>
