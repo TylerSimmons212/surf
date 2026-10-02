@@ -176,3 +176,44 @@ public enum StreamProtection: Equatable, Sendable {
     /// permanently.
     case protected
 }
+
+/// Reading a manifest's codec strings.
+///
+/// Shared rather than private to the HLS parser because two callers need the same
+/// answer for different reasons: the parser decides a rendition's role from it,
+/// and the planner decides from it whether the finished file is supposed to have
+/// sound in it. Two copies of this list would disagree the first time a codec was
+/// added to one of them.
+///
+/// Prefix matching, because the part after the first dot is a profile and level
+/// that changes constantly and means nothing here. `avc1.640028` and `avc1.66.30`
+/// are both H.264, and the second form is what older packagers emit.
+public enum StreamCodecs {
+
+    private static let video = [
+        "avc1", "avc3", "hvc1", "hev1", "vp8", "vp9", "vp09", "av01", "dvh1", "dvhe",
+    ]
+
+    /// `ec-3` and `ac-3` are Dolby Digital Plus and Dolby Digital, and both turn
+    /// up in Apple's own reference stream. Missing either reads a muxed variant
+    /// as video-only and downloads something silent.
+    private static let audio = [
+        "mp4a", "ac-3", "ec-3", "opus", "vorbis", "alac", "flac", "dtsc", "mha1",
+    ]
+
+    public static func declaresVideo(_ codecs: String?) -> Bool {
+        matches(codecs, against: video)
+    }
+
+    public static func declaresAudio(_ codecs: String?) -> Bool {
+        matches(codecs, against: audio)
+    }
+
+    private static func matches(_ codecs: String?, against known: [String]) -> Bool {
+        guard let codecs, !codecs.isEmpty else { return false }
+        return codecs.split(separator: ",").contains { part in
+            let name = part.trimmingCharacters(in: .whitespaces).lowercased()
+            return known.contains { name.hasPrefix($0) }
+        }
+    }
+}

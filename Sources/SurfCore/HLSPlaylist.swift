@@ -31,7 +31,17 @@ public enum HLSPlaylist {
         // to the same nothing.
         guard lines.first == "#EXTM3U" else { return nil }
 
-        return lines.contains(where: { $0.hasPrefix("#EXT-X-STREAM-INF") })
+        // `#EXT-X-MEDIA` counts as well as `#EXT-X-STREAM-INF`, because both are
+        // master-only tags and a playlist can carry the second without the first:
+        // a subtitle or audio group with no variants beside it is unusual but
+        // legal. Keying only on STREAM-INF sent such a playlist down the media
+        // path, where it parsed into one rendition with no segments and a role of
+        // muxed — which then looked to the planner like a perfectly good video to
+        // download.
+        let isMaster = lines.contains {
+            $0.hasPrefix("#EXT-X-STREAM-INF") || $0.hasPrefix("#EXT-X-MEDIA:")
+        }
+        return isMaster
             ? master(lines, baseURL: baseURL)
             : media(lines, baseURL: baseURL)
     }
@@ -284,18 +294,7 @@ public enum HLSPlaylist {
         // No CODECS attribute is legal and common, and says nothing. Muxed is the
         // safe reading: a lone variant with no audio group almost always is.
         guard let codecs, !codecs.isEmpty else { return .muxed }
-        let parts = codecs.split(separator: ",").map {
-            $0.trimmingCharacters(in: .whitespaces).lowercased()
-        }
-        let hasVideo = parts.contains { part in
-            ["avc1", "avc3", "hvc1", "hev1", "vp8", "vp9", "vp09", "av01", "dvh1", "dvhe"]
-                .contains { part.hasPrefix($0) }
-        }
-        let hasAudio = parts.contains { part in
-            ["mp4a", "ac-3", "ec-3", "opus", "vorbis", "alac", "flac", "dtsc", "mha1"]
-                .contains { part.hasPrefix($0) }
-        }
-        return switch (hasVideo, hasAudio) {
+        return switch (StreamCodecs.declaresVideo(codecs), StreamCodecs.declaresAudio(codecs)) {
         case (true, true): .muxed
         case (true, false): .video
         case (false, true): .audio
