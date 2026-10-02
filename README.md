@@ -84,8 +84,21 @@ that combining is the only step that isn't plain concatenation: an
 initialisation segment followed by its media segments already *is* a file
 AVFoundation reads.
 
-Measured on Apple's 4K reference stream: 295MB at 25.6 MB/s, and the muxing
-itself takes 77 milliseconds.
+How many requests run at once is found rather than chosen. A fixed number is
+wrong both ways: four is slower than it needs to be on a fast link, and eight is
+how a CDN decides one address is leeching. So it climbs one at a time, keeps a
+rise only when it earned a clear margin, halves on a 429, and stops climbing for
+good once either has happened.
+
+A large plain file is split into byte ranges and fetched the same way, because one
+connection is the slowest way to move one. Only when the server will serve ranges
+and the file is worth the extra requests; otherwise WebKit keeps it, as it always
+did.
+
+Measured on Apple's 4K reference stream, 295MB: 25.6 MB/s at a fixed four
+connections, 28.0 MB/s when allowed to find its own number, and 77 milliseconds
+to mux the result. On a 114MB plain file: 4.58s on one connection, 2.74s split
+eight ways, and the two results hash identically.
 
 Everything else — a `blob:` source from Media Source Extensions, a transport
 stream, a fetchable AES-128 key, a live stream with no end, a manifest Surf
@@ -1089,6 +1102,10 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/SurfCore/SegmentSchedule.swift` — a cursor rather than a worklist, so
   the buffer is bounded, the output is an in-order append, and resuming is seeding
   what is already done
+- `Sources/SurfCore/Parallelism.swift` — how many connections to use, found by
+  climbing slowly and giving ground fast
+- `Sources/SurfCore/ByteRanges.swift` — where to cut a plain file so it can be
+  fetched like a segmented one
 - `Sources/SurfCore/SavedMedia.swift` — whether the finished file is the file that
   was asked for
 - `Sources/Surf/SegmentFetcher.swift` — the tab's own session behind each request

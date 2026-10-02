@@ -3,13 +3,27 @@
 <title>Big progressive file</title>
 <style>body{margin:0;background:#111;color:#eee;font:14px -apple-system}video{width:100%;max-width:900px;display:block;margin:0 auto}p{text-align:center;padding:8px}</style>
 <!--
-  A plain MP4, large enough to be worth splitting, from a server that serves
-  ranges. This is the path that used to go to WebKit on a single connection
-  whatever its size.
+  The direct path, which `MediaSource.kind` classifies `.file`. Driven with
+  SURF_DOWNLOAD=1 it exercises probe, split, parallel fetch, in-order append —
+  or the fall back to WebKit, depending on the file.
 
-  `MediaSource.kind` classifies this `.file`, so SURF_DOWNLOAD exercises the
-  direct path: probe, split, fetch in parallel, append in order.
+  Swap the src between these two to test either side of the threshold:
+
+    1MB, complete         this one. Under eight megabytes, so no `stream:`
+                          line appears at all and WebKit saves it, which is the
+                          regression that matters: the browser's commonest
+                          download must not change.
+
+    114MB, serves ranges  https://dash.akamaized.net/dash264/TestCases/1a/sony/DASH_vodvideo_Track1.m4v
+                          Logs `stream: splitting 119409685 bytes into 8 pieces`
+                          and finishes in 2.7s at 41.6 MB/s, against 4.58s at
+                          26.07 MB/s on one connection. The result hashes
+                          identically to a single-connection fetch.
+
+  Not every large file works here: a bare fMP4 media segment has no moov box, so
+  WebKit will not play it, nothing is reported, and the download is never
+  reached. It has to be a complete file.
 -->
 <video controls autoplay muted playsinline
-  src="https://dash.akamaized.net/dash264/TestCases/1a/sony/DASH_vodvideo_Track1.m4v"></video>
-<p>A 597-second video as one 114MB file. Serves ranges.</p>
+  src="https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4"></video>
+<p>A 2.3MB file: under the split threshold, so WebKit keeps it.</p>
