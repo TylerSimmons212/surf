@@ -661,7 +661,14 @@ extension StreamDownload {
         var startMs = 0
         var written = 0
         var rounds = 0
-        var longest = 0
+        // How far each format has got, keyed by itag. One cursor per stream
+        // rather than one for the pair, which is the whole of the fix described
+        // where it is read below.
+        var reached: [Int: Int] = [:]
+        // Which segment numbers arrived, per format, so the end of the download
+        // can say whether they are contiguous instead of inferring it from a
+        // byte count that looked fine while a quarter of the video was missing.
+        var numbers: [Int: Set<Int>] = [:]
         let began = ContinuousClock.now
 
         onDetail("Asking YouTube for the stream")
@@ -748,10 +755,14 @@ extension StreamDownload {
                     continue
                 }
                 gained += bytes.count
-                // How far the stream has got. Taken from the headers rather than
-                // counted, because bytes do not say where in the video they are.
+                // How far this stream has got. Taken from the headers rather
+                // than counted, because bytes do not say where in the video
+                // they are.
                 if let start = header.startMs, let duration = header.durationMs {
-                    longest = max(longest, start + duration)
+                    reached[itag] = max(reached[itag] ?? 0, start + duration)
+                }
+                if let number = header.segmentNumber {
+                    numbers[itag, default: []].insert(number)
                 }
             }
 
@@ -762,18 +773,39 @@ extension StreamDownload {
                 debugLog("sabr: round \(rounds) added nothing; stopping")
                 break
             }
-            guard longest > startMs else {
+            // Where *both* streams have got to, which is the lesser of them.
+            //
+            // It was the greater, and that silently lost a quarter of every
+            // video. Audio is 388 kbps against video's 9 Mbps, so a round
+            // carrying sixty seconds of sound carries perhaps forty-five of
+            // picture; asking from sixty next time means those fifteen seconds
+            // of video are never requested again. Nothing complained, because a
+            // gap between two fragments is not an error — each carries its own
+            // timestamp, so the file still reported the right duration while
+            // holding 28,870 of its 38,077 frames. The audio came out exact to
+            // the kilobit, which is what made it look like a video problem
+            // rather than a cursor one.
+            //
+            // Only formats that have actually sent something count, so a stream
+            // the server never sends cannot hold the download at zero.
+            let frontier = reached.values.min() ?? 0
+            guard frontier > startMs else {
                 debugLog("sabr: round \(rounds) did not advance past \(startMs)ms; stopping")
                 break
             }
-            startMs = longest
+            startMs = frontier
             onProgress(0, written)
             onDetail("Asking YouTube for the stream")
         }
 
         let elapsed = (ContinuousClock.now - began).seconds
+        // How much of the video both streams cover, which is what the file
+        // actually holds and so what a truncation check should be told.
+        let completeTo = reached.values.min() ?? 0
+        let frontiers = reached.sorted { $0.key < $1.key }
+            .map { "\($0.key)→\($0.value)ms" }.joined(separator: " ")
         debugLog("sabr: \(written) bytes over \(rounds) round(s) in "
-            + "\(String(format: "%.1f", elapsed))s, reached \(longest)ms")
+            + "\(String(format: "%.1f", elapsed))s, reached \(frontiers)")
 
         guard !isCancelled else { return .failure(.unreadable) }
         guard written > 0 else { return .failure(.unreadable) }
@@ -787,6 +819,37 @@ extension StreamDownload {
         debugLog("sabr: video \(sizes[0] ?? 0) bytes, audio \(sizes[1] ?? 0) bytes, "
             + "\(seenSegments.count) segments, \(duplicates) repeats, "
             + "\(unwanted) bytes of formats we did not ask for")
+
+        // Whether what arrived is a run with no holes in it.
+        //
+        // The byte count cannot say. A download missing every fourth segment
+        // has a plausible size, the right duration, a video track that opens
+        // and plays, and a quarter of its frames gone — which is precisely the
+        // state this went out in, and precisely why the count is not the test.
+        for (itag, seen) in numbers.sorted(by: { $0.key < $1.key }) {
+            guard let low = seen.min(), let high = seen.max() else { continue }
+            let holes = (high - low + 1) - seen.count
+            debugLog("sabr: itag \(itag) segments \(low)–\(high), "
+                + (holes == 0 ? "contiguous" : "\(holes) MISSING"))
+        }
+
+        // Sound on its own needs no muxing, and the file is already what was
+        // asked for. Named `.m4a` because that is what it is, and a `.mp4`
+        // holding only audio confuses everything that opens it.
+        if wantedVideo == nil {
+            let audioOutput = workingDirectory
+                .appendingPathComponent(Self.sanitised(title) + ".m4a")
+            try? FileManager.default.moveItem(at: audioFile, to: audioOutput)
+            let saved = FileManager.default.fileExists(atPath: audioOutput.path)
+                ? audioOutput : audioFile
+            return .success(Produced(
+                url: saved,
+                expectation: SavedMedia.Expectation(
+                    wantsVideo: false, wantsAudio: true,
+                    declaredDuration: completeTo > 0 ? Double(completeTo) / 1000 : nil
+                )
+            ))
+        }
 
         let output = workingDirectory.appendingPathComponent(Self.sanitised(title) + ".mp4")
         onDetail("Combining audio and video")
@@ -808,7 +871,7 @@ extension StreamDownload {
                 url: url,
                 expectation: SavedMedia.Expectation(
                     wantsVideo: true, wantsAudio: true,
-                    declaredDuration: longest > 0 ? Double(longest) / 1000 : nil
+                    declaredDuration: completeTo > 0 ? Double(completeTo) / 1000 : nil
                 )
             ))
         case .failure(let failure):
