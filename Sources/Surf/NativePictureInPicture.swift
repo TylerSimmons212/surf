@@ -107,3 +107,68 @@ enum NativePictureInPicture {
         return payload[key] as? String
     }
 }
+
+/// The video viewer Safari opens from its address bar: the page's main video
+/// filling the tab, the page dimmed away behind it, WebKit's own controls.
+///
+/// It lives in this file because it is the same kind of door — private
+/// selectors on `WKWebView`, checked with `responds(to:)` before every use —
+/// and the promise above is that every one of those lives in one place.
+///
+/// **Why it, rather than Surf's own stage.** Which video to show is the hard
+/// part, and WebKit already answers it for its media controls with knowledge
+/// a page script doesn't have: what is visible, what has audio, what the
+/// person has interacted with. Measured on a page with a muted autoplay advert
+/// and a playing feature, it opens on the feature; on a page whose only video
+/// is the advert, it refuses outright. Surf's stage has to guess both.
+///
+/// **What it doesn't tell you.** `_canToggleInWindow` answered false on every
+/// page tried, including ones where entering then worked — so entering is
+/// attempted and then confirmed with `_isInWindowActive`, the same
+/// ask-afterwards shape as Picture-in-Picture's read-back.
+@MainActor
+enum NativeVideoViewer {
+
+    private static let enterSelector = NSSelectorFromString("_enterInWindow")
+    private static let exitSelector = NSSelectorFromString("_exitInWindow")
+    private static let activeSelector = NSSelectorFromString("_isInWindowActive")
+
+    static var isAvailable: Bool {
+        [enterSelector, exitSelector, activeSelector].allSatisfy {
+            WKWebView.instancesRespond(to: $0)
+        }
+    }
+
+    /// Opens the viewer and reports whether it took.
+    ///
+    /// Polled rather than read once: the request goes to the web process and
+    /// the answer comes back on a later turn, so the property read straight
+    /// after the call is still false.
+    static func enter(on webView: WKWebView) async -> Bool {
+        guard isAvailable else { return false }
+        send(enterSelector, to: webView)
+        for _ in 0..<12 {
+            try? await Task.sleep(for: .milliseconds(100))
+            if isActive(on: webView) { return true }
+        }
+        return false
+    }
+
+    static func exit(on webView: WKWebView) {
+        guard isAvailable, isActive(on: webView) else { return }
+        send(exitSelector, to: webView)
+    }
+
+    static func isActive(on webView: WKWebView) -> Bool {
+        guard webView.responds(to: activeSelector) else { return false }
+        typealias GetBool = @convention(c) (AnyObject, Selector) -> ObjCBool
+        let imp = webView.method(for: activeSelector)
+        return unsafeBitCast(imp, to: GetBool.self)(webView, activeSelector).boolValue
+    }
+
+    private static func send(_ selector: Selector, to webView: WKWebView) {
+        guard webView.responds(to: selector) else { return }
+        typealias Call = @convention(c) (AnyObject, Selector) -> Void
+        unsafeBitCast(webView.method(for: selector), to: Call.self)(webView, selector)
+    }
+}

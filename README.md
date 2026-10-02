@@ -210,6 +210,31 @@ scrub five seconds, which is what every player on the web does; the cost is
 that the overlay holds keyboard focus while a stage is up, so the site's own
 shortcuts stop answering until you leave.
 
+That stage is now the fallback. Theater first asks WebKit for the video
+viewer Safari opens from its address bar (`_enterInWindow`, beside the
+Picture-in-Picture door in `NativePictureInPicture.swift`), because the hard
+part of theater was never pinning a video, it was choosing one. The stage
+pinned whatever the media ranking liked best, and the ranking answers a
+different question: what is playing. A muted advert looping in the corner is
+playing; the feature you paused, or haven't started, is not. So the advert
+went on stage, and an article whose only video was an advert got a theater
+pill. WebKit's viewer picks with what its own media controls know — what is
+visible, what has sound — and on a page whose only video is an advert it
+refuses. It reaches into cross-origin embeds too, without `allowfullscreen`,
+since the request comes from the app rather than the page. Its controls are
+WebKit's, so Surf's transport and the five-second arrows belong to the
+fallback only.
+
+The offer was the other half of the bug. It now waits for a video with sound
+(`MediaRanking.stageIndex`), which separates a paused feature from a playing
+muted advert where the ranking can't, and it is what the fallback stages when
+WebKit refuses. A feature muted before entering isn't offered; muting first
+is rare, and a muted autoplay advert is on half the web. `_canToggleInWindow`
+looks like the right question to ask before offering, and answered false on
+every page tried, including ones the viewer then opened on — so entering is
+attempted and confirmed by `_isInWindowActive`, and the viewer's own way out
+is noticed by polling the same property.
+
 A site can also have a lens of its own. The article, recipe and video lenses
 read whatever page they are handed; a site lens knows one site's data and one
 site's player, and in exchange it can offer what no general reader can.

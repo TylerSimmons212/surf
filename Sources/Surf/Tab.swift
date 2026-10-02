@@ -1703,6 +1703,20 @@ final class Tab: NSObject, Identifiable {
     /// True makes the overlay a transparent transport instead of a reader.
     private(set) var focusVideoStage = false
 
+    /// Which theater is up, once `focusVideoStage` is true.
+    enum VideoStageKind {
+        /// Asking WebKit for its viewer; the overlay draws nothing yet.
+        case raising
+        /// WebKit's own video viewer. It draws its own controls, so Surf's
+        /// transport stays out of the way.
+        case native
+        /// Surf's stage: the element pinned by the media bridge, with Surf's
+        /// transport over it. What runs when WebKit refuses.
+        case custom
+    }
+    private(set) var videoStageKind: VideoStageKind = .raising
+    @ObservationIgnored private var videoStageTask: Task<Void, Never>?
+
     // MARK: - Site lenses
 
     /// The site lens this tab is in, if any.
@@ -1906,14 +1920,16 @@ final class Tab: NSObject, Identifiable {
 
     @ObservationIgnored private var stageWatchdog: Task<Void, Never>?
 
-    /// The shared half of raising a stage: pin the ranking's current pick,
-    /// promote it, lock the page. Used by the theater and the pop-out.
+    /// The shared half of raising a stage: pin the element, promote it, lock
+    /// the page. Used by the theater and the pop-out.
     /// - Parameter keepingInteraction: the theater leaves the player alive
     ///   under the pointer; the pop-out wants the page inert — its own
     ///   chrome is the only control surface.
-    fileprivate func beginVideoStage(keepingInteraction: Bool) {
-        stagedElementID = mediaElementID
-        stagedFrame = mediaFrame
+    fileprivate func beginVideoStage(
+        elementID: String?, frame: WKFrameInfo?, keepingInteraction: Bool
+    ) {
+        stagedElementID = elementID
+        stagedFrame = frame
         Task { @MainActor in
             await runOnStagedElement(.mediaStage)
             setPageScrollLocked(true, keepingInteraction: keepingInteraction)
@@ -2040,8 +2056,10 @@ final class Tab: NSObject, Identifiable {
             case .video:
                 // The stage promotes an element the media bridge can
                 // address, and the bridge tracks elements from their first
-                // play — so the offer waits for one.
-                return media?.hasVideo == true
+                // play — so the offer waits for one, and one with sound: a
+                // thin page whose only video is a muted advert classifies as
+                // a video page too.
+                return hasStageableVideo
             }
         }
         // No confident classification, but a started video is its own
@@ -2055,7 +2073,7 @@ final class Tab: NSObject, Identifiable {
     /// a page the classifier didn't confidently claim for prose, or one it
     /// called a video page outright.
     private var offersVideoStage: Bool {
-        guard media?.hasVideo == true else { return false }
+        guard hasStageableVideo else { return false }
         guard let detection = focusDetection,
               detection.confidence >= FocusClassification.offerThreshold
         else { return true }
@@ -2079,23 +2097,120 @@ final class Tab: NSObject, Identifiable {
     /// especially: the embed's video is invisible to the detector, so prose
     /// wins the classification every time.
     func enterVideoStage() {
-        guard media?.hasVideo == true else { return }
-        narrator.stop()
-        focusVideoStage = true
-        focusPhase = .active
-        beginVideoStage(keepingInteraction: true)
-        startStageWatchdog()
-        debugLog("focus: video staged from the reader")
+        guard let candidate = stageCandidate else { return }
+        raiseVideoStage(candidate, from: "the reader")
     }
 
     /// Lowers the theater. Back to the reader when the stage was raised from
     /// one; back to the page when the stage was the whole show.
     func exitVideoStage() {
         guard focusVideoStage else { return }
-        endVideoStage()
+        lowerVideoStage()
         focusVideoStage = false
         if focusArticle == nil {
             focusPhase = .inactive
+        }
+    }
+
+    /// The video the theater would put on stage: one with a picture and with
+    /// sound, chosen by `MediaRanking.stageIndex`. Not the primary pick, which
+    /// can be a playing advert while the feature sits paused.
+    private var stageCandidate: (elementID: String, frame: WKFrameInfo?)? {
+        let candidates = liveCandidates
+        guard let index = MediaRanking.stageIndex(
+            among: candidates.map { ($0.state.signals, $0.state.hasVideo) }
+        ) else { return nil }
+        let pick = candidates[index]
+        return (pick.state.elementID, mediaFrames[pick.frameID]?.frame)
+    }
+
+    /// Whether this page holds a video worth a theater. Also what the
+    /// reader's Watch button asks, so it can't offer what entering refuses.
+    var hasStageableVideo: Bool { stageCandidate != nil }
+
+    /// Raises the theater: WebKit's own viewer when it will take the page,
+    /// Surf's stage when it won't.
+    ///
+    /// WebKit chooses which video its viewer shows, and it chooses better than
+    /// the media bridge can — it refuses a page whose only video is an advert,
+    /// which is the case Surf's stage kept getting wrong. `candidate` is only
+    /// for the fallback, pinned now, while it still points at the video that
+    /// was worth offering.
+    private func raiseVideoStage(
+        _ candidate: (elementID: String, frame: WKFrameInfo?), from origin: String
+    ) {
+        narrator.stop()
+        focusVideoStage = true
+        focusPhase = .active
+        videoStageKind = .raising
+        videoStageTask?.cancel()
+        videoStageTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let webView = liveWebView, await NativeVideoViewer.enter(on: webView) {
+                // Left while WebKit was still answering: the viewer opened
+                // for nobody, so it closes again.
+                guard !Task.isCancelled, focusVideoStage else {
+                    NativeVideoViewer.exit(on: webView)
+                    return
+                }
+                videoStageKind = .native
+                watchNativeViewer(on: webView)
+                // Which element WebKit chose, when it is in this document —
+                // the evidence that it skipped the advert.
+                let chosen = try? await webView.evaluateJavaScript(
+                    "(e => e ? (e.id || e.tagName) : 'a frame')(document.fullscreenElement)"
+                ) as? String
+                debugLog("focus: video in the native viewer from \(origin) — \(chosen ?? "?")")
+                return
+            }
+            guard !Task.isCancelled, focusVideoStage else { return }
+            videoStageKind = .custom
+            beginVideoStage(
+                elementID: candidate.elementID, frame: candidate.frame,
+                keepingInteraction: true
+            )
+            startStageWatchdog()
+            debugLog("focus: video staged from \(origin) — native viewer refused")
+        }
+    }
+
+    /// Whichever theater is up, taken down.
+    private func lowerVideoStage() {
+        videoStageTask?.cancel()
+        videoStageTask = nil
+        switch videoStageKind {
+        case .native:
+            stageWatchdog?.cancel()
+            stageWatchdog = nil
+            if let liveWebView { NativeVideoViewer.exit(on: liveWebView) }
+        case .custom:
+            endVideoStage()
+        case .raising:
+            // Nothing is up yet. The raising task checks `focusVideoStage`
+            // after WebKit answers and closes a viewer that opened late.
+            break
+        }
+        videoStageKind = .raising
+    }
+
+    /// The viewer has its own way out — its close button, its own Escape —
+    /// and none of them tell the embedder. Polled, so leaving it that way
+    /// leaves Focus too rather than stranding the tab in a theater with
+    /// nothing in it.
+    private func watchNativeViewer(on webView: WKWebView) {
+        stageWatchdog?.cancel()
+        stageWatchdog = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, focusVideoStage,
+                      videoStageKind == .native
+                else { return }
+                if !NativeVideoViewer.isActive(on: webView) {
+                    debugLog("focus: native viewer closed itself — leaving the theater")
+                    exitVideoStage()
+                    return
+                }
+            }
         }
     }
 
@@ -2106,7 +2221,7 @@ final class Tab: NSObject, Identifiable {
     /// Pins and stages for the pop-out. False when there is nothing to show.
     func stageVideoForPopOut() -> Bool {
         guard media?.hasVideo == true else { return false }
-        beginVideoStage(keepingInteraction: false)
+        beginVideoStage(elementID: mediaElementID, frame: mediaFrame, keepingInteraction: false)
         return true
     }
 
@@ -2142,18 +2257,12 @@ final class Tab: NSObject, Identifiable {
         // A video page gets the stage, not the reader: no extraction — the
         // page's own element is the content, promoted in place.
         if offersVideoStage || focusDetection?.kind == .video {
-            guard media?.hasVideo == true else {
+            guard let candidate = stageCandidate else {
+                debugLog("focus: no video with sound to stage")
                 focusPhase = .failed("Start the video, then enter Focus.")
                 return
             }
-            focusVideoStage = true
-            focusPhase = .active
-            // Pinned now, while the ranking still points at the video the
-            // user actually started — not later, when a preview may have
-            // taken the ranking from it.
-            beginVideoStage(keepingInteraction: true)
-            startStageWatchdog()
-            debugLog("focus: video staged")
+            raiseVideoStage(candidate, from: "Focus")
             return
         }
 
@@ -2223,7 +2332,7 @@ final class Tab: NSObject, Identifiable {
         narrator.stop()
         if focusVideoStage {
             // Back exactly as the page drew it.
-            endVideoStage()
+            lowerVideoStage()
         }
         focusVideoStage = false
         focusPhase = .inactive
@@ -2331,6 +2440,12 @@ final class Tab: NSObject, Identifiable {
         // unstage, and the pin must not survive onto the next page.
         stageWatchdog?.cancel()
         stageWatchdog = nil
+        videoStageTask?.cancel()
+        videoStageTask = nil
+        if videoStageKind == .native, let liveWebView {
+            NativeVideoViewer.exit(on: liveWebView)
+        }
+        videoStageKind = .raising
         focusVideoStage = false
         stagedElementID = nil
         stagedFrame = nil

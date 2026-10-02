@@ -187,7 +187,7 @@ enum MediaBridge {
             loop: !!el.loop,
             width: r.width,
             height: r.height,
-            hasMetadata: named,
+            hasMetadata: !!meta,  // not `named`: see MediaSignals
             startedAt: el.__surfStartedAt || 0,
             // Audio actually decoded so far. Copied raw, and null when the
             // engine doesn't report it, because "no sound" and "didn't say"
