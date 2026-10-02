@@ -16,7 +16,16 @@ struct MediaPlayerStack: View {
     private let rowHeight: CGFloat = 54
     private let rowSpacing: CGFloat = 4
 
-    private var tabs: [Tab] { session.mediaTabs }
+    /// Audible tabs at rest; everything holding media once the stack is
+    /// fanned open.
+    ///
+    /// The collapsed list is the one that interrupts you, so it only carries
+    /// what is making a noise. A muted video is still findable — it is just
+    /// behind the gesture that means "show me the rest" rather than in front
+    /// of somebody who was reading an article.
+    private var tabs: [Tab] {
+        isExpanded ? session.allMediaTabs : session.mediaTabs
+    }
 
     var body: some View {
         if let primary = tabs.first {
@@ -128,9 +137,21 @@ struct MediaRow: View {
                     artwork(media)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(media.title.isEmpty ? tab.displayTitle : media.title)
-                            .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
-                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(media.title.isEmpty ? tab.displayTitle : media.title)
+                                .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
+                                .lineLimit(1)
+                            // Only the silent ones are marked, and only here —
+                            // they appear solely in the fanned-open stack, so
+                            // the mark answers the question their being there
+                            // raises: why did this not announce itself?
+                            if !media.signals.isAudible {
+                                Image(systemName: "speaker.slash.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                                    .help("Playing without sound")
+                            }
+                        }
                         Text(subtitle(media))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)

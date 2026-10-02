@@ -855,7 +855,8 @@ final class Tab: NSObject, Identifiable {
         debugLog(
             "media: chose \(winner.state.elementID) of \(candidates.count) "
             + "\(Int(s.width))x\(Int(s.height)), metadata=\(s.hasMetadata), "
-            + "muted=\(s.isMuted), loop=\(s.loops), frames=\(mediaFrames.count)"
+            + "muted=\(s.isMuted), loop=\(s.loops), frames=\(mediaFrames.count), "
+            + "audio=\(s.audioBytes.map { String(Int($0)) } ?? "?"), audible=\(s.isAudible)"
         )
     }
 

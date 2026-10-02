@@ -268,10 +268,33 @@ final class BrowserSession {
 
     /// Every tab holding media, with the active one first — that's the row the
     /// stack shows when collapsed.
+    /// The tabs worth announcing: the ones making a noise.
+    ///
+    /// This used to be every tab holding any media at all, which is how a
+    /// muted autoplay ad on an article got a row in the sidebar and a pop-out
+    /// window of its own. Silence is the tell, and `MediaSignals.isAudible`
+    /// is where the reasoning lives.
     var mediaTabs: [Tab] {
-        let holding = allTabs.filter { $0.media != nil }
-        guard let primary = nowPlayingTab else { return holding }
-        return [primary] + holding.filter { $0.id != primary.id }
+        ordered(allTabs.filter { $0.media?.signals.isAudible == true })
+    }
+
+    /// Everything holding media, audible or not — what the media section shows
+    /// when it is expanded. A muted video is still a video somebody may want
+    /// to find; it just shouldn't be the thing that interrupts them.
+    var allMediaTabs: [Tab] {
+        ordered(allTabs.filter { $0.media != nil })
+    }
+
+    /// The tabs holding media that isn't making a noise.
+    var silentMediaTabs: [Tab] {
+        ordered(allTabs.filter { $0.media != nil && $0.media?.signals.isAudible != true })
+    }
+
+    /// Whatever is playing goes first; the rest keep their own order.
+    private func ordered(_ tabs: [Tab]) -> [Tab] {
+        guard let primary = nowPlayingTab, tabs.contains(where: { $0.id == primary.id })
+        else { return tabs }
+        return [primary] + tabs.filter { $0.id != primary.id }
     }
 
     /// The selected tab, held rather than searched for.
@@ -1561,6 +1584,10 @@ final class BrowserSession {
         guard !PopOutController.shared.isPoppedOut(tab) else { return false }
         // Audio-only playback has no rectangle to crop to.
         guard let media = tab.media, media.isPlaying, media.hasVideo else { return false }
+        // And silence is not worth floating over everything you own. A muted
+        // autoplay ad satisfies every other condition here, which is exactly
+        // how one used to follow somebody out of the tab they left it in.
+        guard media.signals.isAudible else { return false }
         return true
     }
 

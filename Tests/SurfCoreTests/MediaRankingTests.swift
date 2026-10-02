@@ -155,3 +155,43 @@ struct MediaRankingTests {
         #expect(MediaRanking.score(unlaid) > MediaRanking.score(advert))
     }
 }
+
+@Suite("Media audibility")
+struct MediaAudibilityTests {
+
+    private func signals(
+        playing: Bool = true, muted: Bool = false, bytes: Double? = nil
+    ) -> MediaSignals {
+        MediaSignals(isPlaying: playing, isMuted: muted, audioBytes: bytes)
+    }
+
+    @Test("A muted autoplay video is not audible — the case this exists for")
+    func mutedIsSilent() {
+        #expect(signals(muted: true).isAudible == false)
+        // Even once it has decoded audio: muted is muted.
+        #expect(signals(muted: true, bytes: 9_000).isAudible == false)
+    }
+
+    @Test("Playing, unmuted, with sound decoded")
+    func audible() {
+        #expect(signals(bytes: 9_000).isAudible)
+    }
+
+    @Test("Unmuted but silent — a video with no audio track at all")
+    func noAudioTrack() {
+        #expect(signals(bytes: 0).isAudible == false)
+    }
+
+    @Test("Paused is never audible, whatever it has decoded")
+    func paused() {
+        #expect(signals(playing: false, bytes: 9_000).isAudible == false)
+    }
+
+    @Test("Unreported bytes fall back to the muted test, not to silence")
+    func unknownBytes() {
+        // A WebKit release that stops reporting this should cost a few odd
+        // videos, not every video.
+        #expect(signals(bytes: nil).isAudible)
+        #expect(signals(muted: true, bytes: nil).isAudible == false)
+    }
+}

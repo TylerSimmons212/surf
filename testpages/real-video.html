@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8"><title>Real video</title>
+<style>body{font:16px -apple-system;background:#111;color:#eee;padding:20px}video{width:420px}</style>
+<h1>An unmuted video with sound</h1>
+<video id="v" playsinline loop controls
+       src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+<p>volume up, playing</p>
+<script>
+const v = document.getElementById('v');
+v.volume = 0.01;              // audible by every test that matters, quiet in the room
+v.muted = false;
+v.play().catch(e => document.title = 'blocked: ' + e.name);
+</script>

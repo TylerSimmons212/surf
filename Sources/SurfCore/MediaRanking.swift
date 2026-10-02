@@ -24,6 +24,21 @@ public struct MediaSignals: Equatable, Sendable {
     /// Monotonic milliseconds since its frame loaded, for tie-breaking only.
     public var startedAt: Double
 
+    /// Audio bytes the element has decoded so far, or nil when the engine
+    /// didn't say.
+    ///
+    /// Raw rather than a yes/no, because nil and zero are different answers
+    /// and only the caller knows what to do with each. Nil means "not
+    /// reported"; zero means "reported, and there was no sound".
+    ///
+    /// Measured on macOS 27: WebKit does not report it, so this is nil in
+    /// practice and the muted test below is what actually runs. It is kept
+    /// because the distinction is the right shape and costs nothing — but
+    /// nobody should read this and believe it is catching silent videos
+    /// today. If sharper detection is wanted, `audioTracks` is the next thing
+    /// to try.
+    public var audioBytes: Double?
+
     public init(
         isPlaying: Bool = false,
         isMuted: Bool = false,
@@ -32,7 +47,8 @@ public struct MediaSignals: Equatable, Sendable {
         height: Double = 0,
         duration: Double = 0,
         hasMetadata: Bool = false,
-        startedAt: Double = 0
+        startedAt: Double = 0,
+        audioBytes: Double? = nil
     ) {
         self.isPlaying = isPlaying
         self.isMuted = isMuted
@@ -42,6 +58,28 @@ public struct MediaSignals: Equatable, Sendable {
         self.duration = duration
         self.hasMetadata = hasMetadata
         self.startedAt = startedAt
+        self.audioBytes = audioBytes
+    }
+
+    /// Whether this is making a noise, which is the only kind of video worth
+    /// announcing on its own.
+    ///
+    /// The sidebar used to list every tab holding any media at all, and
+    /// pop-out fired for anything playing with a picture. Both counted the
+    /// muted autoplay ad that half the web carries, so a tab you had opened
+    /// for an article would announce itself and then float a video of
+    /// something you never asked to watch.
+    ///
+    /// Muted is the strongest tell — browsers only permit autoplay when muted,
+    /// so an unattended video is a muted one almost by definition. Decoded
+    /// audio bytes catch the rest: a video can be unmuted and still silent,
+    /// having no audio track at all.
+    ///
+    /// Unknown bytes fall back to the muted test rather than to silence. If a
+    /// WebKit release stops reporting them, the worst case is the old
+    /// behaviour for a few odd videos, not a media section that never appears.
+    public var isAudible: Bool {
+        isPlaying && !isMuted && (audioBytes.map { $0 > 0 } ?? true)
     }
 
     public var area: Double { max(0, width) * max(0, height) }

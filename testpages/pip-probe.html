@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8"><title>PiP probe</title>
+<style>
+ body{font:16px -apple-system;background:#111;color:#eee;margin:0}
+ #go{display:block;width:100%;height:170px;font-size:30px;background:#2d6cdf;color:#fff;border:0}
+ video{width:300px;background:#000;margin:10px}
+</style>
+<button id="go">CLICK: enter Picture-in-Picture</button>
+<video id="real" muted playsinline autoplay loop
+       src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+<pre id="out"></pre>
+<script>
+const v = document.getElementById('real');
+const go = (p, extra) => {
+  const info = {
+    readyState: v.readyState,
+    webkitSupports: typeof v.webkitSupportsPresentationMode === 'function'
+      ? v.webkitSupportsPresentationMode('picture-in-picture') : 'no-fn',
+    webkitMode: v.webkitPresentationMode,
+    pipElement: !!document.pictureInPictureElement, ...extra };
+  location.href = 'pip-probe.html?' + p + '=' + encodeURIComponent(JSON.stringify(info));
+};
+document.getElementById('go').onclick = async () => {
+  let webkitErr = null, stdErr = null;
+  try { v.webkitSetPresentationMode('picture-in-picture'); } catch (e) { webkitErr = e.name + ': ' + e.message; }
+  await new Promise(r => setTimeout(r, 1200));
+  if (v.webkitPresentationMode !== 'picture-in-picture') {
+    try { await v.requestPictureInPicture(); } catch (e) { stdErr = e.name + ': ' + e.message; }
+  }
+  setTimeout(() => go('r2', { tag: 'after-click', webkitErr, stdErr }), 1500);
+};
+</script>

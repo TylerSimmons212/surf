@@ -25,7 +25,7 @@ struct MediaState: Equatable, Decodable {
         case title, artist, hasVideo, duration, currentTime
         case sourceURL = "src"
         case elementID = "id"
-        case muted, loop, width, height, hasMetadata, startedAt
+        case muted, loop, width, height, hasMetadata, startedAt, audioBytes
     }
 
     /// The page reports ranking evidence flat, alongside the display fields.
@@ -52,7 +52,8 @@ struct MediaState: Equatable, Decodable {
             height: try c.decodeIfPresent(Double.self, forKey: .height) ?? 0,
             duration: duration,
             hasMetadata: try c.decodeIfPresent(Bool.self, forKey: .hasMetadata) ?? false,
-            startedAt: try c.decodeIfPresent(Double.self, forKey: .startedAt) ?? 0
+            startedAt: try c.decodeIfPresent(Double.self, forKey: .startedAt) ?? 0,
+            audioBytes: try c.decodeIfPresent(Double.self, forKey: .audioBytes)
         )
     }
 
@@ -187,7 +188,15 @@ enum MediaBridge {
             width: r.width,
             height: r.height,
             hasMetadata: named,
-            startedAt: el.__surfStartedAt || 0
+            startedAt: el.__surfStartedAt || 0,
+            // Audio actually decoded so far. Copied raw, and null when the
+            // engine doesn't report it, because "no sound" and "didn't say"
+            // are different answers and only Swift should decide what each is
+            // worth. It is what separates an unmuted video with no audio track
+            // from one that is genuinely making a noise.
+            audioBytes: typeof el.webkitAudioDecodedByteCount === 'number'
+              ? el.webkitAudioDecodedByteCount
+              : null
           };
         }
 
