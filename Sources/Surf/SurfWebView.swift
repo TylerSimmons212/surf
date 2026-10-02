@@ -20,23 +20,3 @@ final class SurfWebView: WKWebView {
         tab?.contextMenuDidClose()
     }
 }
-
-/// An `NSMenuItem` that runs a closure.
-///
-/// AppKit wants a target and a selector; every call site here wants a closure.
-/// The item is its own target, which keeps the two ends of each menu entry on
-/// one line instead of scattered across a switch on `sender.tag`.
-final class ActionMenuItem: NSMenuItem {
-    private let run: () -> Void
-
-    init(_ title: String, _ run: @escaping () -> Void) {
-        self.run = run
-        super.init(title: title, action: #selector(fire), keyEquivalent: "")
-        target = self
-    }
-
-    @available(*, unavailable)
-    required init(coder: NSCoder) { fatalError("not from a nib") }
-
-    @objc private func fire() { run() }
-}
