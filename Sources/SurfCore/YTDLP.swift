@@ -64,11 +64,15 @@ public enum YTDLP {
             "--no-playlist",
             "--no-mtime",
             // The default is 1, which fetches a segmented stream one segment at
-            // a time. Measured against 43MB of 1080p DASH segments from Akamai,
-            // six at once ran 2.82x faster: 8.36 MB/s to 23.60 MB/s. Four rather
-            // than six because this number cannot adapt to the server the way
-            // our own fetcher will, and a CDN reads a lot of parallel
-            // connections from one address as something to throttle.
+            // a time. Measured end to end through yt-dlp itself, on a 303MB
+            // 720p DASH stream from Akamai: 59.07s at 1, 10.28s at 4. That is
+            // 5.75x, 5.13 MB/s to 29.50 MB/s, and the two outputs hash
+            // identically — parallelism costs nothing in correctness here
+            // because each fragment is a separate ranged request either way.
+            //
+            // Four and not higher because this number cannot adapt to the server
+            // the way a fetcher of our own would, and a lot of parallel
+            // connections from one address is what a CDN throttles.
             "--concurrent-fragments", "4",
             // The default is to skip a fragment that won't download and carry
             // on. That turns a stream whose video fragments are being refused
