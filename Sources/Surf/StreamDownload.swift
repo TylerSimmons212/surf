@@ -42,8 +42,15 @@ final class StreamDownload {
 
     func cancel() { isCancelled = true }
 
-    /// Left behind on failure so a retry can resume, and only removed on success
-    /// or cancel. The segments on disk are the resume journal.
+    /// Removes the run's scratch directory.
+    ///
+    /// This comment used to claim the directory was left behind on failure so a
+    /// retry could resume from it, and that the segments on disk were the journal.
+    /// Neither is true. Every caller cleans up on failure as well as on success,
+    /// and the output is a single appended file, so a directory listing cannot say
+    /// how many segments are inside it — the segments are not a record of
+    /// anything. Resuming wants a sidecar holding a count and a byte offset, with
+    /// the file truncated back to that offset, and that does not exist yet.
     func cleanUp() {
         try? FileManager.default.removeItem(at: workingDirectory)
     }
