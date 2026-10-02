@@ -49,7 +49,8 @@ public enum YTDLP {
         pageURL: String,
         workingDirectory: String,
         cookieFile: String? = nil,
-        ffmpegPath: String? = nil
+        ffmpegPath: String? = nil,
+        audioOnly: Bool = false
     ) -> [String] {
         var args = [
             // Progress as discrete lines instead of one line rewritten in place.
@@ -63,13 +64,43 @@ public enum YTDLP {
             // channel archive is not the same feature.
             "--no-playlist",
             "--no-mtime",
+            // The default is 1, which fetches a segmented stream one segment at
+            // a time. Measured end to end through yt-dlp itself, on a 303MB
+            // 720p DASH stream from Akamai: 59.07s at 1, 10.28s at 4. That is
+            // 5.75x, 5.13 MB/s to 29.50 MB/s, and the two outputs hash
+            // identically — parallelism costs nothing in correctness here
+            // because each fragment is a separate ranged request either way.
+            //
+            // Four and not higher because this number cannot adapt to the server
+            // the way a fetcher of our own would, and a lot of parallel
+            // connections from one address is what a CDN throttles.
+            "--concurrent-fragments", "4",
+            // The default is to skip a fragment that won't download and carry
+            // on. That turns a stream whose video fragments are being refused
+            // into a successful exit with only the audio in the file, which is
+            // exactly the bug this guards. A download that cannot have all of
+            // the video should fail and say so.
+            "--abort-on-unavailable-fragments",
             "--output", outputTemplate,
             "--paths", workingDirectory,
         ]
 
         if let ffmpegPath {
+            args += ["--ffmpeg-location", ffmpegPath]
+        }
+
+        if audioOnly {
+            // `ba` and nothing after it. The usual selectors end in `/b`, which
+            // falls back to a complete file — and a complete file is a video, so
+            // on a site with no audio-only stream the fallback would answer a
+            // different question than the one asked. Failing with "requested
+            // format is not available" is the honest outcome.
+            //
+            // No `--extract-audio` either: that re-encodes, and the stream is
+            // already a finished audio file.
+            args += ["--format", "ba"]
+        } else if ffmpegPath != nil {
             args += [
-                "--ffmpeg-location", ffmpegPath,
                 "--format", "bv*+ba/b",
                 // Ask for a container that QuickTime and Finder preview both
                 // understand; fall back rather than fail if it can't be had.

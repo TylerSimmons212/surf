@@ -16,7 +16,8 @@ struct ContentView: View {
     /// chrome at all still shows you where everything — the window controls
     /// included — now lives.
     @State private var isIntroducingSidebar = false
-    @State private var isAddressBarOpen = false
+    @State private var palette: PalettePhase = .closed
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Captured when the palette opens, because the session's flag may have
     /// changed again by the time it's submitted.
     @State private var paletteCreatesTab = false
@@ -28,6 +29,10 @@ struct ContentView: View {
     /// drag that starts on a row can end on the page: both the rows and the
     /// split drop zones have to be looking at the same one.
     @State private var dragContext = TabDragContext()
+    /// What the window's own buttons actually measure, reported by
+    /// `TrafficLights` as AppKit lays them out. The sidebar holds this much of
+    /// its top row open for them.
+    @State private var lightsSpan: CGFloat = Sidebar.lightsWidth
 
     /// The pointer report, with the sidebar's hold folded in.
     ///
@@ -46,20 +51,32 @@ struct ContentView: View {
     /// pinned sidebar is permanently on screen.
     private var areLightsRevealed: Bool { isPinned || isSidebarRevealed }
 
-    /// Clear of the lights' row, so a find bar can never sit under a reveal.
-    private var overlayTopInset: CGFloat { ChromeReveal.lightsRowHeight + 10 }
+    /// Clear of the sidebar's top bar, so a find bar can never sit under one.
+    private var overlayTopInset: CGFloat {
+        Sidebar.floatingTopPadding
+            + Sidebar.topBarTopPadding(isFloating: true)
+            + Sidebar.topRowHeight
+            + 10
+    }
 
-    /// Where the lights' row begins, from the window's leading edge. A touch
-    /// in from the floating panel's own edge (which sits 8pt off the window's),
-    /// so the buttons read as perched above its top-left corner; the same
-    /// figure pinned keeps them from hugging the window edge.
-    private var lightsLeadingInset: CGFloat { 12 }
+    /// Where the lights' row begins, from the window's leading edge.
+    ///
+    /// The buttons sit *in* the sidebar's top row now rather than above the
+    /// panel, which means they line up on the panel's own gutter — and the
+    /// panel's leading edge moves depending on whether it is pinned. AppKit
+    /// positions them in window coordinates and knows nothing about either, so
+    /// the sum is made here.
+    private var lightsLeadingInset: CGFloat {
+        (isPinned ? 0 : Sidebar.floatingLeadingPadding) + Sidebar.horizontalPadding
+    }
 
-    /// The centre of the lights' row, from the window's top. Floating, the row
-    /// is the gap the panel hangs below; pinned, it's the strip the panel
-    /// holds clear at its top.
+    /// The centre of the lights' row, from the window's top: whatever sits
+    /// above the top bar, plus half the row itself.
     private var lightsRowCenter: CGFloat {
-        isPinned ? ChromeReveal.lightsRowHeight / 2 : Sidebar.floatingTopPadding / 2
+        let isFloating = !isPinned
+        let above = (isFloating ? Sidebar.floatingTopPadding : 0)
+            + Sidebar.topBarTopPadding(isFloating: isFloating)
+        return above + Sidebar.topRowHeight / 2
     }
 
     var body: some View {
@@ -95,7 +112,8 @@ struct ContentView: View {
             TrafficLights(
                 isRevealed: areLightsRevealed,
                 leadingInset: lightsLeadingInset,
-                rowCenterFromTop: lightsRowCenter
+                rowCenterFromTop: lightsRowCenter,
+                onMeasure: { lightsSpan = $0 }
             )
                 .frame(width: 0, height: 0)
                 .allowsHitTesting(false)
@@ -117,7 +135,21 @@ struct ContentView: View {
             LoadingBorder(tab: session.selectedTab)
                 .zIndex(15)
 
-            if isAddressBarOpen {
+            if palette == .open {
+                // Its own layer, fading on its own clock: quicker than the card
+                // on the way out, and never scaled with it.
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { closePalette(.dismiss) }
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.18)),
+                        removal: .opacity.animation(.easeIn(duration: 0.12))
+                    ))
+                    .zIndex(19)
+            }
+
+            if palette != .closed {
                 // The traffic lights render above SwiftUI content, so if the
                 // palette opens while they're revealed they stay visible and
                 // clickable over its backdrop.
@@ -125,9 +157,11 @@ struct ContentView: View {
                     session: session,
                     tab: session.selectedTab,
                     createsTab: paletteCreatesTab,
-                    isPresented: $isAddressBarOpen
+                    onClose: closePalette
                 )
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                    .modifier(PaletteExit(leaving: palette.leaving))
+                    .allowsHitTesting(palette == .open)
+                    .transition(paletteTransition)
                     .zIndex(20)
             }
         }
@@ -200,7 +234,8 @@ struct ContentView: View {
             isPinned: $isPinned,
             isFloating: isFloating,
             hold: sidebarHold,
-            dragContext: dragContext
+            dragContext: dragContext,
+            lightsSpan: lightsSpan
         )
     }
 
@@ -211,7 +246,9 @@ struct ContentView: View {
             drag: dragContext,
             // The floating panel plus its leading inset — the exact strip of
             // page the chrome is sitting on top of.
-            chromeInset: (!isPinned && isSidebarRevealed) ? Sidebar.width + 8 : 0
+            chromeInset: (!isPinned && isSidebarRevealed)
+                ? Sidebar.width + Sidebar.floatingLeadingPadding
+                : 0
         )
         // Deliberately *no* `.id(tab.id)` here. Tying identity to the tab is
         // the obvious way to make a switch mount the right page, and it made
@@ -237,7 +274,7 @@ struct ContentView: View {
             .shadow(color: .black.opacity(0.28), radius: 20, x: 6, y: 4)
             .padding(.top, Sidebar.floatingTopPadding)
             .padding(.bottom, 10)
-            .padding(.leading, 8)
+            .padding(.leading, Sidebar.floatingLeadingPadding)
             .transition(.move(edge: .leading).combined(with: .opacity))
             .onHover { pointer.inSidebar = $0 }
             .zIndex(1)
@@ -302,9 +339,52 @@ struct ContentView: View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
     }
 
+    /// How the palette arrives, and how it leaves when it leaves by removal.
+    ///
+    /// The same way in from everywhere — ⌘L, the sidebar's address pill, a new
+    /// tab. Growing out of the pill was tried and dropped: the bar travelling
+    /// across the window from the sidebar drew the eye to the trip rather than
+    /// to the field, and the drop-in gets to typing sooner.
+    ///
+    /// No exit uses the removal half. Each one animates the palette out in
+    /// place (`PaletteExit`) and removes it afterwards, unanimated, because
+    /// which exit it is — lift or dismiss — is only known at the moment of
+    /// leaving, and a removal transition is fixed before then.
+    private var paletteTransition: AnyTransition {
+        if reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .modifier(
+                active: PaletteDrop(isDropping: true),
+                identity: PaletteDrop(isDropping: false)
+            ),
+            removal: .identity
+        )
+    }
+
     private func openAddressBar() {
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
-            isAddressBarOpen = true
+        let animation: Animation = reduceMotion ? .easeInOut(duration: 0.15) : .smooth(duration: 0.28)
+        // Asked for again while it was on its way out, it comes back from
+        // wherever it had got to rather than starting over.
+        guard palette != .open else { return }
+        withAnimation(animation) { palette = .open }
+    }
+
+    /// Exits run faster than the entrance, which is the convention that makes
+    /// an interface feel responsive: arriving can take a beat to show where
+    /// something came from, leaving shouldn't keep you waiting.
+    private func closePalette(_ reason: PaletteClose) {
+        guard palette == .open else { return }
+        if reduceMotion {
+            withAnimation(.easeInOut(duration: 0.15)) { palette = .closed }
+            return
+        }
+        // A submit lifts toward twelve o'clock, where the loading border is
+        // about to start: the border's grace period is shorter than the lift,
+        // so the one hands over to the other.
+        withAnimation(.easeIn(duration: reason == .submit ? 0.18 : 0.16)) {
+            palette = .leaving(reason)
+        } completion: {
+            if palette == .leaving(reason) { palette = .closed }
         }
     }
 
@@ -360,6 +440,7 @@ struct ContentView: View {
         session.select(primary)
         openDevToolsIfAsked(on: primary)
         enterFocusIfAsked(on: primary)
+        downloadMediaIfAsked(on: primary)
     }
 
     /// Dev affordance: `SURF_FOCUS=1` alongside `SURF_URL` enters Focus on
@@ -386,6 +467,97 @@ struct ContentView: View {
             }
             guard let article = tab.focusArticle else { return }
             tab.narrator.toggle(reading: article)
+        }
+    }
+
+    /// Dev affordance: `SURF_DOWNLOAD=1` alongside `SURF_URL` saves whatever is
+    /// playing on that page, once it is playing. `SURF_DOWNLOAD=2` also presses
+    /// retry once if it fails, which is the only way to reach the resume path
+    /// without a human clicking — resuming only exists within a session, so a
+    /// fresh launch has nothing to come back to. `SURF_DOWNLOAD_PICK=<height>`
+    /// or `=audio` takes a row from the quality menu instead of letting the
+    /// engine decide.
+    ///
+    /// Downloads were the one feature with no way in from the command line, which
+    /// made the whole stream engine — manifest, plan, segments, mux, check —
+    /// provable only by a human clicking a button and describing what happened.
+    /// That is not a reasonable way to verify several hundred parallel requests
+    /// and a muxer.
+    ///
+    /// It goes through `downloadMedia(from:)`, the same method the button calls,
+    /// so what it exercises is the real routing rather than a path of its own.
+    private func downloadMediaIfAsked(on tab: Tab) {
+        let want = ProcessInfo.processInfo.environment["SURF_DOWNLOAD"]
+        guard want == "1" || want == "2" else { return }
+        Task { @MainActor in
+            // Waits for a media report rather than for the load, because the
+            // routing reads `tab.media` and a page that has loaded has not
+            // necessarily started playing.
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if tab.media != nil { break }
+            }
+            guard let media = tab.media else {
+                debugLog("download: nothing playing to save")
+                return
+            }
+            // What the menu would show. Logged before downloading because the
+            // menu itself only opens on a click, and nothing else exercises the
+            // list it is built from.
+            let offered = await DownloadManager.shared.options(for: tab)
+            let rows = DownloadOptions.video(from: offered.options)
+            for row in rows.prefix(8) {
+                debugLog("menu: \(row.title) — \(row.detail(duration: offered.duration))")
+            }
+            if let sound = DownloadOptions.audio(from: offered.options) {
+                debugLog("menu: \(sound.title) — \(sound.detail(duration: offered.duration))")
+            }
+
+            debugLog("download: saving \(media.kind) \(media.sourceURL)")
+            // `SURF_DOWNLOAD_PICK=720` takes that row, and `=audio` the sound.
+            // The menu is the one part of this feature that needs a click, so
+            // without this the choice reached the engine only in unit tests and
+            // the plumbing between them was unproven — which is how a chosen
+            // quality came to be honoured on YouTube and silently ignored
+            // everywhere else.
+            let asked = ProcessInfo.processInfo.environment["SURF_DOWNLOAD_PICK"]
+            var chosen: DownloadOption?
+            if let asked {
+                chosen = asked == "audio"
+                    ? DownloadOptions.audio(from: offered.options)
+                    : rows.first { $0.height == Int(asked) }
+                if let chosen {
+                    debugLog("download: chose \(chosen.title) (\(chosen.id))")
+                } else {
+                    // Said rather than passed over, so a run cannot look like it
+                    // proved a choice when it fell back to the default pick.
+                    debugLog("download: no row for \(asked); taking the engine's pick")
+                }
+            }
+            DownloadManager.shared.downloadMedia(from: tab, choosing: chosen)
+            guard want == "2" else { return }
+
+            // The row is created synchronously by the start, so it is already
+            // there to watch.
+            guard let item = DownloadManager.shared.activeItem(for: tab) else {
+                debugLog("download: nothing to retry")
+                return
+            }
+            for _ in 0..<240 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if !item.isActive { break }
+            }
+            guard case .failed(let message) = item.state else {
+                debugLog("download: finished without needing a retry")
+                return
+            }
+            debugLog("download: failed — \(message)")
+            // A pause before retrying, both because a person would take one and
+            // because a test needs a window in which to change what the server
+            // will do. Without it the retry races the failure it is reacting to.
+            try? await Task.sleep(for: .seconds(10))
+            debugLog("download: retrying")
+            DownloadManager.shared.retry(item, in: tab)
         }
     }
 
@@ -754,5 +926,55 @@ private struct WindowTitle: View {
         Color.clear
             .frame(width: 0, height: 0)
             .navigationTitle(tab.displayTitle)
+    }
+}
+
+// MARK: - Palette motion
+
+/// Where the address palette is in its life.
+enum PalettePhase: Equatable {
+    case closed
+    case open
+    /// Animating out in place, ahead of being removed.
+    case leaving(PaletteClose)
+
+    var leaving: PaletteClose? {
+        if case .leaving(let reason) = self { return reason }
+        return nil
+    }
+}
+
+/// The palette's way in from a command: dropped from just above, out of focus,
+/// settling as it lands — the way Spotlight arrives.
+private struct PaletteDrop: ViewModifier {
+    let isDropping: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isDropping ? 0 : 1)
+            .scaleEffect(isDropping ? 0.96 : 1, anchor: .top)
+            .offset(y: isDropping ? -10 : 0)
+            .blur(radius: isDropping ? 6 : 0)
+    }
+}
+
+/// The palette's ways out that aren't a removal: lifting away on submit, or
+/// settling back and fading on a dismissal.
+private struct PaletteExit: ViewModifier {
+    let leaving: PaletteClose?
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(leaving == nil ? 1 : 0)
+            .scaleEffect(scale, anchor: .top)
+            .offset(y: leaving == .submit ? -16 : 0)
+    }
+
+    private var scale: CGFloat {
+        switch leaving {
+        case nil: 1
+        case .submit: 0.97
+        case .dismiss: 0.98
+        }
     }
 }

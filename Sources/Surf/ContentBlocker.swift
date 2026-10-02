@@ -500,7 +500,10 @@ final class ContentBlocker {
     /// Present in `surfBlockingChanged`'s `userInfo` when the user flipped a
     /// switch — the setting, or a site's pause — and absent when only the
     /// rules moved underneath it. A flip is what a tab reloads for.
-    static let enabledChangedKey = "enabledChanged"
+    /// `nonisolated` because a notification's observer reads it from whatever
+    /// context the notification arrives in, and an immutable string needs no
+    /// actor to protect it.
+    nonisolated static let enabledChangedKey = "enabledChanged"
     /// Element hiding was turned on or off. This one does recompile, because it
     /// is a different set of rules rather than the same set applied differently.
     func hidingDidChange() {

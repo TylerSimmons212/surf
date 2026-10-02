@@ -57,6 +57,11 @@ final class Tab: NSObject, Identifiable {
     private(set) var canGoBack: Bool = false
     private(set) var canGoForward: Bool = false
     private(set) var lastError: String?
+    /// Counts failed loads, for anything that needs to know whether *this*
+    /// load failed. `lastError` can't say: it outlives the load that set it
+    /// until something clears it, so a link clicked from an error page would
+    /// read as failing before it had started.
+    private(set) var failedLoads = 0
     private(set) var favicon: NSImage?
 
     /// Nil until the page reports media. Survives pausing, so a paused tab
@@ -110,6 +115,9 @@ final class Tab: NSObject, Identifiable {
     @ObservationIgnored private var hasCommittedDocument = false
 
     @ObservationIgnored private var emptyPopupWatchdog: Task<Void, Never>?
+    /// Watches for a page opening itself in a new tab and then sending this
+    /// one elsewhere. See `TabSwap`.
+    @ObservationIgnored private var tabSwap = TabSwap()
 
     /// The colour at the top of the page, used to tint the title strip so the
     /// window chrome belongs to the site rather than sitting apart from it.
@@ -262,6 +270,10 @@ final class Tab: NSObject, Identifiable {
             // video players does nothing without it. Off by default in
             // WKWebView; Safari has it on.
             config.preferences.isElementFullscreenEnabled = true
+            // Repairs a standard web API rather than adding a feature: without
+            // this, every site's own Picture-in-Picture button throws, while
+            // `document.pictureInPictureEnabled` still claims otherwise.
+            NativePictureInPicture.enable(on: config.preferences)
         }
         providedConfiguration = nil
 
@@ -524,7 +536,7 @@ final class Tab: NSObject, Identifiable {
         if hit.mediaIsVideo, media?.hasVideo == true {
             items.append(ActionMenuItem("Pop Out Video") { [weak self] in
                 guard let self else { return }
-                PopOutController.shared.toggle(self)
+                session?.toggleFloatingVideo(self)
             })
         }
 
@@ -548,8 +560,6 @@ final class Tab: NSObject, Identifiable {
         menu.insertItem(.separator(), at: items.count)
     }
 
-    /// A new tab in this tab's own island, on `url`.
-    @discardableResult
     /// A tab WebKit is about to load into by itself.
     ///
     /// The mode is the point. A popup used to start on the home screen like
@@ -566,6 +576,15 @@ final class Tab: NSObject, Identifiable {
         mode = .browsing
     }
 
+    /// A new tab in this tab's own island, on `url`.
+    ///
+    /// The result is discardable because most of the menu items that open one
+    /// have nothing further to do with it; only "Open Link in Split" needs the
+    /// tab back. The attribute and this comment had drifted up onto
+    /// `willBeLoadedByPage`, which returns nothing, so the compiler was
+    /// complaining about the attribute being pointless there *and* about the
+    /// result going unused at both call sites here.
+    @discardableResult
     private func openInNewTab(_ url: URL, select: Bool) -> Tab? {
         guard let session else { return nil }
         let opened = session.addTab(select: select)
@@ -802,6 +821,23 @@ final class Tab: NSObject, Identifiable {
         return await pageAgent.value(method, params, as: type)
     }
 
+    /// What this page fetched to play what it is playing.
+    ///
+    /// Asked of the frame the player is in first, because a manifest for this
+    /// video was fetched by the document showing it — and an embedded player is a
+    /// separate document whose requests the top frame cannot see. Falls back to
+    /// the main frame, which is right for a page whose player is not in an iframe
+    /// and is the only option once a frame has gone.
+    func streamTap() async -> StreamTap.Report? {
+        if let mediaFrame,
+           let report = await pageAgent.value(
+               .streamTap, as: StreamTap.Report.self, in: mediaFrame
+           ) {
+            return report
+        }
+        return await pageAgent.value(.streamTap, as: StreamTap.Report.self)
+    }
+
     /// Takes one frame's report and works out what the player should show.
     ///
     /// The old rule was that the newest `play` event won. That is right until a
@@ -855,7 +891,8 @@ final class Tab: NSObject, Identifiable {
         debugLog(
             "media: chose \(winner.state.elementID) of \(candidates.count) "
             + "\(Int(s.width))x\(Int(s.height)), metadata=\(s.hasMetadata), "
-            + "muted=\(s.isMuted), loop=\(s.loops), frames=\(mediaFrames.count)"
+            + "muted=\(s.isMuted), loop=\(s.loops), frames=\(mediaFrames.count), "
+            + "audio=\(s.audioBytes.map { String(Int($0)) } ?? "?"), audible=\(s.isAudible)"
         )
     }
 
@@ -900,6 +937,74 @@ final class Tab: NSObject, Identifiable {
     func skipMedia(by seconds: Double) {
         Task { @MainActor in
             _ = await runInMediaFrame(.mediaSkip, ["delta": seconds], as: PageProtocol.Empty.self)
+        }
+    }
+
+    /// Whether this tab's video is in the system's Picture-in-Picture window.
+    ///
+    /// Tracked rather than asked, because the question is only answerable
+    /// through the page and every caller here is synchronous. It can drift if
+    /// somebody closes the system window by its own button — the next attempt
+    /// to enter simply re-enters, which is harmless.
+    private(set) var isInNativePictureInPicture = false
+
+    /// Puts the chosen video into macOS's Picture-in-Picture window.
+    ///
+    /// Returns whether it took, because the caller has somewhere else to go if
+    /// it didn't: Surf's own pop-out panel, which needs no private API and
+    /// works on pages where no single element is cleanly addressable.
+    @discardableResult
+    func enterNativePictureInPicture() async -> Bool {
+        guard NativePictureInPicture.isAvailable, let id = mediaElementID,
+              let webView = liveWebView
+        else { return false }
+
+        // Dispatched through the page agent's own runtime, so the element is
+        // resolved by Surf's registry — the same element the ranking chose, not
+        // whatever `querySelector('video')` happens to find first.
+        let script = """
+            return await globalThis['\(PageRuntime.handle)']
+              ?.dispatch('\(PageProtocol.Method.mediaPictureInPicture.rawValue)',
+                         { id: '\(id)', on: true })
+            """
+        _ = await NativePictureInPicture.runAsUser(
+            script, in: mediaFrame, on: webView, reading: "mode"
+        )
+
+        // Asked again, a beat later, because the answer changes after the
+        // question. `webkitPresentationMode` read straight after the call is
+        // still "inline" — which read as a refusal, so the panel opened on top
+        // of a Picture-in-Picture window that had started perfectly well.
+        try? await Task.sleep(for: .milliseconds(450))
+        let readBack = """
+            return await globalThis['\(PageRuntime.handle)']
+              ?.dispatch('\(PageProtocol.Method.mediaPictureInPicture.rawValue)', { id: '\(id)' })
+            """
+        let mode = await NativePictureInPicture.runAsUser(
+            readBack, in: mediaFrame, on: webView, reading: "mode"
+        )
+        isInNativePictureInPicture = mode == "picture-in-picture"
+        debugLog("pip: enter -> \(mode ?? "refused")")
+        return isInNativePictureInPicture
+    }
+
+    /// Brings it back inline. No gesture is needed to leave, but the same door
+    /// is used so there is only one path to maintain.
+    func exitNativePictureInPicture() {
+        guard isInNativePictureInPicture, let id = mediaElementID,
+              let webView = liveWebView
+        else { return }
+        isInNativePictureInPicture = false
+        debugLog("pip: exit")
+        let script = """
+            return await globalThis['\(PageRuntime.handle)']
+              ?.dispatch('\(PageProtocol.Method.mediaPictureInPicture.rawValue)',
+                         { id: '\(id)', on: false })
+            """
+        Task { @MainActor in
+            _ = await NativePictureInPicture.runAsUser(
+                script, in: mediaFrame, on: webView, reading: "mode"
+            )
         }
     }
 
@@ -1473,6 +1578,7 @@ final class Tab: NSObject, Identifiable {
     func submit(_ input: String, diving: Bool = false) {
         guard let url = URLResolver.resolve(input) else { return }
         hasNavigatedExplicitly = true
+        tabSwap.readerNavigated()
         pendingRestore = nil
         lastError = nil
         if diving && mode == .home {
@@ -1608,6 +1714,20 @@ final class Tab: NSObject, Identifiable {
     /// True makes the overlay a transparent transport instead of a reader.
     private(set) var focusVideoStage = false
 
+    /// Which theater is up, once `focusVideoStage` is true.
+    enum VideoStageKind {
+        /// Asking WebKit for its viewer; the overlay draws nothing yet.
+        case raising
+        /// WebKit's own video viewer. It draws its own controls, so Surf's
+        /// transport stays out of the way.
+        case native
+        /// Surf's stage: the element pinned by the media bridge, with Surf's
+        /// transport over it. What runs when WebKit refuses.
+        case custom
+    }
+    private(set) var videoStageKind: VideoStageKind = .raising
+    @ObservationIgnored private var videoStageTask: Task<Void, Never>?
+
     // MARK: - Site lenses
 
     /// The site lens this tab is in, if any.
@@ -1677,6 +1797,7 @@ final class Tab: NSObject, Identifiable {
     /// A navigation the lens made itself. Distinct from `submit` because it
     /// carries no address-bar intent and must not disturb the dive.
     func loadInSiteLens(_ url: URL) {
+        tabSwap.readerNavigated()
         hasNavigatedExplicitly = true
         lastError = nil
         webView.load(URLRequest(url: url))
@@ -1811,14 +1932,16 @@ final class Tab: NSObject, Identifiable {
 
     @ObservationIgnored private var stageWatchdog: Task<Void, Never>?
 
-    /// The shared half of raising a stage: pin the ranking's current pick,
-    /// promote it, lock the page. Used by the theater and the pop-out.
+    /// The shared half of raising a stage: pin the element, promote it, lock
+    /// the page. Used by the theater and the pop-out.
     /// - Parameter keepingInteraction: the theater leaves the player alive
     ///   under the pointer; the pop-out wants the page inert — its own
     ///   chrome is the only control surface.
-    fileprivate func beginVideoStage(keepingInteraction: Bool) {
-        stagedElementID = mediaElementID
-        stagedFrame = mediaFrame
+    fileprivate func beginVideoStage(
+        elementID: String?, frame: WKFrameInfo?, keepingInteraction: Bool
+    ) {
+        stagedElementID = elementID
+        stagedFrame = frame
         Task { @MainActor in
             await runOnStagedElement(.mediaStage)
             setPageScrollLocked(true, keepingInteraction: keepingInteraction)
@@ -1945,8 +2068,10 @@ final class Tab: NSObject, Identifiable {
             case .video:
                 // The stage promotes an element the media bridge can
                 // address, and the bridge tracks elements from their first
-                // play — so the offer waits for one.
-                return media?.hasVideo == true
+                // play — so the offer waits for one, and one with sound: a
+                // thin page whose only video is a muted advert classifies as
+                // a video page too.
+                return hasStageableVideo
             }
         }
         // No confident classification, but a started video is its own
@@ -1960,7 +2085,7 @@ final class Tab: NSObject, Identifiable {
     /// a page the classifier didn't confidently claim for prose, or one it
     /// called a video page outright.
     private var offersVideoStage: Bool {
-        guard media?.hasVideo == true else { return false }
+        guard hasStageableVideo else { return false }
         guard let detection = focusDetection,
               detection.confidence >= FocusClassification.offerThreshold
         else { return true }
@@ -1984,23 +2109,120 @@ final class Tab: NSObject, Identifiable {
     /// especially: the embed's video is invisible to the detector, so prose
     /// wins the classification every time.
     func enterVideoStage() {
-        guard media?.hasVideo == true else { return }
-        narrator.stop()
-        focusVideoStage = true
-        focusPhase = .active
-        beginVideoStage(keepingInteraction: true)
-        startStageWatchdog()
-        debugLog("focus: video staged from the reader")
+        guard let candidate = stageCandidate else { return }
+        raiseVideoStage(candidate, from: "the reader")
     }
 
     /// Lowers the theater. Back to the reader when the stage was raised from
     /// one; back to the page when the stage was the whole show.
     func exitVideoStage() {
         guard focusVideoStage else { return }
-        endVideoStage()
+        lowerVideoStage()
         focusVideoStage = false
         if focusArticle == nil {
             focusPhase = .inactive
+        }
+    }
+
+    /// The video the theater would put on stage: one with a picture and with
+    /// sound, chosen by `MediaRanking.stageIndex`. Not the primary pick, which
+    /// can be a playing advert while the feature sits paused.
+    private var stageCandidate: (elementID: String, frame: WKFrameInfo?)? {
+        let candidates = liveCandidates
+        guard let index = MediaRanking.stageIndex(
+            among: candidates.map { ($0.state.signals, $0.state.hasVideo) }
+        ) else { return nil }
+        let pick = candidates[index]
+        return (pick.state.elementID, mediaFrames[pick.frameID]?.frame)
+    }
+
+    /// Whether this page holds a video worth a theater. Also what the
+    /// reader's Watch button asks, so it can't offer what entering refuses.
+    var hasStageableVideo: Bool { stageCandidate != nil }
+
+    /// Raises the theater: WebKit's own viewer when it will take the page,
+    /// Surf's stage when it won't.
+    ///
+    /// WebKit chooses which video its viewer shows, and it chooses better than
+    /// the media bridge can — it refuses a page whose only video is an advert,
+    /// which is the case Surf's stage kept getting wrong. `candidate` is only
+    /// for the fallback, pinned now, while it still points at the video that
+    /// was worth offering.
+    private func raiseVideoStage(
+        _ candidate: (elementID: String, frame: WKFrameInfo?), from origin: String
+    ) {
+        narrator.stop()
+        focusVideoStage = true
+        focusPhase = .active
+        videoStageKind = .raising
+        videoStageTask?.cancel()
+        videoStageTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            if let webView = liveWebView, await NativeVideoViewer.enter(on: webView) {
+                // Left while WebKit was still answering: the viewer opened
+                // for nobody, so it closes again.
+                guard !Task.isCancelled, focusVideoStage else {
+                    NativeVideoViewer.exit(on: webView)
+                    return
+                }
+                videoStageKind = .native
+                watchNativeViewer(on: webView)
+                // Which element WebKit chose, when it is in this document —
+                // the evidence that it skipped the advert.
+                let chosen = try? await webView.evaluateJavaScript(
+                    "(e => e ? (e.id || e.tagName) : 'a frame')(document.fullscreenElement)"
+                ) as? String
+                debugLog("focus: video in the native viewer from \(origin) — \(chosen ?? "?")")
+                return
+            }
+            guard !Task.isCancelled, focusVideoStage else { return }
+            videoStageKind = .custom
+            beginVideoStage(
+                elementID: candidate.elementID, frame: candidate.frame,
+                keepingInteraction: true
+            )
+            startStageWatchdog()
+            debugLog("focus: video staged from \(origin) — native viewer refused")
+        }
+    }
+
+    /// Whichever theater is up, taken down.
+    private func lowerVideoStage() {
+        videoStageTask?.cancel()
+        videoStageTask = nil
+        switch videoStageKind {
+        case .native:
+            stageWatchdog?.cancel()
+            stageWatchdog = nil
+            if let liveWebView { NativeVideoViewer.exit(on: liveWebView) }
+        case .custom:
+            endVideoStage()
+        case .raising:
+            // Nothing is up yet. The raising task checks `focusVideoStage`
+            // after WebKit answers and closes a viewer that opened late.
+            break
+        }
+        videoStageKind = .raising
+    }
+
+    /// The viewer has its own way out — its close button, its own Escape —
+    /// and none of them tell the embedder. Polled, so leaving it that way
+    /// leaves Focus too rather than stranding the tab in a theater with
+    /// nothing in it.
+    private func watchNativeViewer(on webView: WKWebView) {
+        stageWatchdog?.cancel()
+        stageWatchdog = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, !Task.isCancelled, focusVideoStage,
+                      videoStageKind == .native
+                else { return }
+                if !NativeVideoViewer.isActive(on: webView) {
+                    debugLog("focus: native viewer closed itself — leaving the theater")
+                    exitVideoStage()
+                    return
+                }
+            }
         }
     }
 
@@ -2011,7 +2233,7 @@ final class Tab: NSObject, Identifiable {
     /// Pins and stages for the pop-out. False when there is nothing to show.
     func stageVideoForPopOut() -> Bool {
         guard media?.hasVideo == true else { return false }
-        beginVideoStage(keepingInteraction: false)
+        beginVideoStage(elementID: mediaElementID, frame: mediaFrame, keepingInteraction: false)
         return true
     }
 
@@ -2047,18 +2269,12 @@ final class Tab: NSObject, Identifiable {
         // A video page gets the stage, not the reader: no extraction — the
         // page's own element is the content, promoted in place.
         if offersVideoStage || focusDetection?.kind == .video {
-            guard media?.hasVideo == true else {
+            guard let candidate = stageCandidate else {
+                debugLog("focus: no video with sound to stage")
                 focusPhase = .failed("Start the video, then enter Focus.")
                 return
             }
-            focusVideoStage = true
-            focusPhase = .active
-            // Pinned now, while the ranking still points at the video the
-            // user actually started — not later, when a preview may have
-            // taken the ranking from it.
-            beginVideoStage(keepingInteraction: true)
-            startStageWatchdog()
-            debugLog("focus: video staged")
+            raiseVideoStage(candidate, from: "Focus")
             return
         }
 
@@ -2128,7 +2344,7 @@ final class Tab: NSObject, Identifiable {
         narrator.stop()
         if focusVideoStage {
             // Back exactly as the page drew it.
-            endVideoStage()
+            lowerVideoStage()
         }
         focusVideoStage = false
         focusPhase = .inactive
@@ -2236,6 +2452,12 @@ final class Tab: NSObject, Identifiable {
         // unstage, and the pin must not survive onto the next page.
         stageWatchdog?.cancel()
         stageWatchdog = nil
+        videoStageTask?.cancel()
+        videoStageTask = nil
+        if videoStageKind == .native, let liveWebView {
+            NativeVideoViewer.exit(on: liveWebView)
+        }
+        videoStageKind = .raising
         focusVideoStage = false
         stagedElementID = nil
         stagedFrame = nil
@@ -2349,6 +2571,16 @@ extension Tab: WKNavigationDelegate {
         preferences: WKWebpagePreferences
     ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         if navigationAction.targetFrame?.isMainFrame == true,
+           navigationAction.navigationType == .other,
+           let host = navigationAction.request.url?.host,
+           let pageHost = webView.url?.host,
+           ContentBlocker.isEnabled,
+           !ContentBlocker.shared.isPaused(on: pageHost),
+           tabSwap.refuses(to: host, from: pageHost, at: Date()) {
+            debugLog("refused a tab swap from \(pageHost) to \(host)")
+            return (.cancel, preferences)
+        }
+        if navigationAction.targetFrame?.isMainFrame == true,
            let host = navigationAction.request.url?.host {
             blockingHost = host
             if ContentBlocker.shared.isActive(for: host) != isBlocking {
@@ -2417,6 +2649,7 @@ extension Tab: WKNavigationDelegate {
             return
         }
         lastError = error.localizedDescription
+        failedLoads += 1
         debugLog("failed — \(error.localizedDescription)")
     }
 }
@@ -2428,9 +2661,9 @@ extension Tab: WKScriptMessageHandler {
         _ controller: WKUserContentController,
         didReceive message: WKScriptMessage
     ) {
-        let name = message.name
-        let body = message.body
         MainActor.assumeIsolated {
+            let name = message.name
+            let body = message.body
             switch name {
             case BlockBridge.handlerName:
                 recordRequests(BlockBridge.decode(body))
@@ -2470,6 +2703,9 @@ extension Tab: WKUIDelegate {
         if let url = navigationAction.request.url, isAdWindow(url) {
             debugLog("refused a window to \(url.host ?? url.absoluteString)")
             return nil
+        }
+        if let host = navigationAction.request.url?.host, let pageHost = webView.url?.host {
+            tabSwap.pageOpenedWindow(to: host, from: pageHost, at: Date())
         }
 
         // Must be built with WebKit's configuration, not a fresh one, or the

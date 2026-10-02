@@ -76,7 +76,8 @@ const worlds = {
   // youtube.js and amazon.js are not resident either — Tab evaluates them when the site
   // lens opens — but it registers the youtube.* methods against the page
   // world's agent, so it installs here like everything else.
-  page: ['runtime-page.js', 'media.js', 'find.js', 'youtube.js', 'amazon.js'],
+  page: ['runtime-page.js', 'media.js', 'stream.js', 'find.js', 'youtube.js',
+         'amazon.js'],
 };
 
 const agents = {};
@@ -309,6 +310,32 @@ check_size block.js              30000
 # staging, ancestor neutralisation, and lights-out all have to run where the
 # element lives, which is here.
 check_size media.js              16000
+# Every frame of every page, at document start. Growth here is paid on every page
+# load including ad iframes, so a rise wants a reason.
+#
+# Raised from 4000 when the tap learned to keep one streaming request. YouTube
+# serves no media by URL any more — every format in a player response arrives
+# with no url and no cipher — so the bytes its player posts are the only route to
+# its own media, and that is a body rather than an address. It is the one request
+# in the file whose contents matter and the only thing here that wraps anything.
+#
+# Most of the rise is the wrapper and the comment explaining why the request must
+# be cloned before it is read: the body is a stream, reading consumes it, and
+# consuming it would leave the player's own request arriving empty. That is a
+# mistake worth paying several hundred bytes to stop someone making again.
+#
+# The wrapper is gated to YouTube, so every other page in the world still gets a
+# tap that wraps nothing.
+#
+# Raised again, from 7000, for reading the formats a page lists. Without it a
+# YouTube download takes whatever the server decides to send, which in practice
+# was 144p VP9 in WebM — a container AVFoundation cannot read, so the download
+# finished and then would not mux. Choosing needs the list, and the list is on
+# the page.
+#
+# Read when a download starts rather than at document start, so none of it costs
+# anything on a page nobody is downloading from.
+check_size stream.js              9000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000

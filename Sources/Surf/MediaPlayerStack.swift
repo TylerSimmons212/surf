@@ -1,3 +1,4 @@
+import SurfCore
 import SwiftUI
 
 /// Now-playing controls at the foot of the sidebar.
@@ -7,6 +8,10 @@ import SwiftUI
 /// announced by a count chip. Hovering fans them into full rows.
 struct MediaPlayerStack: View {
     let session: BrowserSession
+    /// Kept open while the download menu is tracking, because the menu is a
+    /// window of its own and reaching for it otherwise reads as leaving the
+    /// sidebar.
+    let hold: SidebarHold
 
     @State private var isExpanded = false
 
@@ -16,7 +21,16 @@ struct MediaPlayerStack: View {
     private let rowHeight: CGFloat = 54
     private let rowSpacing: CGFloat = 4
 
-    private var tabs: [Tab] { session.mediaTabs }
+    /// Audible tabs at rest; everything holding media once the stack is
+    /// fanned open.
+    ///
+    /// The collapsed list is the one that interrupts you, so it only carries
+    /// what is making a noise. A muted video is still findable — it is just
+    /// behind the gesture that means "show me the rest" rather than in front
+    /// of somebody who was reading an article.
+    private var tabs: [Tab] {
+        isExpanded ? session.allMediaTabs : session.mediaTabs
+    }
 
     var body: some View {
         if let primary = tabs.first {
@@ -26,7 +40,7 @@ struct MediaPlayerStack: View {
                 ZStack(alignment: .bottom) {
                     // Reversed so the nearest card draws last and lands on top.
                     ForEach(Array(others.enumerated()).reversed(), id: \.element.id) { index, tab in
-                        MediaRow(tab: tab, session: session, isPrimary: false)
+                        MediaRow(tab: tab, session: session, hold: hold, isPrimary: false)
                             .frame(height: rowHeight)
                             .offset(y: offset(forCardAt: index))
                             .scaleEffect(cardScale(index), anchor: .bottom)
@@ -40,6 +54,7 @@ struct MediaPlayerStack: View {
                     MediaRow(
                         tab: primary,
                         session: session,
+                        hold: hold,
                         isPrimary: true,
                         stackedCount: isExpanded ? 0 : others.count
                     )
@@ -95,6 +110,7 @@ struct MediaPlayerStack: View {
 struct MediaRow: View {
     let tab: Tab
     let session: BrowserSession
+    let hold: SidebarHold
     let isPrimary: Bool
     /// How many other tabs are holding media, shown as a chip on the front row
     /// so the hidden stack is still discoverable. Zero hides the chip.
@@ -107,12 +123,24 @@ struct MediaRow: View {
     /// An embedded player reports the *embed's* hostname, or nothing at all —
     /// 'hgcloud.to' rather than the site you're on — so a blank line falls back
     /// to the page's own host, which is the thing that was actually opened.
+    /// Where it came from, and how far into it you are.
+    ///
+    /// The position used to be a two-point bar filling along the bottom of the
+    /// card, which is the same shape every loading indicator in the world has
+    /// — including Surf's own download ring and loading border — so a playing
+    /// video read as a download in progress. A time cannot be mistaken for
+    /// one.
+    ///
+    /// `MediaCaption` holds the rule that this line must never repeat the one
+    /// above it, which it did: both fall back through the same candidates, so
+    /// a video with no artist and no host printed the title twice.
     private func subtitle(_ media: MediaState) -> String {
-        guard media.artist.isEmpty else { return media.artist }
-        if let address = tab.currentURL, let host = URL(string: address)?.host() {
-            return host
-        }
-        return tab.displayTitle
+        MediaCaption.text(
+            besides: media.title.isEmpty ? tab.displayTitle : media.title,
+            artist: media.artist,
+            host: tab.currentURL.flatMap { URL(string: $0)?.host() },
+            position: MediaTime.position(media.currentTime, of: media.duration)
+        )
     }
 
     /// Same corner as a tab row, so the player reads as part of the column
@@ -128,13 +156,28 @@ struct MediaRow: View {
                     artwork(media)
 
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(media.title.isEmpty ? tab.displayTitle : media.title)
-                            .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
-                            .lineLimit(1)
-                        Text(subtitle(media))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(media.title.isEmpty ? tab.displayTitle : media.title)
+                                .font(.system(size: 13, weight: isPrimary ? .medium : .regular))
+                                .lineLimit(1)
+                            // Only the silent ones are marked, and only here —
+                            // they appear solely in the fanned-open stack, so
+                            // the mark answers the question their being there
+                            // raises: why did this not announce itself?
+                            if !media.signals.isAudible {
+                                Image(systemName: "speaker.slash.fill")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                                    .help("Playing without sound")
+                            }
+                        }
+                        let caption = subtitle(media)
+                        if !caption.isEmpty {
+                            Text(caption)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
 
                     Spacer(minLength: 0)
@@ -158,14 +201,10 @@ struct MediaRow: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 9)
 
-                if isPrimary {
-                    progress(media)
-                } else {
-                    Spacer(minLength: 0)
-                }
+                Spacer(minLength: 0)
             }
-            // Clipped, not just backed: the progress bar runs to the card's
-            // bottom edge and would otherwise square off its corners.
+            // Clipped, not just backed: the hover wash below runs to the
+            // card's edge and would otherwise square off its corners.
             .background(.regularMaterial, in: cardShape)
             .clipShape(cardShape)
             .overlay {
@@ -292,18 +331,20 @@ struct MediaRow: View {
     @ViewBuilder
     private func popOutControl(_ media: MediaState) -> some View {
         if media.hasVideo {
+            let floating = session.isVideoFloating(tab)
             IconButton(
-                systemName: PopOutController.shared.isPoppedOut(tab)
+                systemName: floating
                     ? "arrow.down.right.and.arrow.up.left"
                     : "rectangle.on.rectangle",
                 size: 12,
                 width: 26,
                 height: 26,
                 cornerRadius: 13,
-                help: PopOutController.shared.isPoppedOut(tab) ? "Bring Back" : "Pop Out Video"
+                help: floating ? "Bring Back" : "Pop Out Video"
             ) {
-                PopOutController.shared.toggle(tab)
+                session.toggleFloatingVideo(tab)
             }
+
         }
     }
 
@@ -315,20 +356,30 @@ struct MediaRow: View {
         if let item = DownloadManager.shared.activeItem(for: tab) {
             switch item.state {
             case .downloading:
-                ZStack {
-                    Circle()
-                        .trim(from: 0, to: max(0.04, item.fraction))
-                        .stroke(Color.accentColor,
-                                style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 21, height: 21)
-                        .animation(.easeOut(duration: 0.25), value: item.fraction)
-                    Image(systemName: "square.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(.secondary)
+                // A ring around a stop square is the universal "press this to
+                // give up" shape, and this one was not a button at all — it
+                // drew the square, took the click, and did nothing with it.
+                Button {
+                    DownloadManager.shared.cancel(item)
+                } label: {
+                    ZStack {
+                        Circle()
+                            .trim(from: 0, to: max(0.04, item.fraction))
+                            .stroke(Color.accentColor,
+                                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 21, height: 21)
+                            .animation(.easeOut(duration: 0.25), value: item.fraction)
+                        Image(systemName: "square.fill")
+                            .font(.system(size: 6))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 26, height: 26)
+                    .contentShape(Circle())
                 }
-                .frame(width: 26, height: 26)
-                .help("Downloading \(Int(item.fraction * 100))%")
+                .buttonStyle(.plain)
+                .help("Downloading \(Int(item.fraction * 100))% — click to stop")
+                .pointerStyle(.link)
 
             case .finished:
                 IconButton(
@@ -352,13 +403,10 @@ struct MediaRow: View {
                 }
             }
         } else if media.isDownloadable {
-            IconButton(
-                systemName: "arrow.down.circle",
-                size: 13, width: 26, height: 26, cornerRadius: 13,
-                help: "Download Video"
-            ) {
-                DownloadManager.shared.downloadMedia(from: tab)
-            }
+            DownloadMenuButton(
+                tab: tab, hold: hold, systemName: "arrow.down.circle",
+                help: "Download Video", isEnabled: true, bounces: false
+            )
         } else if media.needsExtraction {
             // Segmented media has no URL to fetch and is reassembled from the
             // page instead. A different glyph because it's a slower,
@@ -366,41 +414,17 @@ struct MediaRow: View {
             // machinery behind it is never named. As far as anyone using Surf
             // is concerned this is just what downloading a stream looks like.
             let isReady = MediaExtractor.shared.isAvailable
-            IconButton(
-                systemName: "arrow.down.circle.dotted",
-                size: 13, width: 26, height: 26, cornerRadius: 13,
-                isEnabled: isReady,
-                motion: isReady ? .bounce : .none,
+            DownloadMenuButton(
+                tab: tab, hold: hold, systemName: "arrow.down.circle.dotted",
                 help: isReady
                     ? "Download Video — reassembled from the stream"
-                    : "This video is streamed in segments and can't be saved as a file"
-            ) {
-                DownloadManager.shared.downloadMedia(from: tab)
-            }
+                    : "This video is streamed in segments and can't be saved as a file",
+                isEnabled: isReady, bounces: isReady
+            )
         }
     }
 
-    /// How far through the media is, only for media with a known duration —
-    /// live streams report zero, and a bar stuck at 0% reads as broken.
-    ///
-    /// Deliberately *not* the accent colour. A saturated bar filling left to
-    /// right along the bottom of a card is the same shape the whole platform
-    /// uses for work in progress, and reading it as a stalled download is the
-    /// obvious mistake — it's the one everyone made. Neutral and thin, it reads
-    /// as a position along a track, which is what it is. The equalizer on the
-    /// artwork carries the "this is playing" signal instead, and carries it
-    /// better, because motion means running in a way that colour never did.
-    @ViewBuilder
-    private func progress(_ media: MediaState) -> some View {
-        if media.duration > 0 {
-            GeometryReader { geometry in
-                Rectangle()
-                    .fill(Color.primary.opacity(0.28))
-                    .frame(width: geometry.size.width * media.progress)
-                    .animation(.linear(duration: 0.9), value: media.progress)
-            }
-            .frame(height: 2)
-        }
-    }
 }
+
+
 

@@ -27,6 +27,42 @@ public enum MediaSource {
     /// downloadable file down the slow path.
     private static let manifestExtensions: Set<String> = ["m3u8", "m3u", "mpd"]
 
+    /// Media types that mean "this is an index, not the thing it indexes".
+    ///
+    /// Needed because `kind(of:)` can only guess from the path, and a signed
+    /// manifest URL routinely has no extension in it at all. Such a URL
+    /// classifies as `.file`, goes down the direct path, and saves a few
+    /// kilobytes of playlist text under an `.mp4` name. The response is the
+    /// first thing in the whole sequence that can say otherwise.
+    private static let manifestTypes: Set<String> = [
+        "application/vnd.apple.mpegurl",
+        "application/x-mpegurl",
+        "application/mpegurl",
+        "audio/mpegurl",
+        "audio/x-mpegurl",
+        "video/vnd.apple.mpegurl",
+        "application/dash+xml",
+    ]
+
+    /// Whether a response's own declared type says this is a manifest.
+    ///
+    /// Deliberately not folded into `kind(of:)`: that function answers from a
+    /// URL and is called before anything has been requested, while this one
+    /// needs a response in hand. Keeping them apart is what stops a caller
+    /// believing it can classify a response it does not have.
+    ///
+    /// `text/plain` is not on the list even though misconfigured servers do
+    /// serve playlists as it. Treating it as a manifest would misroute every
+    /// genuinely plain file, and a wrong answer here sends a perfectly
+    /// downloadable thing to a subprocess that will not find it.
+    public static func isManifest(contentType: String) -> Bool {
+        // `application/x-mpegURL; charset=utf-8` is one type and one parameter.
+        let base = contentType
+            .split(separator: ";", maxSplits: 1).first
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
+        return manifestTypes.contains(base)
+    }
+
     public static func kind(of sourceURL: String) -> MediaSourceKind {
         let text = sourceURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return .none }

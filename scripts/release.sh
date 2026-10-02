@@ -206,6 +206,31 @@ case "$(enclosure_for)" in
     ;;
 esac
 
+# A Mac too old for this build has to keep finding something it *can* run.
+#
+# Sparkle skips any entry whose `sparkle:minimumSystemVersion` is above the
+# running system and offers the newest of what is left, so the last release
+# built for the old floor is the only thing such a machine can still see. Lose
+# that entry and its updater finds nothing eligible, says "you're up to date"
+# forever, and never gets to explain itself — the one failure here that looks
+# exactly like success.
+#
+# It is a quiet thing to get wrong. `generate_appcast` rebuilds the feed from
+# whatever archives are sitting in $DIST, so the entry goes missing by somebody
+# cleaning a build directory, not by anyone deciding anything.
+LEGACY_FLOOR=26
+if ! grep -o "<sparkle:minimumSystemVersion>[^<]*" "$APPCAST" \
+    | sed 's/.*>//' \
+    | awk -F. -v floor="$LEGACY_FLOOR" '$1 <= floor { seen = 1 } END { exit !seen }'
+then
+    echo "error: nothing in the appcast is runnable on macOS $LEGACY_FLOOR any more." >&2
+    echo "       Every entry asks for a newer system, so a Mac on $LEGACY_FLOOR will be" >&2
+    echo "       told it is up to date for good, with no way to find out otherwise." >&2
+    echo "       Keep the last $LEGACY_FLOOR build's archive in $DIST so its entry" >&2
+    echo "       stays in the feed." >&2
+    exit 1
+fi
+
 echo
 echo "Ready: $DMG"
 echo "sha256: $(shasum -a 256 "$DMG" | cut -d' ' -f1)"

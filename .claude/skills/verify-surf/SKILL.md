@@ -57,6 +57,10 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_FOCUS=1` | enter Focus once the page settles; `2` also starts narration |
 | `SURF_SILENT=1` | mute narration (launch.sh sets this by default) |
 | `SURF_DEVTOOLS=<pane>` | open dev tools on `elements/styles/network/storage/tags/performance/console` |
+| `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
+| `SURF_DOWNLOAD=2` | and press retry once if it fails, after a 10s pause |
+| `SURF_DOWNLOAD_PICK=<height>` | take that row from the quality menu; `=audio` for sound alone |
+| `SURF_KEEP_SCRATCH=1` | keep a stream download's working directory for inspection |
 | `SURF_STATE_DIR=<dir>` | replace `~/Library/Application Support/Surf` (launch.sh sets this) |
 
 Fixtures live in `testpages/`; pass them as `file://$PWD/testpages/<name>.html`.
@@ -75,7 +79,35 @@ Healthy: process alive, first lines are `[surf] rules …` then `[surf] loaded <
 
 ## Drive
 
-Everything reachable by environment is driven at launch; there is no IPC into a running instance. A feature that needs a click (pop-out, downloads, split panes, capture) is driven by a human: hand them the exact sequence from the feature file and the log line that proves it, using `diagnosing-bugs`' HITL loop if it's a bug hunt.
+Everything reachable by environment is driven at launch; there is no IPC into a running instance. A feature that needs a click (pop-out, split panes, capture) is driven by a human: hand them the exact sequence from the feature file and the log line that proves it, using `diagnosing-bugs`' HITL loop if it's a bug hunt.
+
+A page that fetches cross-origin needs serving over HTTP, not `file://`. A
+`file://` page has a null origin, so the fetches an MSE fixture makes are refused
+and nothing plays — which surfaces as `download: nothing playing to save` and
+looks like a bug in the tap rather than in the fixture.
+`python3 -m http.server 8787` inside `testpages/` and a `http://127.0.0.1:8787/`
+URL is enough.
+
+`SURF_DOWNLOAD=2` exists for resume, which cannot be reached otherwise: resuming
+is a within-session idea, so a fresh launch has nothing to come back to and the
+retry has to happen in the same run. The 10-second pause before it is what gives
+a test time to change what the server will do.
+
+`SURF_KEEP_SCRATCH=1` is for the case where a download finishes and then will
+not assemble, which is a question about two files that are deleted before anyone
+can open them. It found that `AVAssetReader` reads 25MB of a 538MB fragmented MP4
+and reports success — a thing no amount of reading the output could have shown,
+because the output looked like a bad mux rather than a bad read.
+
+Serving the stream yourself is the only way to interrupt one deliberately. Two
+things learned doing it. Counting requests to decide when to refuse does not
+work — WebKit's own player is playing the same stream from the same server, its
+fetches are indistinguishable from the downloader's, and it eats the budget. Use
+a handshake instead: refuse until a file appears, and create the file once the
+failure shows up in the log. And three refusals is the schedule's attempt limit,
+so that is what it takes to fail a download rather than merely delay it.
+
+Downloads used to be in that list. `SURF_DOWNLOAD=1` takes them out of it: it waits for a media report and then calls `downloadMedia(from:)`, the same method the button calls, so the routing it exercises is the real one. It is there because the stream engine — manifest, plan, several hundred parallel requests, a muxer — is not something a human can verify by describing what they saw. Two things to know when using it: the file lands in the real `~/Downloads`, because `SURF_STATE_DIR` does not redirect that, so a 4K fixture leaves 300MB behind per run. And `WKWebsiteDataStore` keeps cookies outside Application Support, so a run reports the account's cookies rather than an empty jar.
 
 `scripts/window.sh <run> [shot]` records the main window's id, size, and (with permission) title to `windows.txt` and tries a screenshot. Both the title and the screenshot need Screen Recording permission for the terminal or host app running the script; when refused, the window record is still evidence and the script says so.
 
@@ -96,6 +128,14 @@ Standards: drive the real user path (the env drivers go through the same `Tab` m
 ```
 
 Run it after every attempt, failed ones included. It never deletes `.verify/<run>/`; delete that yourself only once the report is written.
+
+A `SURF_DOWNLOAD` run also leaves the saved file in the real `~/Downloads`, and
+that one is not yours to tidy silently: **`~/.Trash` is not writable from an
+agent shell.** macOS TCC answers `mv` with "Operation not permitted", and a
+`find -exec mv` reports the `-print` either way, so a cleanup step can look like
+it worked while several hundred megabytes accumulate per run. Check with `ls`
+rather than trusting the move, and hand the user an `rm` for the artifact
+instead of deleting their file on a guess.
 
 ## Maintenance
 

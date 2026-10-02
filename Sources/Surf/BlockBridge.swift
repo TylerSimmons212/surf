@@ -159,18 +159,8 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
-      // Standing in for what was blocked.
-      //
-      // A player loads Google's ad SDK, waits for the global to appear, and
-      // hands the viewer to it. Refuse the script and the global never arrives,
-      // so the player waits for a callback that cannot come and the viewer, who
-      // pressed play, watches nothing happen.
-      //
-      // So a script we have a stand-in for is answered rather than silenced:
-      // the stub is installed, nothing is fetched, and the element reports the
-      // load the player is waiting on. What the stub then says is that there
-      // are no ads — a state every player already handles, because it is what
-      // an unfilled ad slot looks like to them.
+      // Standing in for what was blocked: the stub says there are no ads, which
+      // every player already handles. README › Blocking.
 
       const SURROGATES = \(Surrogate.javaScriptTable);
       const installed = new Set();
@@ -236,33 +226,80 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
-      // Pressing play is not asking for a window.
-      //
-      // A player can be configured to open one when clicked — the config sits
-      // in the page, next to the video's own settings — so the click that plays
-      // the video is the click that opens the tab. Every defence that reasons
-      // about gestures is defeated by design there: the gesture is real, and it
-      // is the one the viewer made. Checking the destination doesn't help
-      // either, because these land on throwaway affiliate domains no list
-      // carries.
-      //
-      // What is constant is the intent. Pressing play is a request to play, not
-      // to open a window, and no legitimate player has ever needed one. That is
-      // what gets refused — which is why it works on a domain nobody has seen
-      // before.
+      // Pressing play is not asking for a window. Refused by intent, not by
+      // destination, so it works on domains no list carries. README › Blocking.
 
       const PLAYER_PARTS = \(AntiAdblock.playerSelectorsJS);
-      let playerClickUntil = 0;
+      let playerClickUntil = 0, armedBy = null;
 
-      document.addEventListener('click', function (event) {
+      // An embed big enough to be a player.
+      function isEmbeddedPlayer(element) {
+        if (element.tagName !== 'IFRAME') { return false; }
+        const box = element.getBoundingClientRect();
+        return box.width >= SMALLEST_PLAYER && box.height >= SMALLEST_PLAYER;
+      }
+
+      const CONTROLS = 'a,button,input,select,textarea,label,summary,[role=button],[role=link]';
+
+      // Judged by what is under the pointer, not by what took the click: they
+      // differ exactly when a sheet lies over the player. README › Blocking.
+      function clickIsOnPlayer(event) {
         const target = event.target;
-        if (!target || !target.closest) { return; }
+        if (!target || !target.closest) { return false; }
+        try { if (target.closest(PLAYER_PARTS)) { return true; } } catch (error) {}
+        let stack, overControl = false;
         try {
-          if (target.closest(PLAYER_PARTS)) {
-            playerClickUntil = Date.now() + \(Int(AntiAdblock.playerClickWindow * 1000));
+          stack = document.elementsFromPoint(event.clientX, event.clientY);
+          // A real control over an embed means what it says.
+          overControl = !!target.closest(CONTROLS);
+        } catch (error) { return false; }
+        for (let i = 0; i < stack.length; i++) {
+          const element = stack[i];
+          if (element === target) { continue; }
+          if (element.tagName === 'VIDEO') { return true; }
+          if (!overControl && isEmbeddedPlayer(element)) { return true; }
+        }
+        return false;
+      }
+
+      // Armed when the button goes down. The scripts open their window on
+      // mousedown, before a click exists, and the new tab takes the mouseup
+      // with it. On the window, capturing, so a page's own listener can't stop
+      // the event before this sees it.
+      function armIfOnPlayer(event) {
+        if (clickIsOnPlayer(event)) {
+          playerClickUntil = Date.now() + \(Int(AntiAdblock.playerClickWindow * 1000));
+          armedBy = event;
+        }
+      }
+
+      // A refused window proves what took the click was a trap. If it covers
+      // the player, let clicks through it, so the next one plays. Never the
+      // video, and never a control smaller than the picture, like play itself.
+      function disarm() {
+        const event = armedBy;
+        armedBy = null;
+        if (!event || !event.target || !event.target.closest) { return; }
+        const trap = event.target.closest('a') || event.target;
+        if (trap.tagName === 'VIDEO' || trap.querySelector('video,iframe')) { return; }
+        const box = trap.getBoundingClientRect();
+        let stack;
+        try { stack = document.elementsFromPoint(event.clientX, event.clientY); } catch (error) { return; }
+        for (let i = 0; i < stack.length; i++) {
+          const under = stack[i];
+          if (trap.contains(under)) { continue; }
+          if (under.tagName !== 'VIDEO' && !isEmbeddedPlayer(under)) { continue; }
+          const player = under.getBoundingClientRect();
+          if (box.width * box.height >= player.width * player.height * TRAP_COVERAGE) {
+            trap.style.setProperty('pointer-events', 'none', 'important');
+            trap.setAttribute('data-surf-untrapped', '');
           }
-        } catch (error) { /* a selector this engine dislikes */ }
-      }, true);
+          return;
+        }
+      }
+      ['pointerdown', 'mousedown', 'click'].forEach(function (type) {
+        window.addEventListener(type, armIfOnPlayer, true);
+      });
 
       const nativeOpen = window.open;
       if (typeof nativeOpen === 'function') {
@@ -274,6 +311,7 @@ enum BlockBridge {
 
           if (Date.now() < playerClickUntil && elsewhere) {
             note(String(url), 'popup', false);
+            disarm();
             // What a popup blocker returns, and what these scripts already
             // handle — they have to, because every browser blocks some of them.
             return null;
@@ -283,17 +321,8 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
-      // The layer over the play button.
-      //
-      // A transparent sheet covering the player, stacked above the player's own
-      // controls, catching the click meant for the video. The viewer aims at
-      // play, hits this, and gets a window — which is what "I clicked play and
-      // it opened an ad" actually is.
-      //
-      // It is made transparent to the pointer rather than removed. Removing an
-      // element a player put there is a guess about someone else's code; this
-      // changes nothing except who receives the click, and the click was always
-      // meant for the player.
+      // The layer over the play button: made transparent to the pointer, not
+      // removed, so only who receives the click changes. README › Blocking.
 
       const TRAP_COVERAGE = \(AntiAdblock.clickTrapCoverage);
       const SMALLEST_PLAYER = \(Int(AntiAdblock.smallestPlayer));
@@ -305,11 +334,14 @@ enum BlockBridge {
       }
 
       function untrapPlayers() {
+        // An embedded player is an iframe out here, and a sheet over it is
+        // the same trap.
         let videos;
-        try { videos = document.querySelectorAll('video'); } catch (error) { return; }
+        try { videos = document.querySelectorAll('video,iframe'); } catch (error) { return; }
 
         for (let v = 0; v < videos.length; v++) {
           const video = videos[v];
+          if (video.tagName === 'IFRAME' && !isEmbeddedPlayer(video)) { continue; }
 
           // The *outermost* player element, not the nearest one. `closest`
           // stops at the first match, which on a real player is the inner
@@ -421,17 +453,8 @@ enum BlockBridge {
       }
 
       // ------------------------------------------------------------------
-      // The hole the ad leaves behind.
-      //
-      // Refusing the request doesn't reclaim the space: a slot is a container
-      // given a height before anyone knows what will fill it, so a blocked ad
-      // leaves the reservation standing and the reader gets a blank band.
-      //
-      // What happens here is a release of the reservation, not a hiding of the
-      // element. `display: none` is a decision that can't be walked back if the
-      // site fills the slot a second later; a container no longer holding a
-      // height open collapses while it is empty and grows again if something
-      // real arrives.
+      // The hole the ad leaves behind. Released rather than hidden, so a slot
+      // that fills later grows back. README › Blocking.
 
       const COLLAPSING = \(collapsing);
       const SLOT_NAMES = new Set(\(AdSlot.slotNamesJSArray));

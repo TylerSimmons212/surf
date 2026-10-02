@@ -73,6 +73,14 @@
   My stack starts with a family that doesn't exist — the card should strike it
   and mark the one that actually renders.</p>
 
+<h2 style="margin-top: 40px">Contrast specimens</h2>
+<p style="color: #999; font-size: 14px;">Grey on white at 14px — fails AA, the card should offer a fix.</p>
+<p style="color: #999; font-size: 28px;">The same grey at 28px — large text, passes AA, fails AAA.</p>
+<div style="background: rgba(20, 40, 80, 0.85); padding: 10px;">
+  <p style="color: #557; margin: 0;">Dim text on a translucent dark panel — the background the card
+  judges against should be the composited murk, not white.</p>
+</div>
+
 <h2 style="margin-top: 40px">Inactive CSS specimens</h2>
 <p><span class="sleepy-span">An inline span with width, height and vertical-align</span> —
    all three should carry a sleeping reason.</p>

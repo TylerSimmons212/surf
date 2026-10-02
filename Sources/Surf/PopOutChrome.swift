@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import SurfCore
 import SwiftUI
 
 /// State for the pop-out panel's controls, shared between the AppKit tracking
@@ -205,20 +206,10 @@ struct PopOutChrome: View {
     }
 
     private func timeLabel(_ seconds: Double) -> some View {
-        Text(Self.formatted(seconds))
+        Text(MediaTime.display(seconds))
             .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(.white.opacity(0.85))
             .allowsHitTesting(false)
-    }
-
-    /// h:mm:ss only when there are hours; m:ss otherwise.
-    static func formatted(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
-        let total = Int(seconds.rounded())
-        let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60)
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
     }
 
     private func circleButton(
@@ -271,6 +262,11 @@ private final class DragView: NSView {
     override func mouseDown(with event: NSEvent) {
         // performDrag hands the whole gesture to the window server, so the drag
         // keeps up with the pointer instead of being chased frame by frame.
+        //
+        // It also runs its own event loop and does not return until the mouse
+        // comes up, which is the one honest "the drag is over" signal AppKit
+        // offers — there is no `windowDidEndMove` to pair with the resize one,
+        // and watching `windowDidMove` go quiet means guessing at a timeout.
         window?.performDrag(with: event)
     }
 }

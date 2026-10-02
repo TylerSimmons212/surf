@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Native HLS</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 14px -apple-system; }
+  video { width: 100%; max-width: 900px; display: block; margin: 0 auto; }
+  p { text-align: center; padding: 8px; }
+</style>
+<!--
+  WebKit plays HLS natively, so `currentSrc` here is the master playlist itself
+  and `MediaSource.kind` classifies it `.manifest`. That is the case the native
+  stream engine exists for, and the only way to exercise it without a site.
+
+  Apple's reference stream: fragmented MP4, separate audio renditions, several
+  qualities. The packaging most of the modern web uses, and the shape that needs
+  a muxer.
+-->
+<video
+  controls
+  autoplay
+  muted
+  playsinline
+  src="https://devstreaming-cdn.apple.com/videos/streaming/examples/adv_dv_atmos/main.m3u8"></video>
+<p>Apple's reference HLS stream: fMP4, separate audio, multiple renditions.</p>

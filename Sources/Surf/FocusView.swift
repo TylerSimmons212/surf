@@ -51,9 +51,13 @@ struct FocusOverlay: View {
                     AmazonLensView(tab: tab, lens: lens)
                 } else
                 // Theater mode: the page's own video is the stage, so the
-                // overlay must be transparent chrome, not a reader.
+                // overlay must be transparent chrome, not a reader. WebKit's
+                // viewer brings its own controls, and anything drawn here
+                // would sit on top of them and take their keys.
                 if tab.focusVideoStage {
-                    VideoLensView(tab: tab)
+                    if tab.videoStageKind == .custom {
+                        VideoLensView(tab: tab)
+                    }
                 } else
                 // The recipe lens is the default face of a recipe page; the
                 // article lens stays one toggle away, because a recipe page
@@ -187,7 +191,7 @@ struct ArticleLensView: View {
 
             Divider().frame(height: 16)
 
-            if tab.media?.hasVideo == true {
+            if tab.hasStageableVideo {
                 IconButton(
                     systemName: "play.rectangle",
                     size: 12, width: 24, height: 24, cornerRadius: 7,

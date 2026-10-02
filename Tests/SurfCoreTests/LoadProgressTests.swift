@@ -122,4 +122,37 @@ struct LoadProgressTests {
         progress.begin()
         #expect(progress.value == LoadProgress.start)
     }
+
+    // MARK: - Ending
+
+    @Test("A load that finishes inside the grace period draws nothing", arguments: [false, true])
+    func unseenLoad(failed: Bool) {
+        // Never revealed, so there's no arc to finish or fade — even for a
+        // failure, which the page itself will report.
+        #expect(LoadProgress.ending(shownFor: nil, failed: failed) == .unseen)
+    }
+
+    @Test("A failed load fades where it stopped instead of closing the lap")
+    func failedLoadFades() {
+        #expect(LoadProgress.ending(shownFor: .milliseconds(40), failed: true) == .fade)
+        #expect(LoadProgress.ending(shownFor: .seconds(3), failed: true) == .fade)
+    }
+
+    @Test("A briefly shown arc is held until it has been seen")
+    func briefArcIsHeld() {
+        let shown: Duration = .milliseconds(100)
+        #expect(
+            LoadProgress.ending(shownFor: shown, failed: false)
+                == .closeLap(after: LoadProgress.minimumShown - shown)
+        )
+    }
+
+    @Test("An arc that has been on screen long enough closes at once")
+    func longArcClosesNow() {
+        #expect(LoadProgress.ending(shownFor: .seconds(2), failed: false) == .closeLap(after: .zero))
+        #expect(
+            LoadProgress.ending(shownFor: LoadProgress.minimumShown, failed: false)
+                == .closeLap(after: .zero)
+        )
+    }
 }

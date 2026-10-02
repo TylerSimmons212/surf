@@ -268,10 +268,33 @@ final class BrowserSession {
 
     /// Every tab holding media, with the active one first — that's the row the
     /// stack shows when collapsed.
+    /// The tabs worth announcing: the ones making a noise.
+    ///
+    /// This used to be every tab holding any media at all, which is how a
+    /// muted autoplay ad on an article got a row in the sidebar and a pop-out
+    /// window of its own. Silence is the tell, and `MediaSignals.isAudible`
+    /// is where the reasoning lives.
     var mediaTabs: [Tab] {
-        let holding = allTabs.filter { $0.media != nil }
-        guard let primary = nowPlayingTab else { return holding }
-        return [primary] + holding.filter { $0.id != primary.id }
+        ordered(allTabs.filter { $0.media?.signals.isAudible == true })
+    }
+
+    /// Everything holding media, audible or not — what the media section shows
+    /// when it is expanded. A muted video is still a video somebody may want
+    /// to find; it just shouldn't be the thing that interrupts them.
+    var allMediaTabs: [Tab] {
+        ordered(allTabs.filter { $0.media != nil })
+    }
+
+    /// The tabs holding media that isn't making a noise.
+    var silentMediaTabs: [Tab] {
+        ordered(allTabs.filter { $0.media != nil && $0.media?.signals.isAudible != true })
+    }
+
+    /// Whatever is playing goes first; the rest keep their own order.
+    private func ordered(_ tabs: [Tab]) -> [Tab] {
+        guard let primary = nowPlayingTab, tabs.contains(where: { $0.id == primary.id })
+        else { return tabs }
+        return [primary] + tabs.filter { $0.id != primary.id }
     }
 
     /// The selected tab, held rather than searched for.
@@ -577,7 +600,7 @@ final class BrowserSession {
         island.rememberedSelection = island.tabs.first?.id
 
         for tab in outgoing {
-            if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+            unfloatVideo(tab)
             DevToolsController.shared.close(for: tab)
             tab.teardown()
         }
@@ -631,7 +654,7 @@ final class BrowserSession {
         // Same courtesy as switching tabs: don't take a video off screen
         // without leaving it somewhere watchable.
         if shouldAutoPopOut(selectedTab) {
-            PopOutController.shared.popOut(selectedTab)
+            floatVideo(selectedTab)
         }
         currentIsland.rememberedSelection = selectedTabID
         currentIsland = island
@@ -649,10 +672,8 @@ final class BrowserSession {
         }
 
         // Arriving at a tab that's floating in its own window folds it back in,
-        // exactly as selecting it from the list would.
-        if PopOutController.shared.isPoppedOut(target) {
-            PopOutController.shared.restore()
-        }
+        // exactly as selecting it from the list would — either window.
+        unfloatVideo(target)
 
         adoptSelection(target)
         scheduleSave()
@@ -749,7 +770,7 @@ final class BrowserSession {
         }
 
         for tab in island.tabs {
-            if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+            unfloatVideo(tab)
             DevToolsController.shared.close(for: tab)
             tab.teardown()
         }
@@ -1014,11 +1035,9 @@ final class BrowserSession {
     func close(_ tab: Tab) {
         guard let island = island(holding: tab), let index = island.index(of: tab) else { return }
 
-        // A popped-out tab still owns its panel; tearing it down first would
-        // leave a floating window with a dead web view inside.
-        if PopOutController.shared.isPoppedOut(tab) {
-            PopOutController.shared.restore()
-        }
+        // A floating tab still owns its window; tearing it down first would
+        // leave one showing a dead web view.
+        unfloatVideo(tab)
 
         // Before teardown, or the panel would be left showing a dead page.
         DevToolsController.shared.close(for: tab)
@@ -1259,7 +1278,7 @@ final class BrowserSession {
             if let leading = tab(new.leading), let trailing = tab(new.trailing) {
                 trailing.groupID = leading.groupID
             }
-            if let order = TabOrder.placing(
+            if let order = ListOrder.placing(
                 new.trailing,
                 immediatelyAfter: new.leading,
                 in: currentIsland.tabs.map(\.id)
@@ -1352,7 +1371,7 @@ final class BrowserSession {
         // group at its first member — a tab joining from above would otherwise
         // pull the whole section up to meet it.
         if let last = members.last,
-           let order = TabOrder.placing(tab.id, immediatelyAfter: last, in: currentIsland.tabs.map(\.id)) {
+           let order = ListOrder.placing(tab.id, immediatelyAfter: last, in: currentIsland.tabs.map(\.id)) {
             currentIsland.reorder(to: order)
         }
         currentIsland.pruneEmptyGroups()
@@ -1392,7 +1411,7 @@ final class BrowserSession {
             target = first
         }
 
-        guard let order = TabOrder.moving(members, before: target, in: currentIsland.tabs.map(\.id))
+        guard let order = ListOrder.moving(members, before: target, in: currentIsland.tabs.map(\.id))
         else { return false }
         currentIsland.reorder(to: order)
         return true
@@ -1402,7 +1421,7 @@ final class BrowserSession {
     func moveGroupToEnd(_ id: UUID) -> Bool {
         let members = TabGrouping.members(of: id, in: currentIsland.slots)
         guard !members.isEmpty,
-              let order = TabOrder.movingToEnd(members, in: currentIsland.tabs.map(\.id))
+              let order = ListOrder.movingToEnd(members, in: currentIsland.tabs.map(\.id))
         else { return false }
         currentIsland.reorder(to: order)
         return true
@@ -1459,7 +1478,7 @@ final class BrowserSession {
     @discardableResult
     func moveSplitPair(before targetID: Tab.ID) -> Bool {
         guard let split else { return false }
-        guard let order = TabOrder.moving(
+        guard let order = ListOrder.moving(
             [split.leading, split.trailing],
             before: targetID,
             in: currentIsland.tabs.map(\.id)
@@ -1471,7 +1490,7 @@ final class BrowserSession {
     @discardableResult
     func moveSplitPairToEnd() -> Bool {
         guard let split else { return false }
-        guard let order = TabOrder.movingToEnd(
+        guard let order = ListOrder.movingToEnd(
             [split.leading, split.trailing],
             in: currentIsland.tabs.map(\.id)
         ) else { return false }
@@ -1512,10 +1531,8 @@ final class BrowserSession {
         // selects a tab that deliberately has no row.
         guard let incoming = currentIsland.tabs.first(where: { $0.id == id }) else { return }
 
-        // Coming back to a popped-out tab folds it back into the window.
-        if PopOutController.shared.isPoppedOut(incoming) {
-            PopOutController.shared.restore()
-        }
+        // Coming back to a floating tab folds it back in, from either window.
+        unfloatVideo(incoming)
 
         // Leaving a tab mid-video pops it out so it stays watchable. Measured
         // before the selection changes, while the web view is still laid out.
@@ -1528,7 +1545,7 @@ final class BrowserSession {
             $0.contains(outgoing.id) && $0.contains(id)
         } ?? false
         if !outgoingStaysVisible, shouldAutoPopOut(outgoing) {
-            PopOutController.shared.popOut(outgoing)
+            floatVideo(outgoing)
         }
 
         adoptSelection(incoming)
@@ -1554,13 +1571,57 @@ final class BrowserSession {
         }
     }
 
+    /// Keeps a video watchable when its tab leaves the screen.
+    ///
+    /// macOS's own Picture-in-Picture first: it is the window people already
+    /// know, it snaps and tucks the way every other app's does, and it is the
+    /// same window a site's own button would open — so one video never has two
+    /// different floating homes depending on how it got there.
+    ///
+    /// Surf's panel is the fallback, and not a vestigial one. It needs no
+    /// private API, it carries a scrubber the system window has no room for,
+    /// and it shows the real page rather than one element, which is the only
+    /// thing that works when a player has no single addressable video.
+    /// Whether this tab's video is floating anywhere — the system's window or
+    /// Surf's panel. Callers that only want to offer the opposite verb should
+    /// ask this rather than either one.
+    func isVideoFloating(_ tab: Tab) -> Bool {
+        PopOutController.shared.isPoppedOut(tab) || tab.isInNativePictureInPicture
+    }
+
+    /// Puts it back, from wherever it went.
+    func unfloatVideo(_ tab: Tab) {
+        if PopOutController.shared.isPoppedOut(tab) { PopOutController.shared.restore() }
+        tab.exitNativePictureInPicture()
+    }
+
+    /// What every explicit control does, so the button in the media row, the
+    /// tab's context menu and the video lens cannot disagree about which
+    /// window a video floats into.
+    func toggleFloatingVideo(_ tab: Tab) {
+        isVideoFloating(tab) ? unfloatVideo(tab) : floatVideo(tab)
+    }
+
+    func floatVideo(_ tab: Tab) {
+        Task { @MainActor in
+            guard await tab.enterNativePictureInPicture() == false else { return }
+            PopOutController.shared.popOut(tab)
+        }
+    }
+
     private func shouldAutoPopOut(_ tab: Tab) -> Bool {
         guard MediaPreferences.autoPopOut else { return false }
         // A tab being closed is already torn down — nothing to pop out.
         guard currentIsland.tabs.contains(where: { $0.id == tab.id }) else { return false }
-        guard !PopOutController.shared.isPoppedOut(tab) else { return false }
+        guard !PopOutController.shared.isPoppedOut(tab),
+              !tab.isInNativePictureInPicture
+        else { return false }
         // Audio-only playback has no rectangle to crop to.
         guard let media = tab.media, media.isPlaying, media.hasVideo else { return false }
+        // And silence is not worth floating over everything you own. A muted
+        // autoplay ad satisfies every other condition here, which is exactly
+        // how one used to follow somebody out of the tab they left it in.
+        guard media.signals.isAudible else { return false }
         return true
     }
 

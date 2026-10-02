@@ -2,8 +2,10 @@
 
 A web browser for macOS, built in Swift + SwiftUI.
 
-Requires macOS 26 or later — the chrome uses the current SF Symbols effects
-(`rotate`, `drawOn`) with no fallbacks.
+Requires macOS 27 or later. The chrome uses the current SF Symbols effects
+(`rotate`, `drawOn`) with no fallbacks, and the sticker shelf reorders through
+SwiftUI's `reorderable` / `reorderContainer`, which are macOS 27 and have no
+back-deployment.
 
 ## Download
 
@@ -12,7 +14,7 @@ open the `.dmg` and drag Surf to Applications.
 
 It is signed and notarized by Apple, so it opens like any other app. No
 right-clicking, no quarantine to strip, no trip to System Settings to talk it
-into running. macOS 26 or later only; on anything older it will not launch.
+into running. macOS 27 or later only; on anything older it will not launch.
 
 To make it your browser: Settings (`⌘,`) has a **Make Surf the Default** button,
 or use System Settings › Desktop & Dock › Default web browser. Either way macOS
@@ -39,9 +41,29 @@ The window is nothing but the page, under a slim title strip that tints itself
 from the current page's `theme-color` (or its background colour). Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be
 pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or the
-search button in the sidebar) rather than a permanent toolbar — and it's the
+address in the sidebar) rather than a permanent toolbar — and it's the
 only place to type an address, including on a new tab. Each tab row has a link
 button that copies its URL.
+
+The palette drops in from just above, the same way whether it was opened from
+the sidebar's address or with `⌘L`. Growing it out of the sidebar's address was
+tried and dropped: the bar travelling across the window drew the eye to the trip
+rather than to the field. Escape settles it back and fades it. Submitting lifts
+it toward the top of the window, where the loading border starts, so one hands
+over to the other. Load progress is drawn around the
+window's edge as two crests leaving twelve o'clock in opposite directions and
+meeting at six. Nothing is drawn for a load that finishes inside 120 ms, which
+covers most cached pages, so the border only appears when there's something to
+wait for. A successful load ends in a wash of foam where the crests meet. A
+failed one fades from wherever it stopped. A ripple spreading into the page
+from where the crests met was built and tried, first as rings and then as the
+page itself refracting, and taken out: it was a flourish on every single load.
+
+Peeling a sticker off curls it as a real sheet, a port of Canvas UI's WebGL
+Peel. That can't run as it is: it captures HTML into a canvas with Chrome's
+HTML-in-Canvas API, which WebKit doesn't have, and a sticker isn't HTML. The
+shader maths carries over; the shaders are compiled from source at runtime,
+since `swift build` doesn't compile `.metal` files.
 
 A tab that's playing media shows a now-playing strip at the bottom of the
 sidebar, with play/pause and a button to pop video out into a floating
@@ -54,11 +76,73 @@ download button, with progress, cancel, retry, and Show in Finder. The list is
 kept in memory only and is empty again on relaunch.
 
 A plain media file is saved by WebKit itself, so it inherits the page's session
-and referrer. Video that's streamed in segments — a `blob:` source from Media
-Source Extensions, or an HLS/DASH manifest — has no single file to fetch, and is
-reassembled from the page instead. Only the cookies for the site being
-downloaded from are handed to the reassembler, in a temp file deleted when the
+and referrer. Video that's streamed in segments has no single file to fetch, and
+takes one of two routes.
+
+A manifest Surf can read is downloaded by Surf. HLS and DASH both parse into one
+shape, so everything after the parser is the same code either way, and the entry
+point the app calls never names a format. The manifest is the one the page itself
+fetched to play the video, so what gets parsed is a specification rather than a
+site — there are no per-site extractors here and there is no intention of adding
+any. Segments are fetched four at a time with the tab's own cookies, including
+the `HttpOnly` ones no script can read, appended in order to a single file, and
+where the picture and sound arrive separately they are combined by AVFoundation
+with nothing re-encoded. For fragmented MP4, which is most of the modern web,
+that combining is the only step that isn't plain concatenation: an
+initialisation segment followed by its media segments already *is* a file
+AVFoundation reads.
+
+How many requests run at once is found rather than chosen. A fixed number is
+wrong both ways: four is slower than it needs to be on a fast link, and eight is
+how a CDN decides one address is leeching. So it climbs one at a time, keeps a
+rise only when it earned a clear margin, halves on a 429, and stops climbing for
+good once either has happened.
+
+A large plain file is split into byte ranges and fetched the same way, because one
+connection is the slowest way to move one. Only when the server will serve ranges
+and the file is worth the extra requests; otherwise WebKit keeps it, as it always
+did.
+
+Measured on Apple's 4K reference stream, 295MB: 25.6 MB/s at a fixed four
+connections, 28.0 MB/s when allowed to find its own number, and 77 milliseconds
+to mux the result. On a 114MB plain file: 4.58s on one connection, 2.74s split
+eight ways, and the two results hash identically.
+
+A `blob:` source is the same thing arrived at differently. Media Source
+Extensions means the page assembled the stream in its own buffer, so the element
+has no URL to give — but what the page *fetched* to fill that buffer is a
+different question, and Surf has been recording the answer since the document
+started. It records only URLs, from Resource Timing, which already sees every
+request a document made including the ones a `<video>` element issued for itself.
+Nothing is wrapped to collect them and no response is read: the manifest is
+re-fetched properly afterwards, with cookies a script could not have seen.
+
+Everything else — a transport stream, a fetchable AES-128 key, a live stream with
+no end, a manifest Surf could not parse, a page that assembled its video from
+something we never saw it fetch — is handed to yt-dlp without a word to anyone,
+because a download that succeeds by another route is not an error. Only the cookies for
+the site being downloaded from are handed over, in a temp file deleted when the
 run ends.
+
+Protected video is the one refusal. Widevine and FairPlay encrypt the samples
+before they reach the decoder and there is no key to ask for, so it is refused
+immediately and said so, rather than handed to a subprocess that will fail
+slower and more obscurely. A page asking for a key system at all is enough —
+noticed, not defeated — and that is checked before a manifest is even fetched.
+
+A download that stops partway keeps what it got. Retrying carries on from the
+segment it reached rather than starting again, and a file resumed that way is
+byte-for-byte one fetched in a single pass. This is the one failure Surf does not
+hand to yt-dlp: the subprocess would begin from nothing, and the bytes already on
+disk are worth more than another engine's fresh start. It lasts for the session,
+like the downloads list itself.
+
+A finished file is checked against what the page said it was before it is
+allowed into `~/Downloads`. A video download that came back with only audio, or
+only a third of its length, is discarded while it is still in a temp directory —
+so there is nothing left to double-click, be confused by, and delete by hand.
+That check exists because a download did exactly that once, and the cause was
+never found.
 
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position
@@ -125,6 +209,31 @@ video lives in a frame the detector can't see. In either stage the arrow keys
 scrub five seconds, which is what every player on the web does; the cost is
 that the overlay holds keyboard focus while a stage is up, so the site's own
 shortcuts stop answering until you leave.
+
+That stage is now the fallback. Theater first asks WebKit for the video
+viewer Safari opens from its address bar (`_enterInWindow`, beside the
+Picture-in-Picture door in `NativePictureInPicture.swift`), because the hard
+part of theater was never pinning a video, it was choosing one. The stage
+pinned whatever the media ranking liked best, and the ranking answers a
+different question: what is playing. A muted advert looping in the corner is
+playing; the feature you paused, or haven't started, is not. So the advert
+went on stage, and an article whose only video was an advert got a theater
+pill. WebKit's viewer picks with what its own media controls know — what is
+visible, what has sound — and on a page whose only video is an advert it
+refuses. It reaches into cross-origin embeds too, without `allowfullscreen`,
+since the request comes from the app rather than the page. Its controls are
+WebKit's, so Surf's transport and the five-second arrows belong to the
+fallback only.
+
+The offer was the other half of the bug. It now waits for a video with sound
+(`MediaRanking.stageIndex`), which separates a paused feature from a playing
+muted advert where the ranking can't, and it is what the fallback stages when
+WebKit refuses. A feature muted before entering isn't offered; muting first
+is rare, and a muted autoplay advert is on half the web. `_canToggleInWindow`
+looks like the right question to ask before offering, and answered false on
+every page tried, including ones the viewer then opened on — so entering is
+attempted and confirmed by `_isInWindowActive`, and the viewer's own way out
+is noticed by polling the same property.
 
 A site can also have a lens of its own. The article, recipe and video lenses
 read whatever page they are handed; a site lens knows one site's data and one
@@ -631,6 +740,45 @@ tightly as the claim: only while a click on a video or its controls is being
 handled, and only for somewhere other than the site you are on. A share button
 that opens a window still opens it.
 
+Whether a click was on a video is judged by what lies under the pointer, not by
+what received the click. The two differ exactly when a sheet has been laid over
+the player, so asking only the second misses the case the rule exists for. It
+first did when the player was an iframe: the page around it covered the frame
+with a sheet and opened the window from its own click handler. Nothing the click
+touched was named like a player, the video was in a document this one can't see
+into, and the player's own document never heard the click. So an iframe big
+enough to hold a player counts as one, both for this rule and for making the
+sheet transparent to the pointer. The exception is a real control: a button or
+link laid over an embed was aimed at by someone who read it, so the window it
+opens opens. `testpages/iframe-trap.html` is the case.
+
+The rule is armed when the button goes down, not when the click arrives. The
+scripts that do this open their window on `mousedown`, and the new tab takes the
+`mouseup` with it, so in the case that matters the click never reaches the page
+at all. A rule listening for clicks was always one event too late. It listens on
+the window, capturing, so no listener the page registers can stop the event
+first.
+
+A refused window is also evidence about what caught the click. A trap that has
+been named, so the anonymous-sheet rule passes it by, still gives itself away
+the moment it tries to open a window from a click on the player. So when that
+happens and the element covers the player, it is made transparent to the
+pointer there and then, and the next click plays. Without that, every click is
+refused and none of them plays, which feels the same as being sent to an ad.
+The test is coverage: a play button is smaller than the picture it sits on, and
+a player that opens a window from its own play button still has to be playable.
+
+The pop-under has a mirror image that no window rule can see, because the window
+it opens is innocent. The page opens the video you clicked in a new tab, its own
+site, which a window to your own site always may, and then sends the tab you
+clicked in to an ad. Each half is ordinary on its own. Together, moments apart,
+they swap the tabs under you. So the second half is refused when it follows the
+first. Within two seconds of a page opening a window to its own site, a
+navigation of that tab to another site that the page started, rather than you,
+is cancelled. The new tab keeps what you wanted and the old one stays where you
+left it. Going somewhere yourself ends the watch. The rule is `TabSwap` in
+`SurfCore`.
+
 A blocked script is invisible to a page that never checks, and a video player is
 not that page. It loads Google's ad SDK, waits for `google.ima` to appear, and
 hands the viewer to it. Refuse the script and the global never arrives, so the
@@ -750,11 +898,147 @@ window grew taller than the screen and became something to scroll past rather
 than read, which is its own way of going unread. Settings is one pane per
 subject now: General, Privacy, Links, Reader, AI.
 
+### Saving video
+
+Surf downloads video itself. It used to hand every stream to yt-dlp, and the
+reason for changing is not speed: an external tool spends most of its effort
+reconstructing, from outside, a session the browser already has on the inside.
+Cookies, referrer, the loaded player, the tokens that player obtained. We were
+paying a subprocess, a 40&nbsp;MB runtime download and someone else's release
+cadence to simulate a browser, from inside a browser.
+
+> The page has already solved authentication. Observe or delegate; do not
+> reimplement.
+
+Every hard part of extraction is something the page did successfully a moment
+ago. It fetched a manifest, signed a URL, holds a session. A downloader living
+in the browser reads those answers instead of recomputing them, and that is the
+one structural advantage Surf has over every external tool. The limit is the
+same fact stated backwards: it works while a tab is on the page with the player
+loaded, which is exactly the situation a download button is pressed in.
+
+Six steps, and only the last two know a web view exists. `StreamTap` reports
+what the page fetched, which is the only route to a `blob:` source because the
+URL says nothing. `StreamManifest` parses HLS or DASH into one `StreamIndex`;
+the acceptance test for that boundary was that adding DASH should need no new
+code in `Sources/Surf`, and it didn't. `StreamPlan` decides which rendition to
+take and what to refuse before a byte is requested. `SegmentSchedule` hands out
+work from a cursor rather than a worklist, which is what makes the output an
+in-order append, the memory bounded, and resuming nothing more than seeding
+what is already done. `SegmentFetcher` puts the tab's own session behind each
+request, which is why signed URLs work. `StreamAssembler` concatenates, and
+muxes with nothing re-encoded.
+
+Two measurements the shape rests on. Concatenating an fMP4 init segment and its
+media segments gives a file AVFoundation parses natively, so for CMAF — roughly
+90% of modern deployments — assembly is concatenation. And `AVAssetReader`
+passthrough into `AVAssetWriter` passthrough merged separate video and audio
+into one MP4 in 27 milliseconds, which is the `ffmpeg -c copy` step that used to
+cost a subprocess.
+
+Refused by design rather than for now: DRM, detected by EME, `SAMPLE-AES` or
+`ContentProtection`, and turned down before anything is fetched rather than
+producing a file full of ciphertext. And live streams, which have no end and are
+a different problem.
+
+#### YouTube
+
+YouTube no longer serves a manifest to its own player. Measured on a real watch
+page: 40 formats, no URLs, no signature ciphers. The only route to media is a
+protobuf POST whose answer is UMP, a stream of typed parts with audio and video
+woven together.
+
+What makes this an arms race for a command-line tool is not the protocol, it is
+the credentials. A request needs a proof-of-origin token produced by obfuscated
+JavaScript that has to run in something browser-shaped, so yt-dlp needs an
+external provider running a headless browser to simulate what Surf already is.
+
+The design follows from two lines of the schema:
+
+```protobuf
+optional bytes video_playback_ustreamer_config = 5;
+optional StreamerContext streamer_context = 19;
+```
+
+Both are opaque. `StreamTap` captures one of the player's own requests, and
+those two fields are lifted out and written back as bytes, never parsed, so
+YouTube can change their insides freely. What Surf constructs is
+`client_abr_state` and the format ids, which is what lets it ask for the whole
+timeline at the quality it wants instead of what the player wants next — two
+fields of the twenty-one the player sends, measured as accepted.
+
+It is sequential, and that is the protocol rather than a shortcoming: the server
+decides how much to send per request, so a download is a loop. The parallel
+fetcher buys nothing here, which matches yt-dlp's own SABR downloader listing
+concurrency as unsupported. 712&nbsp;MB of 4K AV1 in 29 seconds.
+
+One mistake in that loop is worth keeping, because nothing about the file it
+produced looked wrong. A round's answer interleaves both streams, and asking
+from the furthest point either one reached loses the difference. Audio segments
+run 9.9 seconds against video's 5.16, so the cursor advanced on sound and left a
+quarter of the picture behind. The result opened, played, and reported exactly
+the right duration, because a gap between two fragments is not an error: each
+carries its own timestamp. 28,870 frames of 38,077, and a byte count that
+looked plausible. The cursor is now the least advanced stream, and every
+download reports whether its segments form a run with no holes, because the
+size cannot tell you.
+
+AVFoundation is the one part of the engine this path cannot use. It reads
+25&nbsp;MB of a 538&nbsp;MB fragmented MP4 and reports completion, while ffprobe
+reads the same file correctly, so SABR output is the single case that goes to
+ffmpeg.
+
+#### Which rendition
+
+The engine picks for itself: tallest wins, and the codec breaks a tie between
+equals. That was the other way round first, H.264 preferred outright so a saved
+file would play in anything, and the consequence was a cap nobody chose —
+YouTube offers no H.264 above 1080p, so a rule about codecs had quietly become a
+rule about resolution.
+
+The choice is sometimes the user's, though, because 4K AV1 is two and a half
+times the size of 1080p H.264 for the same ten minutes. So the download button
+opens a short menu: download, choose a quality, or take the sound on its own.
+One row per height rather than one per rendition, since YouTube offers 1080p in
+three codecs and several bitrates, and six rows all saying 1080p is a worse menu
+than three saying different things. WebM is left out because AVFoundation cannot
+read it and ffmpeg is optional, so a row offering 2160p VP9 at 2.1&nbsp;GB was
+offering a file that would not be produced. Sizes come from the format's own
+`contentLength`: estimating from bitrate ran more than double the real file, and
+a menu whose whole job is comparing sizes cannot be out by that much.
+
+Sound on its own is one row, not a list, and that is a finding rather than a
+simplification. It took a rendition id at first, the way a quality does, until a
+real manifest showed why that cannot work: Apple's carries ten audio renditions
+and the id of an HLS soundtrack is its NAME, so "English" names five of them —
+64k AAC-HE through 768k Dolby, one per group. An id would have taken whichever
+the publisher listed first. `EXT-X-MEDIA` declares no bandwidth either, so there
+is nothing to rank them by. The manifest does say which soundtrack belongs to
+which picture, so the request is a kind rather than a rendition, and the track is
+resolved exactly as a video download resolves its own — the default of the group
+the chosen variant points at. The two cannot disagree, and capping the height
+moves the soundtrack with it.
+
+A muxed stream has no sound to hand over separately, so it is refused rather than
+answered with the picture as well. The menu never offers the row there, because
+the row is built from the same answer the download uses: the refusal is the guard
+underneath, not the behaviour.
+
+One thing a saved soundtrack needs that a saved video does not. Apple's Dolby
+track is packaged with its timeline starting ten seconds in, which is meaningful
+inside HLS, where each rendition has its own timeline and the player aligns them,
+and meaningless once the track is alone — concatenated and renamed it reads
+`start_time=10` and plays ten seconds of silence first. So sound goes through the
+same AVFoundation pass the two-track case gets, which is where the rebase to zero
+has always come from.
+
 ### Helpers
 
-Stream downloads are done by two binaries Surf runs but doesn't build: yt-dlp
-resolves a page to its media, and ffmpeg merges separate video and audio
-streams. Neither is a user-visible feature. Settings shows one number — the
+Two binaries Surf runs but doesn't build sit behind the engine above: yt-dlp,
+for the pages Surf's own engine refuses or cannot read, and ffmpeg, for the
+containers AVFoundation will not write. Neither is on the common path any more,
+which is the point of the engine rather than a side effect of it, and neither is
+a user-visible feature. Settings shows one number — the
 Surf version — and nothing about what's inside it, because a version the user
 can't act on is noise, and "Surf is current" has to mean everything in it is
 current or the number means nothing.
@@ -766,8 +1050,8 @@ reporting. A failed update leaves the previous copy alone and tries again next
 week. Resolution runs newest-first — managed copy, then `PATH`, so `swift run`
 works without a bundle. Neither binary ships inside `Surf.app`: yt-dlp was
 dropped from the bundle to keep the app small (it was 37&nbsp;MB of a
-54&nbsp;MB app), so stream downloads start working after the first update
-check, or immediately with a copy on `PATH`.
+54&nbsp;MB app), so the fallback starts working after the first update check, or
+immediately with a copy on `PATH`.
 
 The two are handled differently, and the difference is licensing:
 
@@ -942,8 +1226,16 @@ Whoever you send the image to drags Surf to Applications and opens it. Nothing
 else: no quarantine to strip, no security pane to visit. Surf declares itself a
 handler for `http` and `https`, so it appears in System Settings › Desktop &
 Dock › Default web browser, and Settings › Links has a button that asks macOS
-the same question. It is `LSMinimumSystemVersion 26.0`, so a Mac on Sequoia or
-older can't run it at all.
+the same question. It is `LSMinimumSystemVersion 27.0`, so an older Mac can't
+run it at all.
+
+That key is also what keeps an older Mac from being *offered* a build it can't
+launch: `generate_appcast` reads it out of the bundle and writes
+`sparkle:minimumSystemVersion` into the entry, so Sparkle skips that entry and
+offers the newest release the machine can actually run. Which means the last
+macOS 26 release has to stay in the feed permanently — it is the only entry a
+26 machine can still see, and with it gone the updater finds nothing eligible
+and goes quiet with no way to say why.
 
 ## Layout
 
@@ -1016,10 +1308,52 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/MediaBridge.swift` — the media and find domains of the agent
 - `Sources/Surf/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
 - `Sources/Surf/DownloadManager.swift` — download history, progress, and disk writes;
-  routes each source to WebKit or to yt-dlp
+  routes each source to WebKit, to the stream engine, or to yt-dlp
 - `Sources/Surf/DownloadsPanel.swift` — toolbar button and downloads list
 - `Sources/Surf/MediaExtractor.swift` — resolves the helper, exports one site's
   cookies, and runs the process
+- `Sources/SurfCore/StreamIndex.swift` — what a manifest offers, with no trace of
+  which kind of manifest said it; the one shape both parsers produce
+- `Sources/SurfCore/StreamManifest.swift` — the one entry point the app uses, so
+  a third format will not touch it
+- `Sources/SurfCore/HLSPlaylist.swift` — m3u8 into a `StreamIndex`; master and
+  media playlists through one function, because which you have is something you
+  find out by reading it
+- `Sources/SurfCore/DASHManifest.swift` — MPD into the same shape; four ways of
+  addressing a segment, attributes that inherit, and a pairing the format never
+  states
+- `Sources/SurfCore/StreamPlan.swift` — which rendition to take and what to
+  refuse, decided before anything is requested
+- `Sources/SurfCore/SegmentSchedule.swift` — a cursor rather than a worklist, so
+  the buffer is bounded, the output is an in-order append, and resuming is seeding
+  what is already done
+- `Sources/SurfCore/Parallelism.swift` — how many connections to use, found by
+  climbing slowly and giving ground fast
+- `Sources/SurfCore/ByteRanges.swift` — where to cut a plain file so it can be
+  fetched like a segmented one
+- `Sources/SurfCore/StreamProgress.swift` — how far a download got, and whether
+  that describes the work in front of it
+- `Sources/SurfCore/SavedMedia.swift` — whether the finished file is the file that
+  was asked for
+- `Sources/Surf/SegmentFetcher.swift` — the tab's own session behind each request
+- `Sources/Surf/StreamAssembler.swift` — concatenation, and AVFoundation muxing
+  with nothing re-encoded
+- `Sources/Surf/StreamDownload.swift` — one download start to finish; decides
+  nothing itself
+- `Sources/Surf/MediaInspector.swift` — the four facts `SavedMedia` judges
+- `Sources/Surf/StreamTap.swift` — what a page fetched to play what it is
+  playing, which is the only way to reach a `blob:` source
+- `Sources/SurfCore/Protobuf.swift` — the wire format with no schema, because
+  the messages worth reading are a handful and the rest should pass through
+- `Sources/SurfCore/UMPReader.swift` — part framing: five of forty-odd types
+  understood, the others skipped rather than treated as a problem
+- `Sources/SurfCore/SABRMessages.swift` — eight messages of about forty, and the
+  two expensive ones deliberately never parsed
+- `Sources/Surf/SABRClient.swift` — one request built from a captured one, so it
+  differs from a working request in exactly one way
+- `Sources/SurfCore/DownloadOption.swift` — what a menu row says, from a format
+  list or a manifest, so it reads the same either way
+- `Sources/Surf/DownloadMenu.swift` — the two pages behind the download button
 - `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
 - `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
@@ -1091,6 +1425,12 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
+- Saving a stream playing inside a cross-origin iframe. The tap is injected into
+  every frame and records what each one fetched, so the facts exist — but the
+  download is started from `tab.media`, which is chosen across frames by
+  `MediaRanking` and then addressed through `mediaFrame`. Whether that reaches an
+  embedded player has not been tested, and claiming it does without a fixture
+  would be a guess.
 - Registering as a browser, so links from other apps arrive — and land in a
   mini window, which is the case that feature exists for
 - A back/forward menu on long-press
@@ -1099,3 +1439,21 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
   Island" and "Open Link in New Island" are both waiting on
 - Cross-origin iframes, which are a separate document nothing in the page can
   reach into — theming one means running the whole pass inside it
+- The tab list on `reorderable` / `reorderContainer`, as the sticker shelf
+  already is. It is the better model and not just less code: each section
+  becomes a collection, so reordering a tab and filing it into a folder stop
+  being separate gestures with separate delegates, and the drop reports which
+  folder it meant instead of leaving it to be inferred from whatever row the
+  pointer was over.
+
+  It does not work yet. With a `reorderContainer` on the list, lifting a row
+  dies inside SwiftUI: `DragContainerStorage.payload(for:)` fails a
+  precondition reading *"Expected UUID, got UUID"* — a message that cannot
+  distinguish the two types it is comparing. Six configurations of the list
+  were tried, including with the collection dimension removed entirely, and
+  every one crashes; a standalone harness built to match it, including the
+  enum row type, the class-backed model, a conditional `ForEach` body and an
+  empty region inside the container, does not crash in any of them. The
+  sticker shelf's own container is not involved — removing it changes nothing.
+  Whatever the list does that the harness does not has not been found, and a
+  radar is probably worth more than another afternoon of bisecting.

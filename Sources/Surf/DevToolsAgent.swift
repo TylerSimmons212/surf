@@ -20,7 +20,7 @@ enum DevToolsAgent {
     /// *different* world than the script leaves `messageHandlers.x` undefined
     /// and the agent fails completely silently.
     static let worldName = "surf.devtools"
-    static var world: WKContentWorld { .world(name: worldName) }
+    @MainActor static var world: WKContentWorld { .world(name: worldName) }
 
     /// One-way, agent → Surf.
     static let eventHandlerName = "surfDevToolsEvents"
@@ -1759,6 +1759,50 @@ enum DevToolsAgent {
           // refusal is still reported rather than swallowed.
           return ({ error: 'not a valid selector: ' + selector });
         }
+      });
+
+      runtime.define('CSS.colorPair', (params) => {
+        const node = nodeFor(params && params.nodeId);
+        if (!node || node.nodeType !== 1) { return ({ error: 'no element' }); }
+        const cs = getComputedStyle(node);
+
+        // The effective background: every ancestor's backgroundColor,
+        // composited top-down from the canvas. Painted in order from the
+        // root so a translucent panel over a dark hero reads as the murky
+        // blend it actually is, not as either layer alone. The canvas
+        // itself is taken as white — WebKit's default — which is only wrong
+        // for pages that rely on a themed underpage, and wrong in the
+        // conservative direction.
+        const chain = [];
+        for (let el = node; el; el = el.parentElement) { chain.push(el); }
+        let bg = [255, 255, 255];
+        for (let i = chain.length - 1; i >= 0; i--) {
+          const raw = resolveColor(getComputedStyle(chain[i]).backgroundColor, chain[i]);
+          if (!raw || raw[3] === 0) { continue; }
+          const alpha = raw[3] / 255;
+          bg = [
+            raw[0] * alpha + bg[0] * (1 - alpha),
+            raw[1] * alpha + bg[1] * (1 - alpha),
+            raw[2] * alpha + bg[2] * (1 - alpha)
+          ];
+        }
+
+        // A translucent foreground is judged as what the eye gets: the text
+        // colour composited over that background.
+        let fg = resolveColor(cs.color, node) || [0, 0, 0, 255];
+        const fgAlpha = fg[3] / 255;
+        fg = [
+          fg[0] * fgAlpha + bg[0] * (1 - fgAlpha),
+          fg[1] * fgAlpha + bg[1] * (1 - fgAlpha),
+          fg[2] * fgAlpha + bg[2] * (1 - fgAlpha)
+        ];
+
+        return ({
+          fg: [Math.round(fg[0]), Math.round(fg[1]), Math.round(fg[2])],
+          bg: [Math.round(bg[0]), Math.round(bg[1]), Math.round(bg[2])],
+          fontSize: parseFloat(cs.fontSize) || 16,
+          fontWeight: cs.fontWeight || '400'
+        });
       });
 
       runtime.define('CSS.fontsForNode', (params) => {

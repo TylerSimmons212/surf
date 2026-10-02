@@ -106,3 +106,121 @@ struct PopOutSizingTests {
                                             CGSize(width: 1080, height: 1920)))
     }
 }
+
+@Suite("Pop-out placement")
+struct PopOutPlacementTests {
+
+    /// A 1512x982 screen with the menu bar taken off the top.
+    private let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
+    private let wide = CGSize(width: 1920, height: 1080)
+
+    @Test("With nothing remembered it opens in the bottom trailing corner")
+    func firstTime() {
+        let f = PopOutSizing.placement(remembered: nil, forVideo: wide, onVisible: visible)
+        #expect(f.maxX == visible.maxX - PopOutSizing.margin)
+        #expect(f.minY == visible.minY + PopOutSizing.margin)
+    }
+
+    @Test("A remembered frame is honoured, position and size both")
+    func remembered() {
+        // y chosen so the whole panel fits: 500 + 337.5 is inside 949. The
+        // first draft used 700, which does not, and the clamp was right to
+        // pull it back.
+        let saved = CGRect(x: 60, y: 500, width: 600, height: 337.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(f.origin == saved.origin)
+        #expect(f.size == saved.size)
+    }
+
+    @Test("A different shape keeps the corner but takes its own size")
+    func differentAspect() {
+        // Sized for 16:9, now opening a 9:16 clip. Reusing the box would make
+        // the panel fight its own aspect lock.
+        let saved = CGRect(x: 60, y: 700, width: 600, height: 337.5)
+        let tall = CGSize(width: 1080, height: 1920)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: tall, onVisible: visible)
+        #expect(f.origin.x == saved.origin.x)
+        #expect(f.size == PopOutSizing.panelSize(forVideo: tall))
+    }
+
+    @Test("A frame left on a screen that is gone comes back on")
+    func offScreen() {
+        // Remembered on a second display off to the right.
+        let saved = CGRect(x: 2400, y: 1400, width: 600, height: 337.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(visible.contains(f))
+    }
+
+    @Test("A remembered size too big for this screen is not used")
+    func tooBig() {
+        let saved = CGRect(x: 0, y: 0, width: 3000, height: 1687.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(f.size == PopOutSizing.panelSize(forVideo: wide))
+        #expect(visible.contains(f))
+    }
+
+    @Test("Negative origins are pulled back inside")
+    func negative() {
+        let saved = CGRect(x: -400, y: -300, width: 600, height: 337.5)
+        let f = PopOutSizing.placement(remembered: saved, forVideo: wide, onVisible: visible)
+        #expect(f.minX == visible.minX)
+        #expect(f.minY == visible.minY)
+    }
+}
+
+@Suite("Pop-out corner snapping")
+struct PopOutSnapTests {
+
+    private let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
+    private let size = CGSize(width: 480, height: 270)
+
+    private func frame(at origin: CGPoint) -> CGRect { CGRect(origin: origin, size: size) }
+
+    @Test("Let go near the bottom trailing corner, it settles there")
+    func bottomTrailing() {
+        let target = CGPoint(x: visible.maxX - size.width - PopOutSizing.margin,
+                             y: visible.minY + PopOutSizing.margin)
+        let dropped = frame(at: CGPoint(x: target.x - 40, y: target.y + 30))
+        #expect(PopOutSizing.snapped(dropped, onVisible: visible)?.origin == target)
+    }
+
+    @Test("And the top leading one")
+    func topLeading() {
+        let target = CGPoint(x: visible.minX + PopOutSizing.margin,
+                             y: visible.maxY - size.height - PopOutSizing.margin)
+        let dropped = frame(at: CGPoint(x: target.x + 50, y: target.y - 50))
+        #expect(PopOutSizing.snapped(dropped, onVisible: visible)?.origin == target)
+    }
+
+    @Test("Let go in the middle of the screen, it stays there")
+    func middle() {
+        // The whole reason this returns an optional: a panel parked beside what
+        // you are reading is a thing somebody chose, not a mistake to correct.
+        let centre = CGPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2)
+        #expect(PopOutSizing.snapped(frame(at: centre), onVisible: visible) == nil)
+    }
+
+    @Test("Just outside reach is left alone, just inside is taken")
+    func theEdgeOfTheMagnet() {
+        let target = CGPoint(x: visible.minX + PopOutSizing.margin,
+                             y: visible.minY + PopOutSizing.margin)
+        let inside = frame(at: CGPoint(x: target.x + PopOutSizing.snapReach - 1, y: target.y))
+        let outside = frame(at: CGPoint(x: target.x + PopOutSizing.snapReach + 1, y: target.y))
+        #expect(PopOutSizing.snapped(inside, onVisible: visible)?.origin == target)
+        #expect(PopOutSizing.snapped(outside, onVisible: visible) == nil)
+    }
+
+    @Test("Already in a corner, snapping changes nothing")
+    func idempotent() {
+        let target = CGPoint(x: visible.maxX - size.width - PopOutSizing.margin,
+                             y: visible.minY + PopOutSizing.margin)
+        let settled = frame(at: target)
+        #expect(PopOutSizing.snapped(settled, onVisible: visible) == settled)
+    }
+
+    @Test("The size is never changed by snapping, only the corner")
+    func sizeUntouched() {
+        let odd = CGRect(x: 30, y: 30, width: 333, height: 777)
+        #expect(PopOutSizing.snapped(odd, onVisible: visible)?.size == odd.size)
+    }
+}

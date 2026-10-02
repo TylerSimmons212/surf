@@ -63,7 +63,14 @@ private final class TransparentHostView: NSVisualEffectView {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
+        // Guarded, and the guard is the point. Assigning `styleMask` rebuilds
+        // the window's theme frame even when the value is unchanged, and a
+        // rebuilt titlebar repossesses the traffic lights — which Surf has
+        // moved into the sidebar. Writing it only when it is actually wrong
+        // keeps that rebuild to the one time it is needed.
+        if !window.styleMask.contains(.fullSizeContentView) {
+            window.styleMask.insert(.fullSizeContentView)
+        }
         // With no titlebar to grab, dragging the background moves the window.
         window.isMovableByWindowBackground = true
 

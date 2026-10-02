@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8"><title>auto PiP probe</title>
+<style>body{font:16px -apple-system;background:#111;color:#eee;margin:0;padding:16px}video{width:320px;background:#000}</style>
+<h2>autoPictureInPicture on tab switch</h2>
+<video id="v" playsinline loop src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+<script>
+const v = document.getElementById('v');
+v.volume = 0.01; v.muted = false;          // audible, so Surf would pop it out too
+v.autoPictureInPicture = true;
+v.setAttribute('autopictureinpicture', '');
+v.play().catch(() => {});
+
+const snap = extra => ({
+  autoSet: v.autoPictureInPicture,
+  hidden: document.hidden,
+  visibility: document.visibilityState,
+  paused: v.paused,
+  muted: v.muted,
+  webkitMode: v.webkitPresentationMode,
+  pipElement: !!document.pictureInPictureElement, ...extra });
+const send = (p, extra) => { location.href = 'pip-probe.html?' + p + '=' + encodeURIComponent(JSON.stringify(snap(extra))); };
+
+if (!location.search) {
+  setTimeout(() => send('r1', { tag: 'onload' }), 1800);
+} else {
+  // Does Surf hiding a tab reach the page at all? And if it does, does
+  // WebKit act on autoPictureInPicture the way Safari would?
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) setTimeout(() => send('r2', { tag: 'went-hidden' }), 2000);
+  });
+}
+</script>

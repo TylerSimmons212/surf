@@ -267,8 +267,12 @@ private struct WindowVisibility: NSViewRepresentable {
                 forName: NSWindow.didChangeOcclusionStateNotification,
                 object: window, queue: .main
             ) { [weak self, weak window] _ in
-                guard let self, let window else { return }
-                self.onChange(window.occlusionState.contains(.visible))
+                // Posted to `.main`, which is the one place the window's
+                // occlusion state and `onChange` may be touched.
+                MainActor.assumeIsolated {
+                    guard let self, let window else { return }
+                    self.onChange(window.occlusionState.contains(.visible))
+                }
             }
             onChange(window.occlusionState.contains(.visible))
         }

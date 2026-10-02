@@ -86,6 +86,7 @@ final class MediaExtractor {
     func start(
         pageURL: URL,
         cookies: WKHTTPCookieStore,
+        audioOnly: Bool = false,
         onProgress: @escaping @MainActor (YTDLP.Progress) -> Void,
         onFinish: @escaping @MainActor (Result<URL, ExtractionFailure>) -> Void
     ) async -> Extraction? {
@@ -102,13 +103,15 @@ final class MediaExtractor {
 
         let cookieFile = await writeCookieFile(for: pageURL, in: workingDirectory, from: cookies)
 
+        debugLog("extract: ytdlp=\(executableURL.path) ffmpeg=\(ffmpegURL?.path ?? "NOT FOUND")")
         let extraction = Extraction(
             executableURL: executableURL,
             arguments: YTDLP.arguments(
                 pageURL: pageURL.absoluteString,
                 workingDirectory: workingDirectory.path,
                 cookieFile: cookieFile?.path,
-                ffmpegPath: ffmpegURL?.deletingLastPathComponent().path
+                ffmpegPath: ffmpegURL?.deletingLastPathComponent().path,
+                audioOnly: audioOnly
             ),
             workingDirectory: workingDirectory,
             cookieFile: cookieFile

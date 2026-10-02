@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Surf",
     // String form: PackageDescription 6.0's enum stops short of .v26.
-    platforms: [.macOS("26.0")],
+    platforms: [.macOS("27.0")],
     // The only dependency Surf has, and it earns the exception. Replacing a
     // running, signed application with a newer one — verifying it, staging it,
     // swapping it, relaunching — is a job with a lot of ways to leave someone
