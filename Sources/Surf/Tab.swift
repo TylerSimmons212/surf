@@ -57,6 +57,11 @@ final class Tab: NSObject, Identifiable {
     private(set) var canGoBack: Bool = false
     private(set) var canGoForward: Bool = false
     private(set) var lastError: String?
+    /// Counts failed loads, for anything that needs to know whether *this*
+    /// load failed. `lastError` can't say: it outlives the load that set it
+    /// until something clears it, so a link clicked from an error page would
+    /// read as failing before it had started.
+    private(set) var failedLoads = 0
     private(set) var favicon: NSImage?
 
     /// Nil until the page reports media. Survives pausing, so a paused tab
@@ -2490,6 +2495,7 @@ extension Tab: WKNavigationDelegate {
             return
         }
         lastError = error.localizedDescription
+        failedLoads += 1
         debugLog("failed — \(error.localizedDescription)")
     }
 }

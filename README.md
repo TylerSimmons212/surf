@@ -41,9 +41,21 @@ The window is nothing but the page, under a slim title strip that tints itself
 from the current page's `theme-color` (or its background colour). Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be
 pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or the
-search button in the sidebar) rather than a permanent toolbar — and it's the
+address in the sidebar) rather than a permanent toolbar — and it's the
 only place to type an address, including on a new tab. Each tab row has a link
 button that copies its URL.
+
+The palette drops in from just above, the same way whether it was opened from
+the sidebar's address or with `⌘L`. Growing it out of the sidebar's address was
+tried and dropped: the bar travelling across the window drew the eye to the trip
+rather than to the field. Escape settles it back and fades it. Submitting lifts
+it toward the top of the window, where the loading border starts, so one hands
+over to the other. Load progress is drawn around the
+window's edge as two crests leaving twelve o'clock in opposite directions and
+meeting at six. Nothing is drawn for a load that finishes inside 120 ms, which
+covers most cached pages, so the border only appears when there's something to
+wait for. A successful load ends in a wash of foam where the crests meet. A
+failed one fades from wherever it stopped.
 
 A tab that's playing media shows a now-playing strip at the bottom of the
 sidebar, with play/pause and a button to pop video out into a floating

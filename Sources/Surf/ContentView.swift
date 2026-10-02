@@ -16,7 +16,8 @@ struct ContentView: View {
     /// chrome at all still shows you where everything — the window controls
     /// included — now lives.
     @State private var isIntroducingSidebar = false
-    @State private var isAddressBarOpen = false
+    @State private var palette: PalettePhase = .closed
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Captured when the palette opens, because the session's flag may have
     /// changed again by the time it's submitted.
     @State private var paletteCreatesTab = false
@@ -134,7 +135,21 @@ struct ContentView: View {
             LoadingBorder(tab: session.selectedTab)
                 .zIndex(15)
 
-            if isAddressBarOpen {
+            if palette == .open {
+                // Its own layer, fading on its own clock: quicker than the card
+                // on the way out, and never scaled with it.
+                Color.black.opacity(0.28)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { closePalette(.dismiss) }
+                    .transition(.asymmetric(
+                        insertion: .opacity.animation(.easeOut(duration: 0.18)),
+                        removal: .opacity.animation(.easeIn(duration: 0.12))
+                    ))
+                    .zIndex(19)
+            }
+
+            if palette != .closed {
                 // The traffic lights render above SwiftUI content, so if the
                 // palette opens while they're revealed they stay visible and
                 // clickable over its backdrop.
@@ -142,9 +157,11 @@ struct ContentView: View {
                     session: session,
                     tab: session.selectedTab,
                     createsTab: paletteCreatesTab,
-                    isPresented: $isAddressBarOpen
+                    onClose: closePalette
                 )
-                    .transition(.opacity.combined(with: .scale(scale: 0.98, anchor: .top)))
+                    .modifier(PaletteExit(leaving: palette.leaving))
+                    .allowsHitTesting(palette == .open)
+                    .transition(paletteTransition)
                     .zIndex(20)
             }
         }
@@ -322,9 +339,52 @@ struct ContentView: View {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
     }
 
+    /// How the palette arrives, and how it leaves when it leaves by removal.
+    ///
+    /// The same way in from everywhere — ⌘L, the sidebar's address pill, a new
+    /// tab. Growing out of the pill was tried and dropped: the bar travelling
+    /// across the window from the sidebar drew the eye to the trip rather than
+    /// to the field, and the drop-in gets to typing sooner.
+    ///
+    /// No exit uses the removal half. Each one animates the palette out in
+    /// place (`PaletteExit`) and removes it afterwards, unanimated, because
+    /// which exit it is — lift or dismiss — is only known at the moment of
+    /// leaving, and a removal transition is fixed before then.
+    private var paletteTransition: AnyTransition {
+        if reduceMotion { return .opacity }
+        return .asymmetric(
+            insertion: .modifier(
+                active: PaletteDrop(isDropping: true),
+                identity: PaletteDrop(isDropping: false)
+            ),
+            removal: .identity
+        )
+    }
+
     private func openAddressBar() {
-        withAnimation(.spring(response: 0.22, dampingFraction: 0.9)) {
-            isAddressBarOpen = true
+        let animation: Animation = reduceMotion ? .easeInOut(duration: 0.15) : .smooth(duration: 0.28)
+        // Asked for again while it was on its way out, it comes back from
+        // wherever it had got to rather than starting over.
+        guard palette != .open else { return }
+        withAnimation(animation) { palette = .open }
+    }
+
+    /// Exits run faster than the entrance, which is the convention that makes
+    /// an interface feel responsive: arriving can take a beat to show where
+    /// something came from, leaving shouldn't keep you waiting.
+    private func closePalette(_ reason: PaletteClose) {
+        guard palette == .open else { return }
+        if reduceMotion {
+            withAnimation(.easeInOut(duration: 0.15)) { palette = .closed }
+            return
+        }
+        // A submit lifts toward twelve o'clock, where the loading border is
+        // about to start: the border's grace period is shorter than the lift,
+        // so the one hands over to the other.
+        withAnimation(.easeIn(duration: reason == .submit ? 0.18 : 0.16)) {
+            palette = .leaving(reason)
+        } completion: {
+            if palette == .leaving(reason) { palette = .closed }
         }
     }
 
@@ -805,5 +865,55 @@ private struct WindowTitle: View {
         Color.clear
             .frame(width: 0, height: 0)
             .navigationTitle(tab.displayTitle)
+    }
+}
+
+// MARK: - Palette motion
+
+/// Where the address palette is in its life.
+enum PalettePhase: Equatable {
+    case closed
+    case open
+    /// Animating out in place, ahead of being removed.
+    case leaving(PaletteClose)
+
+    var leaving: PaletteClose? {
+        if case .leaving(let reason) = self { return reason }
+        return nil
+    }
+}
+
+/// The palette's way in from a command: dropped from just above, out of focus,
+/// settling as it lands — the way Spotlight arrives.
+private struct PaletteDrop: ViewModifier {
+    let isDropping: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isDropping ? 0 : 1)
+            .scaleEffect(isDropping ? 0.96 : 1, anchor: .top)
+            .offset(y: isDropping ? -10 : 0)
+            .blur(radius: isDropping ? 6 : 0)
+    }
+}
+
+/// The palette's ways out that aren't a removal: lifting away on submit, or
+/// settling back and fading on a dismissal.
+private struct PaletteExit: ViewModifier {
+    let leaving: PaletteClose?
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(leaving == nil ? 1 : 0)
+            .scaleEffect(scale, anchor: .top)
+            .offset(y: leaving == .submit ? -16 : 0)
+    }
+
+    private var scale: CGFloat {
+        switch leaving {
+        case nil: 1
+        case .submit: 0.97
+        case .dismiss: 0.98
+        }
     }
 }

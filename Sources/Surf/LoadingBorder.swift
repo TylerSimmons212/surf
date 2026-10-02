@@ -6,22 +6,52 @@ import SwiftUI
 /// Surf has no address bar to put a progress bar in, and the reload button's
 /// ring lives in a sidebar that's hidden most of the time — so a loading page
 /// looked identical to a finished one. The window frame is the one surface
-/// that's always visible and never in the way: the stroke traces the perimeter
-/// clockwise from top centre, completes a full lap, then fades.
+/// that's always visible and never in the way.
 ///
-/// What to draw is `LoadProgress`; this only draws it.
+/// Two crests leave twelve o'clock together, one each way round, and meet at
+/// six. Mirrored rather than one crest lapping the window, because each only
+/// has half the distance to cover, both top corners move as soon as anything
+/// does, and the finish has a place: the point where they meet, which is where
+/// the closing wash blooms.
+///
+/// How a load *ends* decides most of how this feels, and the rules for it are
+/// `LoadProgress.ending(shownFor:failed:)`: a load inside the grace period
+/// draws nothing, a successful one closes the lap and washes out in foam, and
+/// a failed one fades where it stopped. What to draw along the way is
+/// `LoadProgress`; this only draws it.
 struct LoadingBorder: View {
     let tab: Tab
 
     @State private var progress = LoadProgress()
+    @State private var phase: Phase = .idle
+    /// Bumped whenever a load is abandoned or restarted. Every delayed step
+    /// captures it and checks it on waking, so a sleep that outlives its load
+    /// can't act on the next one.
+    @State private var generation = 0
+    @State private var isShown = false
+    @State private var startedAt: ContinuousClock.Instant?
+    @State private var shownAt: ContinuousClock.Instant?
+    /// `tab.failedLoads` when this load began; any change means it failed.
+    @State private var failuresAtStart = 0
+    /// 0 while loading, 1 once the lap has closed and the line has turned to
+    /// foam.
+    @State private var wash: CGFloat = 0
+    /// Counts washes, to fire the bloom's keyframes once per finished load.
+    @State private var washes = 0
     @State private var trickle: Task<Void, Never>?
-    /// Flipped once on appear; both the sweep and the breath hang off it, so a
-    /// single state change starts every repeating animation.
-    @State private var isSweeping = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private let lineWidth: CGFloat = 3
+    private enum Phase {
+        case idle
+        case loading
+        /// The engine has finished and the lap is about to close.
+        case closing
+        /// Washing or fading out; nothing left to decide.
+        case ending
+    }
+
+    private let lineWidth: CGFloat = 2
     /// Keeps the stroke clear of the window's own rounded mask, which would
     /// otherwise shave the outer half off along the corners.
     private let inset: CGFloat = 2.5
@@ -35,88 +65,322 @@ struct LoadingBorder: View {
     ///
     /// If a future macOS changes it, this is the one number to change.
     private let windowRadius: CGFloat = 16
-    /// How far the glow reaches into the page.
-    private let glowWidth: CGFloat = 26
-    /// One lap of the crest, in seconds. Slow enough to read as a swell rather
-    /// than something spinning.
-    private let wavePeriod: TimeInterval = 2.6
-    private let breathPeriod: TimeInterval = 3.4
+
+    /// Clockwise first, then its mirror image.
+    private static let directions = [false, true]
+
+    /// How far along its own path each crest has got. Each covers half the
+    /// perimeter, so a full load is one half-lap apiece.
+    private var reach: CGFloat { CGFloat(progress.value) / 2 }
 
     var body: some View {
         ZStack {
-            innerGlow
+            if phase != .idle {
+                ForEach(Self.directions, id: \.self) { mirrored in
+                    crestGlow(shape(mirrored))
+                }
 
-            // The traced arc is one flat colour. Running the whole ramp along
-            // it made every part of the border a different blue, which read as
-            // decoration rather than as a measurement — and the eye had nothing
-            // to fix on, because there was no one place the colour was going.
-            // Flat body, loud tip: the tip is the thing that's actually moving.
-            shape
-                .trim(from: 0, to: progress.value)
-                .stroke(OceanTide.shallow, style: strokeStyle)
+                // The traced arc is one flat colour; the crests are the only
+                // place the palette appears. Flat body, loud tip: the tip is
+                // the thing that's actually moving.
+                ZStack {
+                    ForEach(Self.directions, id: \.self) { mirrored in
+                        trace(shape(mirrored))
+                    }
+                }
                 .shadow(color: OceanTide.shallow.opacity(0.5), radius: 5)
 
-            waveHead
+                ZStack {
+                    if reach > 0.002 {
+                        ForEach(Self.directions, id: \.self) { mirrored in
+                            CrestHead(
+                                shape: shape(mirrored),
+                                reach: reach,
+                                lineWidth: lineWidth,
+                                flows: !reduceMotion
+                            )
+                        }
+                    }
+                }
+                // Once the lap closes the crests have nowhere left to go; they
+                // dissolve into the foam rather than sitting on the finish.
+                .opacity(1 - wash)
+                // The glow belongs to the crests, not the whole border — it's
+                // what makes the tip read as lit from inside rather than
+                // painted. Applied once over both, so two crests cost the same
+                // two shadow passes one did.
+                .shadow(color: OceanTide.shallow.opacity(0.85), radius: 7)
+                .shadow(color: OceanTide.surf.opacity(0.5), radius: 14)
+
+                bloom
+            }
         }
         .padding(inset)
-        .opacity(progress.isVisible ? 1 : 0)
-        .animation(.easeOut(duration: 0.3), value: progress.value)
-        .animation(.easeOut(duration: 0.3), value: progress.isVisible)
+        .opacity(isShown ? 1 : 0)
         .allowsHitTesting(false)
         .ignoresSafeArea()
         .onAppear { sync(isLoading: tab.isLoading) }
         .onChange(of: tab.isLoading) { _, loading in sync(isLoading: loading) }
-        .onChange(of: tab.progress) { _, reported in progress.report(reported) }
+        .onChange(of: tab.progress) { _, reported in
+            guard phase == .loading else { return }
+            withAnimation(.smooth(duration: 0.45)) { _ = progress.report(reported) }
+        }
+        // WebKit doesn't promise to report a failure before it reports that
+        // loading stopped. One that lands while the lap is waiting to close
+        // still turns the ending into a fade.
+        .onChange(of: tab.failedLoads) { _, _ in
+            if phase == .closing { fadeOut() }
+        }
         // Switching tabs mid-load must not carry the old tab's arc across.
         .onChange(of: tab.id) { _, _ in
-            trickle?.cancel()
-            progress.clear()
+            reset()
             sync(isLoading: tab.isLoading)
         }
-        .onDisappear { trickle?.cancel() }
+        .onDisappear { reset() }
     }
 
-    // MARK: - The wave
+    // MARK: - Drawing
 
-    /// The breaking crest at the leading edge, and the only place the full
-    /// palette appears.
-    ///
-    /// Built as a short band at the tip rather than as a gradient along the
-    /// whole arc, because a wave is a local event: the water behind it is just
-    /// water. Three things stack up over the same few points of arc —
-    ///
-    /// - the **curl**, a wide soft band of deep water gathering behind the
-    ///   crest, which is what gives the tip somewhere to break *from*;
-    /// - the **flow**, the mixed ocean ramp streaming through the tip, drawn as
-    ///   a rotating angular gradient masked to the band so the colours travel
-    ///   through it instead of sitting still on it;
-    /// - the **spray**, a short foam cap right at the leading point.
-    @ViewBuilder
-    private var waveHead: some View {
-        if progress.value > 0.004 {
-            ZStack {
-                band(span: curlSpan, width: lineWidth * 2.6, blur: 5)
-                    .foregroundStyle(OceanTide.ocean.opacity(0.5))
+    private func shape(_ mirrored: Bool) -> WindowPerimeter {
+        WindowPerimeter(cornerRadius: windowRadius - inset, mirrored: mirrored)
+    }
 
-                flow
-
-                band(span: spraySpan, width: lineWidth, blur: 0.7)
-                    .foregroundStyle(OceanTide.foam)
-            }
-            // The glow belongs to the crest, not to the whole border — it's
-            // what makes the tip read as lit from inside rather than painted.
-            .shadow(color: OceanTide.shallow.opacity(0.85), radius: 7)
-            .shadow(color: OceanTide.surf.opacity(0.5), radius: 14)
-            .opacity(isSweeping && !reduceMotion ? 1 : 0.85)
-            .animation(
-                reduceMotion
-                    ? nil
-                    : .easeInOut(duration: breathPeriod / 2).repeatForever(autoreverses: true),
-                value: isSweeping
-            )
-            .onAppear { isSweeping = true }
+    /// The arc travelled so far, with a foam copy on top that the wash fades
+    /// in. A second stroke rather than an animated colour, so the line can
+    /// also thicken as it brightens.
+    private func trace(_ shape: WindowPerimeter) -> some View {
+        ZStack {
+            shape
+                .trim(from: 0, to: reach)
+                .stroke(OceanTide.shallow, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+            shape
+                .trim(from: 0, to: reach)
+                .stroke(OceanTide.foam, style: StrokeStyle(lineWidth: lineWidth + 1.2, lineCap: .round))
+                .opacity(wash)
         }
     }
+
+    /// Light bleeding inward from just behind the crest.
+    ///
+    /// Only behind the crest. Lighting the whole traced arc put a blurred
+    /// 26-point band around most of the window on every load, which made the
+    /// page look tinted rather than the edge look lit. Clipped to the perimeter
+    /// so the glow only ever falls *into* the page.
+    private func crestGlow(_ shape: WindowPerimeter) -> some View {
+        shape
+            .trim(from: max(0, reach - 0.07), to: reach)
+            .stroke(OceanTide.shallow.opacity(0.32), style: StrokeStyle(lineWidth: 14, lineCap: .round))
+            .blur(radius: 9)
+            .clipShape(shape)
+            .opacity(1 - wash)
+    }
+
+    /// Foam spreading from six o'clock, where the two crests meet.
+    ///
+    /// Keyframed off `washes` rather than driven by `wash`, because it needs a
+    /// shape over time — appear, swell, thin out — that a single interpolated
+    /// value can't give it.
+    @ViewBuilder
+    private var bloom: some View {
+        if !reduceMotion {
+            GeometryReader { geometry in
+                let radius = min(geometry.size.width, geometry.size.height) * 0.3
+                RadialGradient(
+                    colors: [OceanTide.foam, OceanTide.shallow.opacity(0.5), OceanTide.shallow.opacity(0)],
+                    center: .center,
+                    startRadius: 0,
+                    endRadius: radius
+                )
+                .frame(width: radius * 2, height: radius * 2)
+                .keyframeAnimator(initialValue: BloomFrame(), trigger: washes) { content, frame in
+                    content
+                        .scaleEffect(frame.scale)
+                        .opacity(frame.opacity)
+                } keyframes: { _ in
+                    KeyframeTrack(\.scale) {
+                        MoveKeyframe(0.05)
+                        SpringKeyframe(1, duration: 0.45, spring: .smooth)
+                    }
+                    KeyframeTrack(\.opacity) {
+                        MoveKeyframe(0.7)
+                        LinearKeyframe(0, duration: 0.45)
+                    }
+                }
+                .position(x: geometry.size.width / 2, y: geometry.size.height)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: windowRadius - inset, style: .continuous))
+        }
+    }
+
+    // MARK: - Sequencing
+
+    private func sync(isLoading: Bool) {
+        isLoading ? begin() : finish()
+    }
+
+    private func begin() {
+        // Loading again before the lap closed — a redirect, or a page that
+        // stops and restarts. The arc on screen is still telling the truth,
+        // so it carries on rather than vanishing and returning after another
+        // grace period.
+        if phase == .closing {
+            generation += 1
+            phase = .loading
+            failuresAtStart = tab.failedLoads
+            startCreeping()
+            return
+        }
+
+        reset()
+        phase = .loading
+        startedAt = .now
+        failuresAtStart = tab.failedLoads
+        progress.begin()
+        progress.report(tab.progress)
+
+        let generation = generation
+        trickle = Task { @MainActor in
+            try? await Task.sleep(for: LoadProgress.grace)
+            guard !Task.isCancelled, self.generation == generation, phase == .loading else { return }
+            shownAt = .now
+            debugLog("border: shown")
+            withAnimation(.easeOut(duration: 0.15)) { isShown = true }
+            startCreeping()
+        }
+    }
+
+    /// Keeps the arc alive through the silences WebKit leaves between
+    /// updates — a bar frozen for four seconds reads as a hung page.
+    private func startCreeping() {
+        trickle?.cancel()
+        guard !reduceMotion else { return }
+        let generation = generation
+        trickle = Task { @MainActor in
+            while !Task.isCancelled, self.generation == generation, phase == .loading {
+                try? await Task.sleep(for: .milliseconds(200))
+                guard !Task.isCancelled, self.generation == generation, phase == .loading else { return }
+                // A spring rather than a curve: a new tick arriving mid-move
+                // picks up the arc's speed instead of restarting from rest.
+                withAnimation(.smooth(duration: 0.45)) { _ = progress.creep() }
+            }
+        }
+    }
+
+    private func finish() {
+        guard phase == .loading else { return }
+        trickle?.cancel()
+
+        let shownFor = shownAt.map { ContinuousClock.now - $0 }
+        let failed = tab.failedLoads != failuresAtStart
+        let ending = LoadProgress.ending(shownFor: shownFor, failed: failed)
+        let took = startedAt.map { ContinuousClock.now - $0 } ?? .zero
+        debugLog("border: load took \(took.formatted(.units(allowed: [.milliseconds]))), ending \(ending)")
+        switch ending {
+        case .unseen:
+            reset()
+        case .fade:
+            fadeOut()
+        case .closeLap(let delay):
+            phase = .closing
+            let generation = generation
+            Task { @MainActor in
+                if delay > .zero { try? await Task.sleep(for: delay) }
+                guard self.generation == generation, phase == .closing else { return }
+                withAnimation(.snappy(duration: 0.3), completionCriteria: .logicallyComplete) {
+                    progress.complete()
+                } completion: {
+                    guard self.generation == generation, phase == .closing else { return }
+                    washOut()
+                }
+            }
+        }
+    }
+
+    /// The finish: the line brightens to foam, the crests dissolve, a bloom
+    /// spreads from where they met, and the whole thing fades.
+    private func washOut() {
+        phase = .ending
+        let generation = generation
+        debugLog("border: washed out")
+        withAnimation(.easeOut(duration: 0.12)) { wash = 1 }
+        washes += 1
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard self.generation == generation else { return }
+            withAnimation(.easeOut(duration: 0.35)) {
+                isShown = false
+            } completion: {
+                if self.generation == generation { reset() }
+            }
+        }
+    }
+
+    /// A failed load: no wash and no closing lap, just the arc fading from
+    /// wherever it stopped. That stub reads as "didn't make it", which is the
+    /// truth.
+    private func fadeOut() {
+        debugLog("border: faded out")
+        phase = .ending
+        trickle?.cancel()
+        let generation = generation
+        withAnimation(.easeOut(duration: 0.3)) {
+            isShown = false
+        } completion: {
+            if self.generation == generation { reset() }
+        }
+    }
+
+    /// Back to nothing, at once. Invalidates every pending step.
+    private func reset() {
+        generation += 1
+        trickle?.cancel()
+        trickle = nil
+        startedAt = nil
+        shownAt = nil
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            phase = .idle
+            isShown = false
+            wash = 0
+            progress.clear()
+        }
+    }
+}
+
+private struct BloomFrame {
+    var scale: CGFloat = 0.05
+    var opacity: Double = 0
+}
+
+// MARK: - The crest
+
+/// The breaking crest at the leading edge of one arc.
+///
+/// Its own view so that its animation state is its own. The colour flow is a
+/// repeating animation started by flipping a flag on appear; when that flag
+/// lived on the border, it was flipped on the first load and never flipped
+/// back, so every later load drew a crest that had nothing to animate. A
+/// crest is inserted fresh with each load, so it starts fresh with each load.
+///
+/// Built as a short band at the tip rather than as a gradient along the whole
+/// arc, because a wave is a local event: the water behind it is just water.
+/// Three things stack up over the same few points of arc —
+///
+/// - the **curl**, a wide soft band of deep water gathering behind the crest,
+///   which is what gives the tip somewhere to break *from*;
+/// - the **flow**, the mixed ocean ramp streaming through the tip, drawn as a
+///   rotating angular gradient masked to the band so the colours travel
+///   through it instead of sitting still on it;
+/// - the **spray**, a short foam cap right at the leading point.
+private struct CrestHead: View {
+    let shape: WindowPerimeter
+    let reach: CGFloat
+    let lineWidth: CGFloat
+    /// False under Reduce Motion: the crest is drawn, but holds still.
+    let flows: Bool
+
+    @State private var isFlowing = false
 
     /// How much arc each part of the crest covers, as a fraction of the
     /// perimeter. Deliberately small: a crest that spans a whole side of the
@@ -124,15 +388,28 @@ struct LoadingBorder: View {
     private let curlSpan: CGFloat = 0.055
     private let flowSpan: CGFloat = 0.038
     private let spraySpan: CGFloat = 0.012
+    /// One turn of the colours, in seconds. Slow enough to read as a swell
+    /// rather than something spinning.
+    private let wavePeriod: TimeInterval = 2.6
+
+    var body: some View {
+        ZStack {
+            band(span: curlSpan, width: lineWidth * 2.6, blur: 5)
+                .foregroundStyle(OceanTide.ocean.opacity(0.5))
+
+            flow
+
+            band(span: spraySpan, width: lineWidth, blur: 0.7)
+                .foregroundStyle(OceanTide.foam)
+        }
+        .onAppear { isFlowing = flows }
+    }
 
     /// One band of the crest — the arc from `span` behind the leading edge up
-    /// to it, stroked and softened.
-    ///
-    /// Untinted here so callers style it; the shape work is identical for all
-    /// three and only the paint differs.
+    /// to it, stroked and softened. Untinted here so callers style it.
     private func band(span: CGFloat, width: CGFloat, blur: CGFloat) -> some View {
         shape
-            .trim(from: max(0, progress.value - span), to: progress.value)
+            .trim(from: max(0, reach - span), to: reach)
             .stroke(.foreground, style: StrokeStyle(lineWidth: width, lineCap: .round))
             .blur(radius: blur)
     }
@@ -140,11 +417,10 @@ struct LoadingBorder: View {
     /// The palette streaming through the crest.
     ///
     /// The colours rotate rather than the geometry: one pre-drawn angular
-    /// gradient spun about the window's centre is a transform, so Core
-    /// Animation runs it on the render thread and this body is evaluated once
-    /// per progress change instead of once per frame. Masked to the crest band,
-    /// which is what turns a spinning wheel of colour into water moving through
-    /// one point.
+    /// gradient spun about the window's centre is a transform, so this body is
+    /// evaluated once per progress change instead of once per frame. Masked to
+    /// the crest band, which is what turns a spinning wheel of colour into
+    /// water moving through one point.
     private var flow: some View {
         AngularGradient(
             gradient: Gradient(colors: [
@@ -154,93 +430,12 @@ struct LoadingBorder: View {
             center: .center
         )
         .scaleEffect(1.5)
-        .rotationEffect(.degrees(isSweeping && !reduceMotion ? 360 : 0))
+        .rotationEffect(.degrees(isFlowing ? 360 : 0))
         .animation(
-            reduceMotion
-                ? nil
-                : .linear(duration: wavePeriod).repeatForever(autoreverses: false),
-            value: isSweeping
+            isFlowing ? .linear(duration: wavePeriod).repeatForever(autoreverses: false) : nil,
+            value: isFlowing
         )
         .mask { band(span: flowSpan, width: lineWidth * 1.5, blur: 1.4) }
-    }
-
-    // MARK: - Inner glow
-
-    /// Light bleeding inward from the traced edge.
-    ///
-    /// Clipped to the perimeter so the glow only ever falls *into* the page —
-    /// spilling outward would just be a fatter border. One flat colour, for the
-    /// same reason the stroke is: this is the water, and the wave above is the
-    /// only thing with colours in it.
-    @ViewBuilder
-    private var innerGlow: some View {
-        // Removed outright when nothing is drawn, which also stops the
-        // animation rather than leaving it running against a hidden view.
-        if progress.value > 0 {
-            shape
-                .trim(from: 0, to: progress.value)
-                .stroke(
-                    OceanTide.shallow.opacity(0.34),
-                    style: StrokeStyle(lineWidth: glowWidth, lineCap: .round)
-                )
-                .blur(radius: glowWidth * 0.55)
-                .clipShape(shape)
-                .opacity(isSweeping && !reduceMotion ? 0.62 : 1)
-                .animation(
-                    reduceMotion
-                        ? nil
-                        : .easeInOut(duration: breathPeriod).repeatForever(autoreverses: true),
-                    value: isSweeping
-                )
-                .onAppear { isSweeping = true }
-        }
-    }
-
-    private var shape: some Shape {
-        WindowPerimeter(cornerRadius: windowRadius - inset)
-    }
-
-    private var strokeStyle: StrokeStyle {
-        StrokeStyle(lineWidth: lineWidth, lineCap: .round)
-    }
-
-    private func sync(isLoading: Bool) {
-        isLoading ? begin() : finish()
-    }
-
-    private func begin() {
-        trickle?.cancel()
-        progress.begin()
-        progress.report(tab.progress)
-
-        guard !reduceMotion else { return }
-        // Keeps the arc alive through the silences WebKit leaves between
-        // updates — a bar frozen for four seconds reads as a hung page.
-        trickle = Task { @MainActor in
-            while !Task.isCancelled, tab.isLoading {
-                try? await Task.sleep(for: .milliseconds(200))
-                guard !Task.isCancelled, tab.isLoading else { return }
-                progress.creep()
-            }
-        }
-    }
-
-    private func finish() {
-        trickle?.cancel()
-        guard progress.isVisible else { return }
-        progress.complete()
-
-        Task { @MainActor in
-            // Long enough for the closing lap to be seen before it goes.
-            try? await Task.sleep(for: .milliseconds(280))
-            guard !tab.isLoading else { return }
-            progress.hide()
-            // Rewound only once the fade is over, so the arc never appears to
-            // retreat on its way out.
-            try? await Task.sleep(for: .milliseconds(340))
-            guard !tab.isLoading else { return }
-            progress.clear()
-        }
     }
 }
 
@@ -268,8 +463,14 @@ struct LoadingBorder: View {
 /// it would be on a circle. `trimmedPath` measures by arc length, so the two
 /// pieces meet with no seam and `.trim(from:to:)` on the result runs from the
 /// top exactly as a caller would expect.
+///
+/// **Mirrored**, it runs counter-clockwise from the same point. A rounded
+/// rectangle is symmetric about its vertical centre line, so flipping the
+/// clockwise path across that line gives exactly the counter-clockwise one —
+/// same start, same corners, same length — without building a second path.
 struct WindowPerimeter: Shape {
     var cornerRadius: CGFloat
+    var mirrored = false
 
     /// Where twelve o'clock falls in `RoundedRectangle`'s own parameterization.
     private static let topCentre: CGFloat = 0.75
@@ -279,6 +480,9 @@ struct WindowPerimeter: Shape {
             .path(in: rect)
         var path = full.trimmedPath(from: Self.topCentre, to: 1)
         path.addPath(full.trimmedPath(from: 0, to: Self.topCentre))
-        return path
+        guard mirrored else { return path }
+        return path.applying(
+            CGAffineTransform(a: -1, b: 0, c: 0, d: 1, tx: rect.minX + rect.maxX, ty: 0)
+        )
     }
 }

@@ -48,9 +48,9 @@ public struct LoadProgress: Equatable, Sendable {
         return true
     }
 
-    /// Runs the arc to a full lap. Called whether the load succeeded or not:
-    /// a stub fading from wherever it stopped looks like a failure even when
-    /// the page arrived.
+    /// Runs the arc to a full lap. Only for a load that arrived: a stub fading
+    /// from wherever it stopped looks like a failure, which is exactly what a
+    /// failed load should look like — see `ending(shownFor:failed:)`.
     public mutating func complete() {
         guard isVisible else { return }
         value = 1
@@ -67,5 +67,45 @@ public struct LoadProgress: Equatable, Sendable {
     public mutating func clear() {
         value = 0
         isVisible = false
+    }
+}
+
+// MARK: - How a load ends
+
+extension LoadProgress {
+
+    /// How long a load runs before anything is drawn.
+    ///
+    /// Under about a tenth of a second a load reads as instant, and a lap
+    /// drawn for it is a flicker around the window on every cached page and
+    /// same-site click. A load that finishes inside this draws nothing at all.
+    public static let grace: Duration = .milliseconds(120)
+
+    /// How long an arc stays up before its lap may close.
+    ///
+    /// A load that finishes just after the grace period would otherwise
+    /// appear and close in the same breath, which is the flicker again with
+    /// extra steps.
+    public static let minimumShown: Duration = .milliseconds(300)
+
+    public enum Ending: Equatable, Sendable {
+        /// Finished before anything was drawn; there's nothing to end.
+        case unseen
+        /// Close the lap once `after` has passed, then wash out.
+        case closeLap(after: Duration)
+        /// The load failed: fade the arc where it stopped.
+        case fade
+    }
+
+    /// What the indicator does when the engine stops loading.
+    ///
+    /// - Parameters:
+    ///   - shownFor: How long the arc has been on screen, or nil if the grace
+    ///     period never ran out.
+    ///   - failed: Whether the load ended in an error.
+    public static func ending(shownFor: Duration?, failed: Bool) -> Ending {
+        guard let shownFor else { return .unseen }
+        if failed { return .fade }
+        return .closeLap(after: max(.zero, minimumShown - shownFor))
     }
 }
