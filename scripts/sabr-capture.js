@@ -22,7 +22,28 @@
   const log = (...a) => console.log('%c[sabr]', 'color:#0a0', ...a);
 
   // --- catch one -----------------------------------------------------------
+  // Both `fetch` and `XMLHttpRequest`, because the first attempt watched only
+  // `fetch` and caught nothing — and a dev-tools network list on the same page
+  // showed no googlevideo requests either. Two observations pointing the same
+  // way: the media is not being fetched where we were looking.
+  //
+  // So this also counts what it *does* see, and whether media is reaching the
+  // decoder at all. If bytes are arriving while neither hook fires, the fetching
+  // happens somewhere this cannot reach from the main thread — a worker — and
+  // that is the answer rather than a failure.
   let captured = null;
+  const seen = { fetch: 0, xhr: 0, appends: 0, workers: 0 };
+  const interesting = new Set();
+
+  const note = (method, url) => {
+    try {
+      if (!/googlevideo|videoplayback/.test(url)) return;
+      // Host and path only. The query carries the session token.
+      const u = new URL(url, location.href);
+      interesting.add(method + ' ' + u.host.replace(/^rr\d+---/, 'rrN---') + u.pathname);
+    } catch (e) { /* not a url we can parse */ }
+  };
+
   const toBytes = async (body) => {
     if (!body) return null;
     if (body instanceof Uint8Array) return body;
@@ -34,33 +55,90 @@
     return null;
   };
 
+  const keep = async (url, body) => {
+    if (captured) return;
+    const bytes = await toBytes(body);
+    if (bytes && bytes.length && !captured) {
+      captured = { url, bytes };
+      log('caught a request —', bytes.length, 'bytes');
+    }
+  };
+
   const nativeFetch = window.fetch;
   window.fetch = function (input, init) {
     try {
       const url = (input && typeof input === 'object' && input.url) ? input.url : String(input);
-      const method = (init && init.method) || (input && input.method) || 'GET';
-      if (!captured && method.toUpperCase() === 'POST' && url.includes('videoplayback')) {
-        const body = init && init.body;
-        toBytes(body).then((bytes) => {
-          if (bytes && !captured) {
-            captured = { url, bytes };
-            log('caught a request —', bytes.length, 'bytes');
-          }
-        });
+      const method = String((init && init.method)
+        || (input && input.method) || 'GET').toUpperCase();
+      seen.fetch++;
+      note(method, url);
+      if (method === 'POST' && url.includes('videoplayback')) {
+        keep(url, init && init.body);
       }
     } catch (e) { /* never break playback to watch it */ }
     return nativeFetch.apply(this, arguments);
   };
 
-  log('watching. NOW SEEK THE VIDEO — drag the scrubber somewhere new.');
+  const nativeOpen = XMLHttpRequest.prototype.open;
+  const nativeSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    try { this.__sabrMethod = String(method || 'GET').toUpperCase(); this.__sabrURL = String(url); }
+    catch (e) { /* a sealed subclass */ }
+    return nativeOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function (body) {
+    try {
+      seen.xhr++;
+      note(this.__sabrMethod || 'GET', this.__sabrURL || '');
+      if (this.__sabrMethod === 'POST' && (this.__sabrURL || '').includes('videoplayback')) {
+        keep(this.__sabrURL, body);
+      }
+    } catch (e) { /* never break playback */ }
+    return nativeSend.apply(this, arguments);
+  };
+
+  // Is media reaching the decoder at all? If it is, and neither hook fired, the
+  // request was made somewhere the main thread cannot see.
+  let nativeAppend = null;
+  try {
+    nativeAppend = SourceBuffer.prototype.appendBuffer;
+    SourceBuffer.prototype.appendBuffer = function (data) {
+      try { seen.appends++; } catch (e) { /* ignore */ }
+      return nativeAppend.apply(this, arguments);
+    };
+  } catch (e) { /* no MSE */ }
+
+  const nativeWorker = window.Worker;
+  try {
+    window.Worker = function (...args) { seen.workers++; return new nativeWorker(...args); };
+    window.Worker.prototype = nativeWorker.prototype;
+  } catch (e) { /* ignore */ }
+
+  log('watching fetch, XHR and the decoder.');
+  log('NOW SEEK THE VIDEO — drag the scrubber somewhere it has not played yet.');
   for (let i = 0; i < 60 && !captured; i++) {
     await new Promise((r) => setTimeout(r, 500));
   }
   window.fetch = nativeFetch;
+  XMLHttpRequest.prototype.open = nativeOpen;
+  XMLHttpRequest.prototype.send = nativeSend;
+  if (nativeAppend) { SourceBuffer.prototype.appendBuffer = nativeAppend; }
+  try { window.Worker = nativeWorker; } catch (e) { /* ignore */ }
 
   if (!captured) {
-    log('nothing caught in 30s. The player may be using XHR, or may have had');
-    log('everything it needed buffered. Try seeking somewhere far away and rerun.');
+    log('nothing caught. What happened while watching:');
+    log('   fetch calls:', seen.fetch, '| XHR sends:', seen.xhr,
+      '| appendBuffer calls:', seen.appends, '| workers made:', seen.workers);
+    log('   media-ish requests seen:',
+      interesting.size ? Array.from(interesting).join(', ') : 'none');
+    if (seen.appends > 0 && !interesting.size) {
+      log('   >> media IS reaching the decoder while neither hook saw a request.');
+      log('   >> so the fetching happens off the main thread. That is the finding.');
+    } else if (!seen.appends) {
+      log('   >> no media reached the decoder either, so the player never needed');
+      log('   >> any. Seek somewhere it has not buffered and run it again.');
+    }
+    log('paste these lines back — they contain no token.');
     return;
   }
 
