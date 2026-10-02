@@ -147,3 +147,71 @@ enum StreamAssembler {
         receiver.finish()
     }
 }
+
+// MARK: - When AVFoundation cannot
+
+extension StreamAssembler {
+
+    /// Combines two tracks with ffmpeg, copying rather than re-encoding.
+    ///
+    /// Here because AVFoundation cannot read what YouTube's streaming protocol
+    /// produces, and the failure is the quiet kind. Handed a 538MB fragmented
+    /// MP4 that `ffprobe` reads perfectly, `AVAssetReader` opens it, reports a
+    /// duration, yields 25MB of samples and then says it *completed*. Not an
+    /// error, not a refusal — 95% of the file silently absent, in under a tenth
+    /// of a second. The same thing happens to the audio, where every byte is read
+    /// but as 256 enormous samples spread across twice the real duration.
+    ///
+    /// Everything else here still goes through AVFoundation, which handles the
+    /// fragmented MP4 that HLS and DASH produce correctly and in milliseconds.
+    /// This is for the one producer whose output it mis-parses.
+    static func remux(
+        video: URL, audio: URL, into output: URL, using ffmpeg: URL
+    ) async -> Result<URL, Failure> {
+        try? FileManager.default.removeItem(at: output)
+
+        let process = Process()
+        process.executableURL = ffmpeg
+        process.arguments = [
+            // Errors only: ffmpeg's progress goes to stderr and there is nothing
+            // here that reads it.
+            "-v", "error",
+            "-i", video.path,
+            "-i", audio.path,
+            // Copy. Nothing is decoded, so this is a container rewrite and runs
+            // at disk speed — a second for half a gigabyte.
+            "-c", "copy",
+            // The index at the front, so the file can be played before it has
+            // been read to the end.
+            "-movflags", "+faststart",
+            output.path,
+        ]
+        let errors = Pipe()
+        process.standardError = errors
+        process.standardOutput = FileHandle.nullDevice
+        // Never able to sit waiting on a prompt nothing can answer, which is the
+        // same reason the extraction path closes this.
+        process.standardInput = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return .failure(.muxFailed("couldn't start ffmpeg: \(error.localizedDescription)"))
+        }
+
+        let message = await Task.detached {
+            let data = errors.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(data: data.suffix(2000), encoding: .utf8) ?? ""
+        }.value
+
+        guard process.terminationStatus == 0,
+              FileManager.default.fileExists(atPath: output.path)
+        else {
+            let reason = message.split(whereSeparator: \.isNewline).last.map(String.init)
+                ?? "ffmpeg failed"
+            return .failure(.muxFailed(String(reason.prefix(200))))
+        }
+        return .success(output)
+    }
+}

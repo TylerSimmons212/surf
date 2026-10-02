@@ -326,7 +326,16 @@ check_size media.js              16000
 #
 # The wrapper is gated to YouTube, so every other page in the world still gets a
 # tap that wraps nothing.
-check_size stream.js              7000
+#
+# Raised again, from 7000, for reading the formats a page lists. Without it a
+# YouTube download takes whatever the server decides to send, which in practice
+# was 144p VP9 in WebM — a container AVFoundation cannot read, so the download
+# finished and then would not mux. Choosing needs the list, and the list is on
+# the page.
+#
+# Read when a download starts rather than at document start, so none of it costs
+# anything on a page nobody is downloading from.
+check_size stream.js              9000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000

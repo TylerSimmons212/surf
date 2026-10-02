@@ -59,6 +59,7 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_DEVTOOLS=<pane>` | open dev tools on `elements/styles/network/storage/tags/performance/console` |
 | `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
 | `SURF_DOWNLOAD=2` | and press retry once if it fails, after a 10s pause |
+| `SURF_KEEP_SCRATCH=1` | keep a stream download's working directory for inspection |
 | `SURF_STATE_DIR=<dir>` | replace `~/Library/Application Support/Surf` (launch.sh sets this) |
 
 Fixtures live in `testpages/`; pass them as `file://$PWD/testpages/<name>.html`.
@@ -90,6 +91,12 @@ URL is enough.
 is a within-session idea, so a fresh launch has nothing to come back to and the
 retry has to happen in the same run. The 10-second pause before it is what gives
 a test time to change what the server will do.
+
+`SURF_KEEP_SCRATCH=1` is for the case where a download finishes and then will
+not assemble, which is a question about two files that are deleted before anyone
+can open them. It found that `AVAssetReader` reads 25MB of a 538MB fragmented MP4
+and reports success — a thing no amount of reading the output could have shown,
+because the output looked like a bad mux rather than a bad read.
 
 Serving the stream yourself is the only way to interrupt one deliberately. Two
 things learned doing it. Counting requests to decide when to refuse does not

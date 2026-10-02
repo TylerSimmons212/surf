@@ -48,6 +48,28 @@ enum StreamTap {
         var isProtected = false
         /// One streaming request the page made, kept whole.
         var abr: ABRRequest?
+        /// What the page says is available, so a download can choose rather than
+        /// accept whatever the server would have sent.
+        var formats: [Format] = []
+    }
+
+    /// One rendition the page listed.
+    struct Format: Decodable {
+        var itag: Int
+        /// A string across the bridge and a `UInt64` here. The value is around
+        /// 1.7×10¹⁸, past where a JSON number holds integers exactly, and the
+        /// server rejects a request carrying a rounded one.
+        var lastModified: String
+        var mimeType: String
+        var height: Int
+        var bitrate: Int
+
+        var revision: UInt64? { UInt64(lastModified) }
+        var isVideo: Bool { mimeType.hasPrefix("video/") }
+        var isAudio: Bool { mimeType.hasPrefix("audio/") }
+        /// Whether AVFoundation can read it. WebM and its codecs it cannot, and
+        /// asking for one produces a download that finishes and will not mux.
+        var isMP4: Bool { mimeType.contains("mp4") }
     }
 
     /// A `videoplayback` POST the player made, which on YouTube is the only
@@ -116,11 +138,45 @@ enum StreamTap {
           // for, with whatever it managed to see. Defining the method last meant
           // one unguarded line could stop it existing at all, which the contract
           // check found before any page did.
+          // What the page says is on offer, read when asked rather than at
+          // document start: the player does not exist yet when this installs,
+          // and `ytInitialPlayerResponse` goes stale the moment anyone navigates
+          // within the site. Asked for only when a download starts, by which
+          // time the player is the authority.
+          function offered() {
+            let response = null;
+            try {
+              const element = document.getElementById('movie_player');
+              if (element && typeof element.getPlayerResponse === 'function') {
+                response = element.getPlayerResponse();
+              }
+            } catch (error) { /* the player is not ready */ }
+            if (!response) { response = window.ytInitialPlayerResponse || null; }
+            const formats = (response && response.streamingData
+              && response.streamingData.adaptiveFormats) || [];
+            const out = [];
+            for (let i = 0; i < formats.length && out.length < 60; i++) {
+              const f = formats[i];
+              if (!f || !f.itag || !f.lastModified) { continue; }
+              out.push({
+                itag: f.itag,
+                // A string, deliberately: this is a uint64 around 1.7e18 and a
+                // JSON number loses its low digits on the way across.
+                lastModified: String(f.lastModified),
+                mimeType: f.mimeType || '',
+                height: f.height || 0,
+                bitrate: f.bitrate || 0
+              });
+            }
+            return out;
+          }
+
           runtime.define('stream.tap', () => ({
             manifests: manifests.slice(),
             codecs: codecs.slice(),
             isProtected: encrypted,
-            abr: abr
+            abr: abr,
+            formats: offered()
           }));
 
           // Every request the document made, including the ones a <video>

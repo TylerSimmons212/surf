@@ -43,9 +43,66 @@ enum SABRClient {
         var ustreamerConfig: Data
         /// Copied, never parsed. Carries the proof-of-origin token.
         var streamerContext: Data
-        /// The formats the player asked for, reused as-is.
-        var audioFormats: [Data]
-        var videoFormats: [Data]
+        /// What we are asking for, when we have chosen.
+        var audioFormats: [Data] = []
+        var videoFormats: [Data] = []
+
+        /// The formats the player named, reused as-is.
+        ///
+        /// Field 2, `initialization_format_ids`, which is what the player
+        /// actually sends — not `selected_audio_format_ids` and
+        /// `selected_video_format_ids`, which the schema offers at 16 and 17 and
+        /// which a real request turned out not to carry at all. Built around the
+        /// wrong pair first, on the strength of reading the schema rather than a
+        /// request.
+        var formats: [Data]
+
+        /// Picks the best pair AVFoundation can actually read.
+        ///
+        /// Without this the server chooses, and on a real download it chose 144p
+        /// VP9 in WebM — which arrived complete and then would not mux, because
+        /// AVFoundation reads neither WebM nor VP9. The quality was an accident
+        /// too: nothing had asked for anything.
+        ///
+        /// MP4 only, therefore, and the tallest of those. Falls back to whatever
+        /// is on offer if nothing is MP4, where the mux will fail honestly rather
+        /// than this refusing to try.
+        static func choose(
+            from formats: [StreamTap.Format], maxHeight: Int? = nil
+        ) -> (video: StreamTap.Format, audio: StreamTap.Format)? {
+            let usable = formats.filter { $0.revision != nil }
+            let videos = usable.filter { $0.isVideo && $0.isMP4 }
+            let audios = usable.filter { $0.isAudio && $0.isMP4 }
+            guard !videos.isEmpty, !audios.isEmpty else { return nil }
+
+            let eligible = maxHeight.map { cap in videos.filter { $0.height <= cap } } ?? videos
+            var candidates = eligible.isEmpty ? videos : eligible
+
+            // Codec before resolution, which is the opposite of what every other
+            // choice in this engine does.
+            //
+            // Not a technical limit — ffmpeg muxes the 2160p AV1 this would
+            // otherwise pick, and does it in a second. A preference: a file
+            // someone downloaded from a browser should play in whatever they open
+            // it with, and H.264 plays everywhere while AV1 needs a recent
+            // machine. It is also a third of the size for the same video, 224MB
+            // against 543MB on the one measured here.
+            //
+            // On YouTube this usually means 1080p rather than 2160p, which is the
+            // real cost of the choice and worth stating rather than hiding.
+            for codec in ["avc1", "avc3", "hvc1", "hev1"] {
+                let readable = candidates.filter { $0.mimeType.contains(codec) }
+                if !readable.isEmpty { candidates = readable; break }
+            }
+
+            guard let video = candidates.max(by: { a, b in
+                a.height != b.height ? a.height < b.height : a.bitrate < b.bitrate
+            }) else { return nil }
+            // The best sound available: it is a fraction of the video's size, so
+            // there is nothing to save by taking less.
+            guard let audio = audios.max(by: { $0.bitrate < $1.bitrate }) else { return nil }
+            return (video, audio)
+        }
 
         /// Reads a captured request rather than building one.
         ///
@@ -65,9 +122,10 @@ enum SABRClient {
             self.url = url
             self.ustreamerConfig = config
             self.streamerContext = context
-            self.audioFormats = all(16)
-            self.videoFormats = all(17)
-            guard !audioFormats.isEmpty || !videoFormats.isEmpty else { return nil }
+            // Not required. A request carrying neither these nor any format ids
+            // was measured returning media, so the server is content to choose —
+            // and demanding them here rejected a request that would have worked.
+            self.formats = all(2)
         }
     }
 
@@ -77,6 +135,11 @@ enum SABRClient {
         var media: [Int: Data] = [:]
         /// Headers seen this round, by id.
         var headers: [Int: SABR.MediaHeader] = [:]
+        /// What each itag turned out to be, from the server rather than the
+        /// request. A `FormatId` says which rendition but not whether it is
+        /// picture or sound; the initialisation metadata carries the mime type,
+        /// which is the only thing in the exchange that does.
+        var mimeTypes: [Int: String] = [:]
         /// The server wants us somewhere else. Not a failure.
         var redirect: URL?
         var protection: SABR.ProtectionStatus?
@@ -100,11 +163,15 @@ enum SABRClient {
             state.varint(28, startMs)
             state.varint(40, SABR.TrackTypes.both.rawValue)
         }
+        // `selected_*_format_ids` where the player sends
+        // `initialization_format_ids`, because these are a choice rather than a
+        // description of what is already loaded, and choosing is the whole point.
+        for format in session.audioFormats { writer.message(16, format) }
+        for format in session.videoFormats { writer.message(17, format) }
+        for format in session.formats { writer.message(2, format) }
         for range in buffered { writer.message(3, range) }
         writer.varint(4, startMs)
         writer.bytes(5, session.ustreamerConfig)
-        for format in session.audioFormats { writer.message(16, format) }
-        for format in session.videoFormats { writer.message(17, format) }
         writer.message(19, session.streamerContext)
 
         guard let data = await fetcher.post(writer.data, to: session.url) else {
@@ -131,6 +198,11 @@ enum SABRClient {
                     .flatMap { URL(string: $0.url) }
             case .streamProtectionStatus:
                 round.protection = SABR.ProtectionStatus.decoded(part.payload)
+            case .formatInitializationMetadata:
+                let meta = SABR.FormatInitialization.decoded(part.payload)
+                if let itag = meta.formatID?.itag, let mime = meta.mimeType {
+                    round.mimeTypes[itag] = mime
+                }
             case .sabrError:
                 round.hadError = true
             default:

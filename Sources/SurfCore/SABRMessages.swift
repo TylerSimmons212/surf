@@ -49,7 +49,12 @@ public enum SABR {
             return writer.data
         }
 
-        static func decoded(_ data: Data) -> FormatID? {
+        /// The same bytes, for a caller holding opaque format ids alongside ones
+        /// it built. Named so a call site cannot confuse "the id" with "a message
+        /// containing the id".
+        public var encodedID: Data { encoded }
+
+        public static func decoded(_ data: Data) -> FormatID? {
             guard let itag = Protobuf.value(1, in: data)?.int else { return nil }
             guard case .varint(let lastModified) = Protobuf.value(2, in: data) ?? .varint(0)
             else { return nil }

@@ -54,6 +54,14 @@ final class StreamDownload {
 
     func cancel() { isCancelled = true }
 
+    /// Keeps the run's working directory, for looking at what it produced.
+    ///
+    /// A download that finishes and then will not assemble is a question about
+    /// two files on disk, and they are deleted before anyone can open them.
+    static var keepsScratch: Bool {
+        ProcessInfo.processInfo.environment["SURF_KEEP_SCRATCH"] == "1"
+    }
+
     /// Removes the run's scratch directory.
     ///
     /// This comment used to claim the directory was left behind on failure so a
@@ -64,6 +72,10 @@ final class StreamDownload {
     /// anything. Resuming wants a sidecar holding a count and a byte offset, with
     /// the file truncated back to that offset, and that does not exist yet.
     func cleanUp() {
+        guard !Self.keepsScratch else {
+            debugLog("stream: keeping \(workingDirectory.path)")
+            return
+        }
         try? FileManager.default.removeItem(at: workingDirectory)
     }
 
@@ -520,5 +532,265 @@ extension StreamDownload {
             at: workingDirectory, includingPropertiesForKeys: nil
         ) else { return false }
         return entries.contains { $0.pathExtension == "progress" }
+    }
+}
+
+// MARK: - YouTube
+
+/// One segment of one format, so a re-sent segment can be recognised.
+private struct Segment: Hashable {
+    var itag: Int
+    var number: Int
+}
+
+extension StreamDownload {
+
+    /// Downloads a YouTube stream by asking its streaming endpoint, repeatedly.
+    ///
+    /// The shape is different from every other download here and the difference
+    /// is the protocol's. There is no manifest to read and no segment list to
+    /// schedule: one endpoint answers with however much it feels like sending,
+    /// and the only way forward is to ask again from where the last answer
+    /// stopped. So no `SegmentSchedule`, no parallelism, no resume journal —
+    /// those exist to order and bound work that is known in advance, and here
+    /// none of it is.
+    ///
+    /// What it does share is the end: two files, concatenated as they arrive, and
+    /// the same muxer.
+    func startSABR(
+        captured: StreamTap.ABRRequest, formats: [StreamTap.Format],
+        pageURL: URL?, title: String, tab: Tab?
+    ) async -> Result<Produced, StreamRefusal> {
+        guard let body = captured.bytes else {
+            debugLog("sabr: the captured body did not decode from base64 "
+                + "(\(captured.body.count) characters)")
+            return .failure(.unreadable)
+        }
+        // What was actually caught, before deciding it is unusable. "Did not
+        // carry a config" covers a body that decoded to nothing, a body that is
+        // a different request shape, and a parse that failed — three problems
+        // with three different answers.
+        let shape = Protobuf.fields(in: body)
+            .map { "\($0.number)" }
+            .joined(separator: ",")
+        debugLog("sabr: captured \(body.count) bytes, fields [\(shape)]")
+
+        guard let endpoint = URL(string: captured.url),
+              var session = SABRClient.Session(capturedRequest: body, url: endpoint)
+        else {
+            debugLog("sabr: that request has no config (5) and context (19) to reuse")
+            return .failure(.unreadable)
+        }
+
+        // Ask for something readable. Left to itself the server picked 144p VP9
+        // in WebM, which downloaded perfectly and then could not be muxed,
+        // because AVFoundation reads neither.
+        var wantedVideo: Int?
+        var wantedAudio: Int?
+        if let chosen = SABRClient.Session.choose(from: formats) {
+            session.videoFormats = [SABR.FormatID(
+                itag: chosen.video.itag, lastModified: chosen.video.revision ?? 0
+            ).encodedID]
+            session.audioFormats = [SABR.FormatID(
+                itag: chosen.audio.itag, lastModified: chosen.audio.revision ?? 0
+            ).encodedID]
+            wantedVideo = chosen.video.itag
+            wantedAudio = chosen.audio.itag
+            debugLog("sabr: asking for \(chosen.video.itag) "
+                + "(\(chosen.video.height)p \(chosen.video.mimeType)) "
+                + "and \(chosen.audio.itag)")
+        } else {
+            debugLog("sabr: no mp4 pair on offer among \(formats.count); "
+                + "letting the server choose")
+        }
+
+        let credentials = await SegmentFetcher.credentials(for: tab, page: pageURL)
+        let fetcher = SegmentFetcher(credentials: credentials, parallelism: 1)
+
+        do {
+            try FileManager.default.createDirectory(
+                at: workingDirectory, withIntermediateDirectories: true
+            )
+        } catch { return .failure(.unreadable) }
+
+        // Which itag is picture and which is sound is learned from the answers
+        // rather than decided here. A format id names a rendition and says
+        // nothing about its kind; the initialisation metadata the server sends
+        // carries a mime type, which is the only thing in the whole exchange that
+        // does. So this fills in as the stream describes itself.
+        var kinds: [Int: String] = [:]
+        var initialised: Set<Int> = []
+        var seenSegments: Set<Segment> = []
+        var duplicates = 0
+        var unwanted = 0
+
+        let videoFile = workingDirectory.appendingPathComponent("video.mp4")
+        let audioFile = workingDirectory.appendingPathComponent("audio.m4a")
+        guard let videoHandle = try? StreamAssembler.open(videoFile),
+              let audioHandle = try? StreamAssembler.open(audioFile)
+        else { return .failure(.unreadable) }
+        defer {
+            try? videoHandle.close()
+            try? audioHandle.close()
+        }
+
+        var endpointURL = endpoint
+        var startMs = 0
+        var written = 0
+        var rounds = 0
+        var longest = 0
+        let began = ContinuousClock.now
+
+        onDetail("Asking YouTube for the stream")
+
+        while rounds < SABRClient.roundLimit, !isCancelled {
+            rounds += 1
+            var current = session
+            current.url = endpointURL
+            guard let round = await SABRClient.round(
+                current, from: startMs, buffered: [], with: fetcher
+            ) else {
+                debugLog("sabr: round \(rounds) got no answer")
+                return .failure(written > 0 ? .interrupted : .unreadable)
+            }
+
+            // A redirect is where to ask next, not a failure. The first answer to
+            // a streaming request is very often one.
+            if let redirect = round.redirect {
+                debugLog("sabr: redirected to \(redirect.host ?? "?")")
+                endpointURL = redirect
+                rounds -= 1
+                continue
+            }
+            if let protection = round.protection, protection.status != .ok {
+                debugLog("sabr: protection status \(protection.raw) — a token is wanted")
+                return .failure(.protected)
+            }
+            if round.hadError {
+                debugLog("sabr: the server reported an error")
+                return .failure(written > 0 ? .interrupted : .unreadable)
+            }
+
+            for (itag, mime) in round.mimeTypes where kinds[itag] == nil {
+                kinds[itag] = mime
+                debugLog("sabr: itag \(itag) is \(mime)")
+            }
+
+            var gained = 0
+            // Which formats have had their header written. SABR marks an
+            // initialisation segment rather than sending it only once, and it
+            // arrives again after a redirect and at the head of later responses.
+            // Writing it a second time puts a `moov` in the middle of the media,
+            // which is why 569MB of download muxed into a 25-megabyte file: the
+            // reader stopped at the first one it did not expect.
+            // In header-id order, because a response interleaves two streams and
+            // the dictionary's own order is arbitrary. Appending audio out of
+            // order is a file that plays wrong rather than one that fails.
+            for headerID in round.media.keys.sorted() {
+                guard let bytes = round.media[headerID],
+                      let header = round.headers[headerID], let itag = header.itag
+                else { continue }
+                if header.isInitializationSegment {
+                    guard !initialised.contains(itag) else { continue }
+                    initialised.insert(itag)
+                    debugLog("sabr: header for itag \(itag), \(bytes.count) bytes")
+                } else if let number = header.segmentNumber {
+                    // Written once each, by segment number.
+                    //
+                    // Asking from where the last answer reached does not mean the
+                    // next one starts there: the server resumes from a keyframe
+                    // before it, so consecutive rounds overlap. Appending the
+                    // overlap gives a file with segments repeated in the middle —
+                    // which is why 538MB of video read back as 23, with a
+                    // timeline longer than the video. The audio, whose segments
+                    // happened not to overlap, came out exactly right, which made
+                    // it look like a video problem rather than an ordering one.
+                    guard seenSegments.insert(Segment(itag: itag, number: number)).inserted
+                    else { duplicates += 1; continue }
+                }
+                // By itag, not by kind. Routing on the mime type alone put every
+                // `audio/*` the server sent into one file, and it sends more
+                // formats than were asked for — which produced an audio track of
+                // exactly twice the video's length, two complete soundtracks
+                // appended one after the other, and a video twenty seconds long
+                // in the wrong direction. Asking for a format is not the same as
+                // being sent only that format.
+                let mime = kinds[itag] ?? ""
+                if itag == wantedVideo || (wantedVideo == nil && mime.hasPrefix("video/")) {
+                    try? videoHandle.write(contentsOf: bytes)
+                } else if itag == wantedAudio || (wantedAudio == nil && mime.hasPrefix("audio/")) {
+                    try? audioHandle.write(contentsOf: bytes)
+                } else {
+                    unwanted += bytes.count
+                    continue
+                }
+                gained += bytes.count
+                // How far the stream has got. Taken from the headers rather than
+                // counted, because bytes do not say where in the video they are.
+                if let start = header.startMs, let duration = header.durationMs {
+                    longest = max(longest, start + duration)
+                }
+            }
+
+            written += gained
+            if gained == 0 {
+                // Nothing new. Either the video is finished or the server has
+                // stopped advancing, and neither is worth asking about again.
+                debugLog("sabr: round \(rounds) added nothing; stopping")
+                break
+            }
+            guard longest > startMs else {
+                debugLog("sabr: round \(rounds) did not advance past \(startMs)ms; stopping")
+                break
+            }
+            startMs = longest
+            onProgress(0, written)
+            onDetail("Asking YouTube for the stream")
+        }
+
+        let elapsed = (ContinuousClock.now - began).seconds
+        debugLog("sabr: \(written) bytes over \(rounds) round(s) in "
+            + "\(String(format: "%.1f", elapsed))s, reached \(longest)ms")
+
+        guard !isCancelled else { return .failure(.unreadable) }
+        guard written > 0 else { return .failure(.unreadable) }
+
+        try? videoHandle.close()
+        try? audioHandle.close()
+
+        let sizes = [videoFile, audioFile].map { url in
+            (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        }
+        debugLog("sabr: video \(sizes[0] ?? 0) bytes, audio \(sizes[1] ?? 0) bytes, "
+            + "\(seenSegments.count) segments, \(duplicates) repeats, "
+            + "\(unwanted) bytes of formats we did not ask for")
+
+        let output = workingDirectory.appendingPathComponent(Self.sanitised(title) + ".mp4")
+        onDetail("Combining audio and video")
+
+        // ffmpeg rather than AVFoundation, which cannot read this. Measured on
+        // the files above: `AVAssetReader` reports completion after yielding 25MB
+        // of a 538MB video, while ffmpeg copies the whole thing in a second and
+        // `ffprobe` agrees with the result. Everything else in this engine still
+        // goes through AVFoundation; this is the one producer it mis-parses.
+        guard let ffmpeg = MediaExtractor.shared.ffmpegURL else {
+            debugLog("sabr: no ffmpeg, and AVFoundation cannot read this stream")
+            return .failure(.unsupportedContainer(.fragmentedMP4))
+        }
+        switch await StreamAssembler.remux(
+            video: videoFile, audio: audioFile, into: output, using: ffmpeg
+        ) {
+        case .success(let url):
+            return .success(Produced(
+                url: url,
+                expectation: SavedMedia.Expectation(
+                    wantsVideo: true, wantsAudio: true,
+                    declaredDuration: longest > 0 ? Double(longest) / 1000 : nil
+                )
+            ))
+        case .failure(let failure):
+            debugLog("sabr: remux failed — \(failure)")
+            return .failure(.unsupportedContainer(.fragmentedMP4))
+        }
     }
 }

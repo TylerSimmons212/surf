@@ -347,6 +347,20 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                     return
                 }
 
+                // YouTube first, because on YouTube there is nothing else: no
+                // manifest is fetched and no format carries a URL, so a captured
+                // streaming request is the only route to its media.
+                if let captured = seen?.abr {
+                    debugLog("download: using a captured streaming request, "
+                        + "\(seen?.formats.count ?? 0) formats on offer")
+                    self.startSABRDownload(
+                        captured: captured, formats: seen?.formats ?? [],
+                        page: pageURL, title: media.title, tab: tab,
+                        expecting: expectation
+                    )
+                    return
+                }
+
                 let candidates = (seen?.manifests ?? []).compactMap { URL(string: $0) }
                 if !candidates.isEmpty {
                     debugLog("download: tap found \(candidates.count) manifest(s)"
@@ -554,6 +568,78 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // Quietly. A download that succeeds by another route is not an
                 // error, and the row is removed so the retry button knows which
                 // engine it is retrying.
+                self.remove(item)
+                self.startExtraction(
+                    from: pageURL, title: title, tab: tab, expecting: expectation
+                )
+            }
+        }
+    }
+
+    /// Downloads a YouTube stream, falling back to the subprocess if we can't.
+    ///
+    /// Its own entry point rather than a branch inside `startStreamDownload`,
+    /// because the two share nothing but their ending. That one reads a manifest
+    /// and schedules the segments it names; this asks an endpoint repeatedly and
+    /// is told how much it may have. A single function doing both would be a
+    /// switch wearing a loop.
+    func startSABRDownload(
+        captured: StreamTap.ABRRequest,
+        formats: [StreamTap.Format],
+        page pageURL: URL?,
+        title: String,
+        tab: Tab?,
+        expecting expectation: SavedMedia.Expectation?
+    ) {
+        let placeholder = sanitize(title.isEmpty ? (pageURL?.host ?? "video") : title)
+        let item = DownloadItem(filename: placeholder + ".mp4")
+        item.host = pageURL?.host
+        item.pageURL = pageURL
+        item.tab = tab
+        item.expectation = expectation
+        items.insert(item, at: 0)
+        if let tab { itemsByTab[tab.id] = item }
+
+        let download = StreamDownload(
+            onDetail: { [weak item] detail in
+                guard let item, item.isActive else { return }
+                item.detail = detail
+            },
+            onProgress: { [weak item] _, bytes in
+                guard let item, item.isActive else { return }
+                // No fraction: the protocol does not say how much is left, so a
+                // bar would be inventing one. The byte count is the honest
+                // number and the row already knows how to show it.
+                item.bytesWritten = Int64(bytes)
+            }
+        )
+        item.stream = download
+
+        Task { @MainActor in
+            let result = await download.startSABR(
+                captured: captured, formats: formats,
+                pageURL: pageURL, title: title, tab: tab
+            )
+            item.stream = nil
+            item.detail = nil
+            guard item.isActive else {
+                download.cleanUp()
+                return
+            }
+
+            switch result {
+            case .success(let produced):
+                await self.accept(item, produced: produced.url, expecting: produced.expectation)
+                download.cleanUp()
+
+            case .failure(let refusal):
+                download.cleanUp()
+                debugLog("sabr: refused — \(refusal) fallback=\(refusal.allowsFallback)")
+                guard refusal.allowsFallback, let pageURL else {
+                    item.state = .failed(refusal.message)
+                    self.releaseTabBinding(for: item, after: .seconds(6))
+                    return
+                }
                 self.remove(item)
                 self.startExtraction(
                     from: pageURL, title: title, tab: tab, expecting: expectation
