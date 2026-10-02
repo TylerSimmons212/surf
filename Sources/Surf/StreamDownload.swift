@@ -65,7 +65,7 @@ final class StreamDownload {
 
         onDetail("Reading the stream")
         guard let masterText = await fetcher.text(at: manifestURL),
-              let master = HLSPlaylist.parse(masterText, baseURL: manifestURL)
+              let master = StreamManifest.parse(masterText, baseURL: manifestURL)
         else { return .failure(.unreadable) }
 
         // Two passes, because a master playlist names its variants and only the
@@ -80,7 +80,7 @@ final class StreamDownload {
         let videoIndex: StreamIndex
         if let next = pick.video.manifestURL, master.needsSecondPass {
             guard let text = await fetcher.text(at: next),
-                  let parsed = HLSPlaylist.parse(text, baseURL: next)
+                  let parsed = StreamManifest.parse(text, baseURL: next)
             else { return .failure(.unreadable) }
             videoIndex = parsed
         } else {
@@ -90,7 +90,7 @@ final class StreamDownload {
         var audioIndex: StreamIndex?
         if let next = pick.audio?.manifestURL {
             guard let text = await fetcher.text(at: next),
-                  let parsed = HLSPlaylist.parse(text, baseURL: next)
+                  let parsed = StreamManifest.parse(text, baseURL: next)
             else { return .failure(.unreadable) }
             audioIndex = parsed
         }

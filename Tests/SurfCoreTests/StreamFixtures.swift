@@ -184,7 +184,198 @@ enum StreamFixtures {
     #EXT-X-ENDLIST
     """
 
-    /// Not a playlist. A 200 with an error page in it parses to the same nothing
+    // MARK: - DASH
+
+    /// The common shape, reduced from `dash.akamaized.net/akamai/bbb_30fps`.
+    /// Template with `$Number$`, count from arithmetic, separate audio.
+    static let numberTemplateMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT10M34.6S" minBufferTime="PT4S">
+      <Period>
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <SegmentTemplate duration="120" timescale="30" startNumber="1"
+            media="$RepresentationID$/$RepresentationID$_$Number$.m4v"
+            initialization="$RepresentationID$/$RepresentationID$_0.m4v"/>
+          <Representation id="low" codecs="avc1.64000d" bandwidth="254320"
+            width="320" height="180"/>
+          <Representation id="high" codecs="avc1.640033" bandwidth="14931538"
+            width="3840" height="2160"/>
+        </AdaptationSet>
+        <AdaptationSet mimeType="audio/mp4" contentType="audio" id="2">
+          <SegmentTemplate duration="192512" timescale="48000" startNumber="1"
+            media="$RepresentationID$/$RepresentationID$_$Number$.m4a"
+            initialization="$RepresentationID$/$RepresentationID$_0.m4a"/>
+          <Representation id="aud" codecs="mp4a.40.5" bandwidth="67071"/>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// Axinom's shape: a width specifier inside the template variable. A parser
+    /// that only knows the bare form asks for `1.m4s` where the file is
+    /// `0001.m4s`, which is a 404 per segment.
+    static let paddedNumberMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT12M14S">
+      <Period>
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <SegmentTemplate timescale="24" duration="96" startNumber="1"
+            media="$RepresentationID$/$Number%04d$.m4s"
+            initialization="$RepresentationID$/init.mp4"/>
+          <Representation id="1" codecs="avc1.64001f" width="1920" height="1080"
+            bandwidth="4000000"/>
+        </AdaptationSet>
+        <AdaptationSet mimeType="audio/mp4" contentType="audio" id="2">
+          <SegmentTemplate timescale="24000" duration="95232" startNumber="1"
+            media="$RepresentationID$/$Number%04d$.m4s"
+            initialization="$RepresentationID$/init.mp4"/>
+          <Representation id="a1" codecs="mp4a.40.2" bandwidth="128000"/>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// Sony's on-demand shape: no segment addressing at all, one file per track,
+    /// and codecs declared on the adaptation set rather than the representation.
+    /// Reading only the representation leaves a stream with no codec and no role.
+    static let singleFileMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT9M57S">
+      <Period duration="PT9M57S" id="P1">
+        <AdaptationSet codecs="mp4a.40.5" contentType="audio" id="2"
+          mimeType="audio/mp4" audioSamplingRate="48000">
+          <Representation bandwidth="64000" id="2_1">
+            <BaseURL>DASH_vodaudio_Track5.m4a</BaseURL>
+          </Representation>
+        </AdaptationSet>
+        <AdaptationSet codecs="avc1.4D401E" contentType="video" id="1"
+          mimeType="video/mp4" maxWidth="854" maxHeight="480">
+          <Representation bandwidth="1005568" height="480" id="1_1" width="854">
+            <BaseURL>DASH_vodvideo_Track1.m4v</BaseURL>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// An explicit timeline. `@r` is *additional* repeats, so `r="2"` is three
+    /// segments, and reading it as a total loses the last one of every run.
+    static let timelineMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT20S">
+      <Period>
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <SegmentTemplate timescale="1000" startNumber="1"
+            media="v/$Number$-$Time$.m4s" initialization="v/init.mp4">
+            <SegmentTimeline>
+              <S t="0" d="4000" r="2"/>
+              <S d="2000"/>
+              <S d="4000" r="1"/>
+            </SegmentTimeline>
+          </SegmentTemplate>
+          <Representation id="v" codecs="avc1.64001f" width="1280" height="720"
+            bandwidth="2000000"/>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// An enumerated list.
+    static let segmentListMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT12S">
+      <Period>
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <Representation id="v" codecs="avc1.64001f" width="640" height="360"
+            bandwidth="800000">
+            <SegmentList duration="4" timescale="1">
+              <Initialization sourceURL="v/init.mp4"/>
+              <SegmentURL media="v/1.m4s"/>
+              <SegmentURL media="v/2.m4s"/>
+              <SegmentURL media="v/3.m4s"/>
+            </SegmentList>
+          </Representation>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// DRM, declared where it usually is: nested under the adaptation set.
+    static let protectedMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT12M14S">
+      <Period>
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <ContentProtection schemeIdUri="urn:mpeg:dash:mp4protection:2011"
+            value="cenc" cenc:default_KID="ae8e0d1b-8d2e-4e9f-9b6c-1f3d5a7c9e11"
+            xmlns:cenc="urn:mpeg:cenc:2013"/>
+          <ContentProtection schemeIdUri="urn:uuid:EDEF8BA9-79D6-4ACE-A3C8-27DCD51D21ED"/>
+          <SegmentTemplate timescale="24" duration="96" startNumber="1"
+            media="$RepresentationID$/$Number%04d$.m4s"
+            initialization="$RepresentationID$/init.mp4"/>
+          <Representation id="1" codecs="avc1.64001f" width="1920" height="1080"
+            bandwidth="4000000"/>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// Still being produced: no total duration, so no segment count exists.
+    static let liveMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="dynamic"
+         availabilityStartTime="1970-01-01T00:00:00Z" minimumUpdatePeriod="PT0S">
+      <Period id="p0" start="PT0S">
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <SegmentTemplate media="$RepresentationID$/$Number$.m4s" duration="2"
+            startNumber="0" initialization="$RepresentationID$/init.mp4"/>
+          <Representation id="V300" codecs="avc1.64001e" width="640" height="360"
+            bandwidth="300000"/>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// BaseURL chains, each relative to the last, and a host the manifest's own
+    /// URL never mentioned.
+    static let baseURLChainMPD = """
+    <?xml version="1.0"?>
+    <MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static"
+         mediaPresentationDuration="PT8S">
+      <BaseURL>https://seg.example.net/root/</BaseURL>
+      <Period>
+        <BaseURL>period1/</BaseURL>
+        <AdaptationSet mimeType="video/mp4" contentType="video" id="1">
+          <BaseURL>video/</BaseURL>
+          <SegmentTemplate duration="4" timescale="1" startNumber="1"
+            media="$Number$.m4s" initialization="init.mp4"/>
+          <Representation id="v" codecs="avc1.64001f" width="640" height="360"
+            bandwidth="800000"/>
+        </AdaptationSet>
+        <AdaptationSet mimeType="audio/mp4" contentType="audio" id="2">
+          <BaseURL>audio/</BaseURL>
+          <SegmentTemplate duration="4" timescale="1" startNumber="1"
+            media="$Number$.m4s" initialization="init.mp4"/>
+          <Representation id="a" codecs="mp4a.40.2" bandwidth="128000"/>
+        </AdaptationSet>
+      </Period>
+    </MPD>
+    """
+
+    /// Not an MPD.
+    static let notAnMPD = """
+    <?xml version="1.0"?>
+    <error><message>Forbidden</message></error>
+    """
+
+    /// Not XML at all.
+        /// Not a playlist. A 200 with an error page in it parses to the same nothing
     /// as an empty playlist unless the first line is checked.
     static let notAPlaylist = """
     <!DOCTYPE html>
