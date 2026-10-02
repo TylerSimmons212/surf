@@ -16,6 +16,7 @@
 
 (async () => {
   const log = (...a) => console.log('%c[sabr]', 'color:#0a0', ...a);
+  log('%cprobe v2 — finds the player response rather than assuming it', 'font-weight:bold');
 
   // Where the player response lives depends on how you arrived. A cold load
   // leaves it on `ytInitialPlayerResponse`; navigating within YouTube replaces

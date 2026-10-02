@@ -21,6 +21,12 @@
 (async () => {
   const log = (...a) => console.log('%c[sabr]', 'color:#0a0', ...a);
 
+  // Printed first, and here because it has already cost a round trip: four
+  // revisions of this went out in a row, the console remembers the last paste,
+  // and an old copy produces output that looks like a new result. If the line
+  // below is not the version being discussed, nothing after it means anything.
+  log('%cprobe v3 — reads the body off a Request object', 'font-weight:bold');
+
   // --- catch one -----------------------------------------------------------
   // Both `fetch` and `XMLHttpRequest`, because the first attempt watched only
   // `fetch` and caught nothing — and a dev-tools network list on the same page
