@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "Surf",
     // String form: PackageDescription 6.0's enum stops short of .v26.
-    platforms: [.macOS("26.0")],
+    platforms: [.macOS("27.0")],
     targets: [
         // Pure logic, no AppKit/WebKit — so it can be unit tested.
         .target(
