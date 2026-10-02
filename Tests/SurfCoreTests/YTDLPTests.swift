@@ -56,6 +56,26 @@ struct YTDLPArgumentTests {
         #expect(!args().contains("--cookies"))
         #expect(args(cookies: "/tmp/work/cookies.txt").contains("--cookies"))
     }
+
+    @Test("Fragments are fetched several at a time")
+    func concurrentFragments() {
+        let args = args()
+        let index = try! #require(args.firstIndex(of: "--concurrent-fragments"))
+        // Anything above 1 is the win; the number itself is a judgement about
+        // how much parallelism a CDN will tolerate from one address.
+        let count = Int(args[index + 1])
+        #expect(count != nil)
+        #expect((count ?? 0) > 1)
+        #expect((count ?? 0) <= 8)
+    }
+
+    @Test("A fragment that won't download fails the download")
+    func abortsOnMissingFragment() {
+        // Without this, yt-dlp skips refused fragments and exits 0, which is one
+        // way a video download arrives containing only its audio.
+        #expect(args().contains("--abort-on-unavailable-fragments"))
+        #expect(!args().contains("--skip-unavailable-fragments"))
+    }
 }
 
 @Suite("yt-dlp output parsing")

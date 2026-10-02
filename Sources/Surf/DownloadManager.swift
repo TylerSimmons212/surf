@@ -57,6 +57,12 @@ final class DownloadItem: Identifiable {
     /// `download` — a given item is fetched one way or the other.
     @ObservationIgnored var extraction: Extraction?
 
+    /// What the page said this was, recorded before the download started, so
+    /// the finished file can be checked against something the downloader had no
+    /// hand in. Nil for an adopted link download, which has no media to expect
+    /// anything of and must never be probed as though it did.
+    @ObservationIgnored var expectation: SavedMedia.Expectation?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
@@ -221,7 +227,16 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             startDirectDownload(from: tab, media: media)
         case .manifest, .streamed:
             guard let pageURL = tab.webView.url else { return }
-            startExtraction(from: pageURL, title: media.title, tab: tab)
+            startExtraction(
+                from: pageURL, title: media.title, tab: tab,
+                // Taken from the page while the video is still playing in it.
+                // This is the only description of what we are saving that does
+                // not come from the thing doing the saving.
+                expecting: SavedMedia.Expectation(
+                    wantsVideo: media.hasVideo,
+                    declaredDuration: media.duration > 0 ? media.duration : nil
+                )
+            )
         case .none, .unsupported:
             return
         }
@@ -252,7 +267,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     /// Hands a page to yt-dlp and wires its output into the same `DownloadItem`
     /// the direct path uses, so the UI needs no idea which engine is running.
-    func startExtraction(from pageURL: URL, title: String, tab: Tab?) {
+    func startExtraction(
+        from pageURL: URL, title: String, tab: Tab?,
+        expecting expectation: SavedMedia.Expectation? = nil
+    ) {
         guard MediaExtractor.shared.isAvailable else { return }
 
         // A placeholder name until yt-dlp reports the real one: a row reading
@@ -263,6 +281,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.host = pageURL.host
         item.pageURL = pageURL
         item.isExtracted = true
+        item.expectation = expectation
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
 
@@ -312,48 +331,79 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// Moves the finished file out of the run's scratch directory and into
     /// ~/Downloads, where the direct path would have put it.
     private func finishExtraction(_ item: DownloadItem, result: Result<URL, ExtractionFailure>) {
-        defer {
-            item.extraction?.cleanUp()
-            item.extraction = nil
-        }
-
-        guard item.isActive else { return }
-
         switch result {
         case .failure(let failure):
+            releaseExtraction(for: item)
+            guard item.isActive else { return }
             item.state = .failed(failure.message)
             releaseTabBinding(for: item, after: .seconds(6))
 
         case .success(let produced):
-            let downloads = FileManager.default
-                .urls(for: .downloadsDirectory, in: .userDomainMask).first
-                ?? FileManager.default.homeDirectoryForCurrentUser
-            let destination = uniqueURL(in: downloads, named: produced.lastPathComponent)
-
-            do {
-                try FileManager.default.moveItem(at: produced, to: destination)
-            } catch {
-                // Across filesystems a move can fail where a copy won't — the
-                // scratch directory is in /tmp, which need not be the same
-                // volume as the home directory.
-                guard (try? FileManager.default.copyItem(at: produced, to: destination)) != nil
-                else {
-                    item.state = .failed("Couldn't save to Downloads")
-                    releaseTabBinding(for: item, after: .seconds(6))
-                    return
-                }
+            // Deliberately not a `defer`: checking the file is async, and the
+            // scratch directory has to outlive the check. Cleaning up on the way
+            // out of this function would delete the thing being inspected.
+            Task { @MainActor in
+                await self.accept(item, produced: produced)
+                self.releaseExtraction(for: item)
             }
-
-            NSSound(named: "Surf")?.play()
-            item.filename = destination.lastPathComponent
-            item.destinationURL = destination
-            item.fraction = 1
-            item.state = .finished(destination)
-            tagProvenance(of: destination, for: item)
-            releaseTabBinding(for: item, after: .seconds(4))
-            // Cosmetic and strictly after the file is whole and tagged.
-            AIDownloadRenamer.renameIfEnabled(item)
         }
+    }
+
+    private func releaseExtraction(for item: DownloadItem) {
+        item.extraction?.cleanUp()
+        item.extraction = nil
+    }
+
+    /// Checks the file against what the page said it was, then moves it.
+    ///
+    /// The order is the whole point. The file is still in a directory this code
+    /// owns and is about to delete, so a file that failed the check is discarded
+    /// rather than reported — there is nothing left in ~/Downloads for someone to
+    /// double-click, be confused by, and have to delete by hand.
+    private func accept(_ item: DownloadItem, produced: URL) async {
+        guard item.isActive else { return }
+
+        if let expectation = item.expectation,
+           let inventory = await MediaInspector.inventory(of: produced),
+           let flaw = SavedMedia.flaw(in: inventory, expecting: expectation) {
+            // A cancel may have landed while AVFoundation was reading.
+            guard item.isActive else { return }
+            debugLog("extract: refused \(produced.lastPathComponent) — \(flaw)")
+            item.state = .failed(flaw.message)
+            releaseTabBinding(for: item, after: .seconds(6))
+            return
+        }
+
+        guard item.isActive else { return }
+
+        let downloads = FileManager.default
+            .urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        let destination = uniqueURL(in: downloads, named: produced.lastPathComponent)
+
+        do {
+            try FileManager.default.moveItem(at: produced, to: destination)
+        } catch {
+            // Across filesystems a move can fail where a copy won't — the
+            // scratch directory is in /tmp, which need not be the same
+            // volume as the home directory.
+            guard (try? FileManager.default.copyItem(at: produced, to: destination)) != nil
+            else {
+                item.state = .failed("Couldn't save to Downloads")
+                releaseTabBinding(for: item, after: .seconds(6))
+                return
+            }
+        }
+
+        NSSound(named: "Surf")?.play()
+        item.filename = destination.lastPathComponent
+        item.destinationURL = destination
+        item.fraction = 1
+        item.state = .finished(destination)
+        tagProvenance(of: destination, for: item)
+        releaseTabBinding(for: item, after: .seconds(4))
+        // Cosmetic and strictly after the file is whole and tagged.
+        AIDownloadRenamer.renameIfEnabled(item)
     }
 
     // MARK: - Naming

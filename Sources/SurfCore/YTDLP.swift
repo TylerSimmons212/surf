@@ -63,6 +63,19 @@ public enum YTDLP {
             // channel archive is not the same feature.
             "--no-playlist",
             "--no-mtime",
+            // The default is 1, which fetches a segmented stream one segment at
+            // a time. Measured against 43MB of 1080p DASH segments from Akamai,
+            // six at once ran 2.82x faster: 8.36 MB/s to 23.60 MB/s. Four rather
+            // than six because this number cannot adapt to the server the way
+            // our own fetcher will, and a CDN reads a lot of parallel
+            // connections from one address as something to throttle.
+            "--concurrent-fragments", "4",
+            // The default is to skip a fragment that won't download and carry
+            // on. That turns a stream whose video fragments are being refused
+            // into a successful exit with only the audio in the file, which is
+            // exactly the bug this guards. A download that cannot have all of
+            // the video should fail and say so.
+            "--abort-on-unavailable-fragments",
             "--output", outputTemplate,
             "--paths", workingDirectory,
         ]
