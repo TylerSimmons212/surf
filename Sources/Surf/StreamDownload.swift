@@ -183,11 +183,71 @@ final class StreamDownload {
         return .success(Produced(url: output, expectation: plan.expectation))
     }
 
+    /// A plain file, fetched in pieces at the same time.
+    ///
+    /// The whole engine already knows how to fetch a list of segments in parallel
+    /// and append them in order. A file split into byte ranges *is* that list, so
+    /// this adds a plan and reuses everything else: same schedule, same adaptive
+    /// connection count, same in-order write.
+    ///
+    /// Returns a refusal whenever there is any doubt, and the caller must then
+    /// leave the download where it was. The probe is the gate: it runs through the
+    /// session this would use, against the URL this would use, so a success means
+    /// the credentials work here. WebKit keeps everything else.
+    func startProgressive(
+        url: URL, pageURL: URL?, title: String, tab: Tab?
+    ) async -> Result<Produced, StreamRefusal> {
+        let credentials = await SegmentFetcher.credentials(for: tab, page: pageURL)
+        let fetcher = SegmentFetcher(credentials: credentials, parallelism: Self.parallelism)
+
+        guard let probe = await fetcher.probe(url) else { return .failure(.unreadable) }
+        guard ByteRanges.worthSplitting(
+            length: probe.length, acceptRanges: probe.acceptsRanges
+        ), let length = probe.length else { return .failure(.unreadable) }
+
+        let ranges = ByteRanges.chunks(of: length, into: Self.parallelism)
+        guard ranges.count > 1 else { return .failure(.unreadable) }
+
+        do {
+            try FileManager.default.createDirectory(
+                at: workingDirectory, withIntermediateDirectories: true
+            )
+        } catch {
+            return .failure(.unreadable)
+        }
+
+        debugLog("stream: splitting \(length) bytes into \(ranges.count) pieces")
+
+        // No durations: a plain file has none, so the schedule counts pieces
+        // instead of weighting them. They are equal-sized, so counting is right.
+        let rendition = StreamRendition(
+            id: url.lastPathComponent,
+            role: .muxed,
+            segments: ranges.map { StreamSegment(url: url, byteRange: $0) }
+        )
+
+        let extension_ = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
+        let output = workingDirectory
+            .appendingPathComponent(Self.sanitised(title) + "." + extension_)
+
+        let result = await fetch(
+            rendition, into: output, with: fetcher, label: "file",
+            onStep: { fraction, bytes in self.onProgress(fraction, bytes) }
+        )
+        if case .failure(let refusal) = result { return .failure(refusal) }
+
+        // No expectation of tracks: this is whatever the page linked to, and a
+        // plain file download is not necessarily media at all.
+        return .success(Produced(url: output, expectation: nil))
+    }
+
     struct Produced {
         var url: URL
         /// Carried out so `SavedMedia` can check the file against what the
-        /// manifest promised, which is the whole reason the plan built one.
-        var expectation: SavedMedia.Expectation
+        /// manifest promised, which is the whole reason the plan built one. Nil
+        /// for a plain file, where nothing promised anything and the item's own
+        /// expectation — the page's — is the better one.
+        var expectation: SavedMedia.Expectation?
     }
 
     // MARK: - Fetching one track

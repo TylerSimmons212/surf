@@ -309,6 +309,68 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         items.insert(item, at: 0)
         itemsByTab[tab.id] = item
 
+        // A large file that the server will serve in pieces is fetched in pieces,
+        // because one connection is the slowest way to move one. Everything else
+        // stays with WebKit, which is where this has always been and which
+        // inherits the session rather than replaying it.
+        Task { @MainActor in
+            if await self.splitIfWorthwhile(item, url: url, tab: tab) { return }
+            self.handToWebKit(item, url: url, tab: tab)
+        }
+    }
+
+    /// Fetches a plain file in parallel, or answers false and leaves it alone.
+    ///
+    /// Every doubt resolves to false. The probe inside `startProgressive` runs
+    /// through the same session and URL the parallel fetch would use, so it
+    /// answering at all is the evidence that taking the download away from WebKit
+    /// is safe — a file behind a session we cannot replay fails the probe and
+    /// never leaves the path it works on.
+    private func splitIfWorthwhile(
+        _ item: DownloadItem, url: URL, tab: Tab
+    ) async -> Bool {
+        let download = StreamDownload(
+            onDetail: { [weak item] detail in
+                guard let item, item.isActive else { return }
+                item.detail = detail
+            },
+            onProgress: { [weak item] fraction, bytes in
+                guard let item, item.isActive else { return }
+                item.fraction = max(item.fraction, min(fraction, 0.95))
+                item.bytesWritten = Int64(bytes)
+            }
+        )
+        item.stream = download
+
+        let result = await download.startProgressive(
+            url: url, pageURL: tab.webView.url,
+            title: (item.filename as NSString).deletingPathExtension, tab: tab
+        )
+        item.stream = nil
+        item.detail = nil
+
+        guard item.isActive else {
+            download.cleanUp()
+            return true
+        }
+
+        switch result {
+        case .success(let produced):
+            await accept(item, produced: produced.url, expecting: produced.expectation)
+            download.cleanUp()
+            return true
+        case .failure:
+            // Not reported anywhere. This is not an error, it is the ordinary
+            // answer for a small file or a server that will not serve ranges, and
+            // the download is about to happen the way it always did.
+            download.cleanUp()
+            item.fraction = 0
+            item.bytesWritten = 0
+            return false
+        }
+    }
+
+    private func handToWebKit(_ item: DownloadItem, url: URL, tab: Tab) {
         var request = URLRequest(url: url)
         // Some CDNs reject media requests that arrive without the page referrer.
         if let pageURL = tab.webView.url {
@@ -525,6 +587,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         _ item: DownloadItem, produced: URL,
         expecting override: SavedMedia.Expectation? = nil
     ) async {
+        // `override` nil falls through to the item's own, which is what a plain
+        // file wants: nothing promised it tracks, but the page said whether it was
+        // playing a video.
         guard item.isActive else { return }
 
         // The manifest's expectation beats the page's where there is one: only
