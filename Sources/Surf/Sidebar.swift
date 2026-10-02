@@ -41,7 +41,7 @@ struct Sidebar: View {
     /// the title: taller rows with the same width would just truncate sooner.
     ///
     /// It went 264 → 284 when the action row above the list ran out of room:
-    /// nine controls at `IconButton.actionSize` plus their gaps came to 268,
+    /// nine controls at 28 points plus their gaps came to 268,
     /// so the row was over its own width before the buttons were enlarged at
     /// all. That row is gone now — the window's controls are in the top bar
     /// and the page's are behind the address — so the constraint that set 284

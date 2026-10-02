@@ -24,18 +24,6 @@ enum IconMotion {
 /// - a symbol effect on activation, to say "that worked"
 struct IconButton: View {
 
-    /// The size of a control in the sidebar's action row, and so the default
-    /// here: every one of the eight buttons in that row takes it, and every
-    /// other `IconButton` in the app states its own. Square, because the row is
-    /// the one you reach for with the pointer rather than the keyboard, and the
-    /// height is what decides whether you land in it on the way up from the
-    /// page. It was 26×22, which is a target you have to aim at.
-    ///
-    /// `ScreenshotButton` is a `Menu` and cannot be one of these, so it draws
-    /// its label at this size by hand — from here, so the two cannot drift.
-    static let actionSize = CGSize(width: 28, height: 28)
-    static let actionCornerRadius: CGFloat = 8
-
     let systemName: String
 
     /// Swapped in while hovered. Lets one button show state at rest and the
@@ -44,9 +32,13 @@ struct IconButton: View {
 
     var size: CGFloat = 12
     var weight: Font.Weight = .medium
-    var width: CGFloat = IconButton.actionSize.width
-    var height: CGFloat = IconButton.actionSize.height
-    var cornerRadius: CGFloat = IconButton.actionCornerRadius
+    // Every call site states its own size, so these are only a floor. They
+    // were named constants shared with the sidebar's action row, back when
+    // there was one — the window's controls live in the top bar now and the
+    // page's behind the address, and nothing was left reading them.
+    var width: CGFloat = 28
+    var height: CGFloat = 28
+    var cornerRadius: CGFloat = 8
     var tint: Color?
     var isEnabled: Bool = true
     var motion: IconMotion = .bounce

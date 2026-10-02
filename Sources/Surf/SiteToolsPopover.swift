@@ -265,7 +265,7 @@ private struct BlockingRow: View {
     }
 
     private var summary: String {
-        if let host, blocker.isPaused(on: host) { return "Paused on this site" }
+        if let host, blocker.isPaused(on: host) { return "Ad blocking off on this site" }
         let count = tab.blockLog.blockedCount
         // A shield wearing a zero is a worse answer than one wearing nothing,
         // and the same is true of this line.

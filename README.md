@@ -2,8 +2,10 @@
 
 A web browser for macOS, built in Swift + SwiftUI.
 
-Requires macOS 26 or later — the chrome uses the current SF Symbols effects
-(`rotate`, `drawOn`) with no fallbacks.
+Requires macOS 27 or later. The chrome uses the current SF Symbols effects
+(`rotate`, `drawOn`) with no fallbacks, and the tab list and sticker shelf
+reorder through SwiftUI's `reorderable` / `reorderContainer`, which are
+macOS 27 and have no back-deployment.
 
 ## Download
 
@@ -12,7 +14,7 @@ open the `.dmg` and drag Surf to Applications.
 
 It is signed and notarized by Apple, so it opens like any other app. No
 right-clicking, no quarantine to strip, no trip to System Settings to talk it
-into running. macOS 26 or later only; on anything older it will not launch.
+into running. macOS 27 or later only; on anything older it will not launch.
 
 To make it your browser: Settings (`⌘,`) has a **Make Surf the Default** button,
 or use System Settings › Desktop & Dock › Default web browser. Either way macOS
@@ -942,8 +944,16 @@ Whoever you send the image to drags Surf to Applications and opens it. Nothing
 else: no quarantine to strip, no security pane to visit. Surf declares itself a
 handler for `http` and `https`, so it appears in System Settings › Desktop &
 Dock › Default web browser, and Settings › Links has a button that asks macOS
-the same question. It is `LSMinimumSystemVersion 26.0`, so a Mac on Sequoia or
-older can't run it at all.
+the same question. It is `LSMinimumSystemVersion 27.0`, so an older Mac can't
+run it at all.
+
+That key is also what keeps an older Mac from being *offered* a build it can't
+launch: `generate_appcast` reads it out of the bundle and writes
+`sparkle:minimumSystemVersion` into the entry, so Sparkle skips that entry and
+offers the newest release the machine can actually run. Which means the last
+macOS 26 release has to stay in the feed permanently — it is the only entry a
+26 machine can still see, and with it gone the updater finds nothing eligible
+and goes quiet with no way to say why.
 
 ## Layout
 
