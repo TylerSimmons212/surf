@@ -86,7 +86,11 @@ private struct DownloadRow: View {
     private var subtitle: some View {
         switch item.state {
         case .downloading:
-            Text(item.sizeDescription.isEmpty ? "Starting…" : item.sizeDescription)
+            // The detail line wins while it is set, because the phases it names
+            // — reading the manifest, combining the tracks, checking the file —
+            // are real time spent on something a byte count does not describe.
+            Text(item.detail ?? (item.sizeDescription.isEmpty
+                ? "Starting…" : item.sizeDescription))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         case .finished:

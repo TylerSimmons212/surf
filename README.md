@@ -41,9 +41,21 @@ The window is nothing but the page, under a slim title strip that tints itself
 from the current page's `theme-color` (or its background colour). Navigation controls and tabs live in an
 Arc-style sidebar that reveals on hover near the left window edge, and can be
 pinned open with `⌘S`. The address bar is a floating palette (`⌘L`, or the
-search button in the sidebar) rather than a permanent toolbar — and it's the
+address in the sidebar) rather than a permanent toolbar — and it's the
 only place to type an address, including on a new tab. Each tab row has a link
 button that copies its URL.
+
+The palette drops in from just above, the same way whether it was opened from
+the sidebar's address or with `⌘L`. Growing it out of the sidebar's address was
+tried and dropped: the bar travelling across the window drew the eye to the trip
+rather than to the field. Escape settles it back and fades it. Submitting lifts
+it toward the top of the window, where the loading border starts, so one hands
+over to the other. Load progress is drawn around the
+window's edge as two crests leaving twelve o'clock in opposite directions and
+meeting at six. Nothing is drawn for a load that finishes inside 120 ms, which
+covers most cached pages, so the border only appears when there's something to
+wait for. A successful load ends in a wash of foam where the crests meet. A
+failed one fades from wherever it stopped.
 
 A tab that's playing media shows a now-playing strip at the bottom of the
 sidebar, with play/pause and a button to pop video out into a floating
@@ -56,11 +68,43 @@ download button, with progress, cancel, retry, and Show in Finder. The list is
 kept in memory only and is empty again on relaunch.
 
 A plain media file is saved by WebKit itself, so it inherits the page's session
-and referrer. Video that's streamed in segments — a `blob:` source from Media
-Source Extensions, or an HLS/DASH manifest — has no single file to fetch, and is
-reassembled from the page instead. Only the cookies for the site being
-downloaded from are handed to the reassembler, in a temp file deleted when the
+and referrer. Video that's streamed in segments has no single file to fetch, and
+takes one of two routes.
+
+A manifest Surf can read is downloaded by Surf. HLS and DASH both parse into one
+shape, so everything after the parser is the same code either way, and the entry
+point the app calls never names a format. The manifest is the one the page itself
+fetched to play the video, so what gets parsed is a specification rather than a
+site — there are no per-site extractors here and there is no intention of adding
+any. Segments are fetched four at a time with the tab's own cookies, including
+the `HttpOnly` ones no script can read, appended in order to a single file, and
+where the picture and sound arrive separately they are combined by AVFoundation
+with nothing re-encoded. For fragmented MP4, which is most of the modern web,
+that combining is the only step that isn't plain concatenation: an
+initialisation segment followed by its media segments already *is* a file
+AVFoundation reads.
+
+Measured on Apple's 4K reference stream: 295MB at 25.6 MB/s, and the muxing
+itself takes 77 milliseconds.
+
+Everything else — a `blob:` source from Media Source Extensions, a transport
+stream, a fetchable AES-128 key, a live stream with no end, a manifest Surf
+could not parse — is handed to yt-dlp without a word to anyone, because a
+download that succeeds by another route is not an error. Only the cookies for
+the site being downloaded from are handed over, in a temp file deleted when the
 run ends.
+
+Protected video is the one refusal. Widevine and FairPlay encrypt the samples
+before they reach the decoder and there is no key to ask for, so it is refused
+immediately and said so, rather than handed to a subprocess that will fail
+slower and more obscurely.
+
+A finished file is checked against what the page said it was before it is
+allowed into `~/Downloads`. A video download that came back with only audio, or
+only a third of its length, is discarded while it is still in a temp directory —
+so there is nothing left to double-click, be confused by, and delete by hand.
+That check exists because a download did exactly that once, and the cause was
+never found.
 
 Typing in the address bar autocompletes from history, which is held in memory
 only unless you turn on "Remember browsing history". Tabs, window size, and window position
@@ -1065,10 +1109,33 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/MediaBridge.swift` — the media and find domains of the agent
 - `Sources/Surf/MediaPlayerStack.swift` — now-playing card stack at the sidebar's foot
 - `Sources/Surf/DownloadManager.swift` — download history, progress, and disk writes;
-  routes each source to WebKit or to yt-dlp
+  routes each source to WebKit, to the stream engine, or to yt-dlp
 - `Sources/Surf/DownloadsPanel.swift` — toolbar button and downloads list
 - `Sources/Surf/MediaExtractor.swift` — resolves the helper, exports one site's
   cookies, and runs the process
+- `Sources/SurfCore/StreamIndex.swift` — what a manifest offers, with no trace of
+  which kind of manifest said it; the one shape both parsers produce
+- `Sources/SurfCore/StreamManifest.swift` — the one entry point the app uses, so
+  a third format will not touch it
+- `Sources/SurfCore/HLSPlaylist.swift` — m3u8 into a `StreamIndex`; master and
+  media playlists through one function, because which you have is something you
+  find out by reading it
+- `Sources/SurfCore/DASHManifest.swift` — MPD into the same shape; four ways of
+  addressing a segment, attributes that inherit, and a pairing the format never
+  states
+- `Sources/SurfCore/StreamPlan.swift` — which rendition to take and what to
+  refuse, decided before anything is requested
+- `Sources/SurfCore/SegmentSchedule.swift` — a cursor rather than a worklist, so
+  the buffer is bounded, the output is an in-order append, and resuming is seeding
+  what is already done
+- `Sources/SurfCore/SavedMedia.swift` — whether the finished file is the file that
+  was asked for
+- `Sources/Surf/SegmentFetcher.swift` — the tab's own session behind each request
+- `Sources/Surf/StreamAssembler.swift` — concatenation, and AVFoundation muxing
+  with nothing re-encoded
+- `Sources/Surf/StreamDownload.swift` — one download start to finish; decides
+  nothing itself
+- `Sources/Surf/MediaInspector.swift` — the four facts `SavedMedia` judges
 - `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
 - `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
@@ -1140,6 +1207,15 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
+- Watching a page for the manifest behind a `blob:` source. DASH is parsed,
+  planned and tested against five real manifests, and is unreachable: WebKit
+  cannot play it, so the element never reports and `tab.media` stays nil. Real
+  DASH sites play through dash.js or Shaka, which means Media Source Extensions
+  and a source with no URL in it, so the manifest has to be found from what the
+  page fetched rather than from what the element says it is playing.
+  `testpages/dash-native.html` is the regression test: today it logs `download:
+  nothing playing to save`, and it should one day log a plan. The same tap is
+  what would let a stream in a cross-origin iframe be saved at all.
 - Registering as a browser, so links from other apps arrive — and land in a
   mini window, which is the case that feature exists for
 - A back/forward menu on long-press

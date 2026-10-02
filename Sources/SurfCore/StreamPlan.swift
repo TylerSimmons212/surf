@@ -145,7 +145,9 @@ public struct StreamPlan: Equatable, Sendable {
             if index.isLive { return .failure(.live) }
         }
 
-        guard var video = expanded(videoIndex) else { return .failure(.noSegments) }
+        guard var video = expanded(videoIndex, matching: pick.video) else {
+            return .failure(.noSegments)
+        }
 
         // fMP4 concatenates into a file AVFoundation reads, and separate fMP4
         // tracks mux into one with no re-encode. Nothing else does either, and
@@ -164,9 +166,21 @@ public struct StreamPlan: Equatable, Sendable {
 
         var audio: StreamRendition?
         if let chosenAudio = pick.audio {
-            guard let audioIndex, var track = expanded(audioIndex) else {
-                return .failure(.noSegments)
+            // A DASH soundtrack arrives already expanded, because one document
+            // described both tracks; an HLS one is a pointer to a playlist that
+            // has to have been fetched. Deliberately not a loose fallback to the
+            // video index: `expanded` would then find the *video* rendition and
+            // hand back its segments as the audio track, which is the bug this
+            // function was just fixed for, in its worst possible form.
+            let found: StreamRendition?
+            if !chosenAudio.segments.isEmpty {
+                found = chosenAudio
+            } else if let audioIndex {
+                found = expanded(audioIndex, matching: chosenAudio)
+            } else {
+                found = nil
             }
+            guard var track = found else { return .failure(.noSegments) }
             guard track.container == .fragmentedMP4 else {
                 return .failure(.unsupportedContainer(track.container))
             }
@@ -204,8 +218,30 @@ public struct StreamPlan: Equatable, Sendable {
         ))
     }
 
-    private static func expanded(_ index: StreamIndex) -> StreamRendition? {
-        index.renditions.first { !$0.segments.isEmpty }
+    /// The rendition that was chosen, with its segments.
+    ///
+    /// Matching by id matters and took a wrong download to notice. An HLS second
+    /// pass returns a playlist holding exactly one rendition, so "the first one
+    /// with segments" and "the one we picked" were the same thing and the
+    /// difference never showed. A DASH manifest describes everything at once, so
+    /// the index holds every rendition and the first is whichever the publisher
+    /// listed first — on one real manifest that meant choosing 3840x2160 and then
+    /// fetching the segments of a 1024x576 stream, labelled as 4K. On another it
+    /// meant the video track's segments being the audio file.
+    ///
+    /// The pick is preferred outright when it already carries its own segments,
+    /// which is the DASH case and needs no searching at all.
+    private static func expanded(
+        _ index: StreamIndex, matching pick: StreamRendition
+    ) -> StreamRendition? {
+        if !pick.segments.isEmpty { return pick }
+        if let exact = index.renditions.first(where: {
+            $0.id == pick.id && !$0.segments.isEmpty
+        }) { return exact }
+        // A media playlist does not restate the id the master knew it by, so for
+        // HLS there is nothing to match on and the single rendition it holds is
+        // the answer.
+        return index.renditions.first { !$0.segments.isEmpty }
     }
 }
 

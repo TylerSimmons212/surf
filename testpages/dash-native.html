@@ -1,0 +1,29 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>DASH source</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px -apple-system}video{width:100%;max-width:900px;display:block;margin:0 auto}p{text-align:center;padding:8px}</style>
+<!--
+  WebKit does not play DASH natively, and this page is the evidence of what that
+  means for downloading one.
+
+  Driven with SURF_DOWNLOAD=1, the log says `download: nothing playing to save`.
+  The element never reports at all, so `tab.media` stays nil and the stream
+  engine is never reached. A direct `.mpd` URL is therefore not downloadable
+  today, however correct the parser is.
+
+  Real DASH sites play through dash.js or Shaka, which means Media Source
+  Extensions and a `blob:` source — so the manifest URL has to be found by
+  watching what the page fetched rather than by asking the element what it is
+  playing. That is what the injected tap is for, and this page is the regression
+  test for the day it lands: the log line above should become a plan.
+-->
+<video controls autoplay muted playsinline
+  src="https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd"></video>
+<p>Big Buck Bunny as DASH. WebKit can't play it; the question is whether it reports it.</p>
+<script>
+  const v = document.querySelector('video');
+  const say = (m) => { document.title = m; };
+  v.addEventListener('error', () => say('error: ' + (v.error && v.error.code)));
+  v.addEventListener('loadedmetadata', () => say('loadedmetadata'));
+  setTimeout(() => say('currentSrc=' + (v.currentSrc || '(empty)')), 2500);
+</script>

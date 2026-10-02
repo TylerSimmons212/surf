@@ -57,6 +57,7 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_FOCUS=1` | enter Focus once the page settles; `2` also starts narration |
 | `SURF_SILENT=1` | mute narration (launch.sh sets this by default) |
 | `SURF_DEVTOOLS=<pane>` | open dev tools on `elements/styles/network/storage/tags/performance/console` |
+| `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
 | `SURF_STATE_DIR=<dir>` | replace `~/Library/Application Support/Surf` (launch.sh sets this) |
 
 Fixtures live in `testpages/`; pass them as `file://$PWD/testpages/<name>.html`.
@@ -75,7 +76,9 @@ Healthy: process alive, first lines are `[surf] rules …` then `[surf] loaded <
 
 ## Drive
 
-Everything reachable by environment is driven at launch; there is no IPC into a running instance. A feature that needs a click (pop-out, downloads, split panes, capture) is driven by a human: hand them the exact sequence from the feature file and the log line that proves it, using `diagnosing-bugs`' HITL loop if it's a bug hunt.
+Everything reachable by environment is driven at launch; there is no IPC into a running instance. A feature that needs a click (pop-out, split panes, capture) is driven by a human: hand them the exact sequence from the feature file and the log line that proves it, using `diagnosing-bugs`' HITL loop if it's a bug hunt.
+
+Downloads used to be in that list. `SURF_DOWNLOAD=1` takes them out of it: it waits for a media report and then calls `downloadMedia(from:)`, the same method the button calls, so the routing it exercises is the real one. It is there because the stream engine — manifest, plan, several hundred parallel requests, a muxer — is not something a human can verify by describing what they saw. Two things to know when using it: the file lands in the real `~/Downloads`, because `SURF_STATE_DIR` does not redirect that, so a 4K fixture leaves 300MB behind per run. And `WKWebsiteDataStore` keeps cookies outside Application Support, so a run reports the account's cookies rather than an empty jar.
 
 `scripts/window.sh <run> [shot]` records the main window's id, size, and (with permission) title to `windows.txt` and tries a screenshot. Both the title and the screenshot need Screen Recording permission for the terminal or host app running the script; when refused, the window record is still evidence and the script says so.
 
