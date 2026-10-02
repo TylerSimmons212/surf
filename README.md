@@ -100,17 +100,27 @@ connections, 28.0 MB/s when allowed to find its own number, and 77 milliseconds
 to mux the result. On a 114MB plain file: 4.58s on one connection, 2.74s split
 eight ways, and the two results hash identically.
 
-Everything else — a `blob:` source from Media Source Extensions, a transport
-stream, a fetchable AES-128 key, a live stream with no end, a manifest Surf
-could not parse — is handed to yt-dlp without a word to anyone, because a
-download that succeeds by another route is not an error. Only the cookies for
+A `blob:` source is the same thing arrived at differently. Media Source
+Extensions means the page assembled the stream in its own buffer, so the element
+has no URL to give — but what the page *fetched* to fill that buffer is a
+different question, and Surf has been recording the answer since the document
+started. It records only URLs, from Resource Timing, which already sees every
+request a document made including the ones a `<video>` element issued for itself.
+Nothing is wrapped to collect them and no response is read: the manifest is
+re-fetched properly afterwards, with cookies a script could not have seen.
+
+Everything else — a transport stream, a fetchable AES-128 key, a live stream with
+no end, a manifest Surf could not parse, a page that assembled its video from
+something we never saw it fetch — is handed to yt-dlp without a word to anyone,
+because a download that succeeds by another route is not an error. Only the cookies for
 the site being downloaded from are handed over, in a temp file deleted when the
 run ends.
 
 Protected video is the one refusal. Widevine and FairPlay encrypt the samples
 before they reach the decoder and there is no key to ask for, so it is refused
 immediately and said so, rather than handed to a subprocess that will fail
-slower and more obscurely.
+slower and more obscurely. A page asking for a key system at all is enough —
+noticed, not defeated — and that is checked before a manifest is even fetched.
 
 A finished file is checked against what the page said it was before it is
 allowed into `~/Downloads`. A video download that came back with only audio, or
@@ -1114,6 +1124,8 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/StreamDownload.swift` — one download start to finish; decides
   nothing itself
 - `Sources/Surf/MediaInspector.swift` — the four facts `SavedMedia` judges
+- `Sources/Surf/StreamTap.swift` — what a page fetched to play what it is
+  playing, which is the only way to reach a `blob:` source
 - `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
 - `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
@@ -1185,15 +1197,18 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
-- Watching a page for the manifest behind a `blob:` source. DASH is parsed,
-  planned and tested against five real manifests, and is unreachable: WebKit
-  cannot play it, so the element never reports and `tab.media` stays nil. Real
-  DASH sites play through dash.js or Shaka, which means Media Source Extensions
-  and a source with no URL in it, so the manifest has to be found from what the
-  page fetched rather than from what the element says it is playing.
-  `testpages/dash-native.html` is the regression test: today it logs `download:
-  nothing playing to save`, and it should one day log a plan. The same tap is
-  what would let a stream in a cross-origin iframe be saved at all.
+- Resuming a stream download that failed partway. The scratch directory is
+  deleted on failure, so a retry starts over — which on a 900MB file is most of a
+  minute thrown away. The segments on disk cannot be the record of what is done,
+  because the output is a single appended file and a directory listing cannot say
+  how many segments are inside it; it wants a sidecar holding a count and a byte
+  offset, and the file truncated back to that offset on resume.
+- Saving a stream playing inside a cross-origin iframe. The tap is injected into
+  every frame and records what each one fetched, so the facts exist — but the
+  download is started from `tab.media`, which is chosen across frames by
+  `MediaRanking` and then addressed through `mediaFrame`. Whether that reaches an
+  embedded player has not been tested, and claiming it does without a fixture
+  would be a guess.
 - Registering as a browser, so links from other apps arrive — and land in a
   mini window, which is the case that feature exists for
 - A back/forward menu on long-press
