@@ -7,17 +7,24 @@ import Observation
 /// Memory-only by default: it exists so typing "git" can offer github, and it
 /// dies with the process. It only ever touches disk when the user has
 /// explicitly turned "Remember browsing history" on.
+///
+/// One bucket per island, because the trail you leave in Work has no business
+/// surfacing in Personal's address bar. Islands sharing a cookie jar still get
+/// separate buckets: the jar is the one thing two islands may deliberately
+/// share, and what you *did* in an island is the island's own. That is why the
+/// key is `Island.id` and not `dataStoreID`, which is not unique.
+///
+/// Still a singleton, and still one file. The alternative — a store per island
+/// — would mean N files, N debounce timers and a lifecycle to match the island
+/// list, in exchange for nothing: the partition is a dictionary key.
 @Observable
 @MainActor
 final class HistoryStore {
     static let shared = HistoryStore()
 
-    /// Keyed by URL so revisits update one entry instead of piling up.
-    private var entries: [String: HistoryEntry] = [:]
-
-    /// Enough for autocomplete to feel complete without unbounded growth in a
-    /// long-running session.
-    private let capacity = 2_000
+    /// Island id, then url. Keyed by url within a bucket so revisits update one
+    /// entry instead of piling up.
+    private var buckets: [UUID: [String: HistoryEntry]] = [:]
 
     @ObservationIgnored private var saveTask: Task<Void, Never>?
 
@@ -25,67 +32,87 @@ final class HistoryStore {
         SessionFile.url.deletingLastPathComponent().appendingPathComponent("history.json")
     }
 
-    private init() {
-        loadIfPersisting()
-    }
+    /// Deliberately not loaded here.
+    ///
+    /// The file is keyed by island, and migrating the old flat shape needs to
+    /// know which island is home — neither of which this type can discover on
+    /// its own, and both of which `BrowserSession` knows the moment it has
+    /// decoded its own file. So loading is a call rather than a side effect of
+    /// first use, which also means it happens exactly once at a known moment
+    /// instead of whenever something first touched the singleton.
+    private init() {}
 
     // MARK: - Recording
 
-    func record(url: URL, title: String) {
+    func record(url: URL, title: String, in island: UUID) {
         // about:blank and friends aren't places you can return to.
         guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
             return
         }
         let key = url.absoluteString
+        var bucket = buckets[island] ?? [:]
 
-        if var existing = entries[key] {
+        if var existing = bucket[key] {
             existing.visitCount += 1
             existing.lastVisit = Date()
             if !title.isEmpty { existing.title = title }
-            entries[key] = existing
+            bucket[key] = existing
         } else {
-            entries[key] = HistoryEntry(url: key, title: title, lastVisit: Date())
-            evictIfNeeded()
+            bucket[key] = HistoryEntry(url: key, title: title, lastVisit: Date())
+            for doomed in HistoryBudget.evictions(from: Array(bucket.values)) {
+                bucket.removeValue(forKey: doomed)
+            }
         }
+
+        buckets[island] = bucket
         scheduleSaveIfPersisting()
     }
 
     /// Titles land after the page finishes loading, so they're filled in later.
-    func updateTitle(_ title: String, for url: URL) {
-        guard !title.isEmpty, var existing = entries[url.absoluteString] else { return }
+    func updateTitle(_ title: String, for url: URL, in island: UUID) {
+        guard !title.isEmpty,
+              var existing = buckets[island]?[url.absoluteString]
+        else { return }
         existing.title = title
-        entries[url.absoluteString] = existing
+        buckets[island]?[url.absoluteString] = existing
         scheduleSaveIfPersisting()
-    }
-
-    /// Drops the least useful entries once over capacity — oldest first, and
-    /// among equally old ones, the least visited.
-    private func evictIfNeeded() {
-        guard entries.count > capacity else { return }
-        let excess = entries.count - capacity
-        let doomed = entries.values
-            .sorted { lhs, rhs in
-                if lhs.lastVisit != rhs.lastVisit { return lhs.lastVisit < rhs.lastVisit }
-                return lhs.visitCount < rhs.visitCount
-            }
-            .prefix(excess)
-        for entry in doomed { entries.removeValue(forKey: entry.url) }
     }
 
     // MARK: - Query
 
-    func suggestions(for query: String, limit: Int = 6) -> [HistoryEntry] {
-        HistorySearch.rank(Array(entries.values), query: query, now: Date(), limit: limit)
+    func suggestions(for query: String, in island: UUID, limit: Int = 6) -> [HistoryEntry] {
+        HistorySearch.rank(
+            Array((buckets[island] ?? [:]).values), query: query, now: Date(), limit: limit
+        )
     }
 
+    /// Everything, every island. The Settings button that calls this says
+    /// "Clear Browsing Data Now" without qualification, and
+    /// `BrowsingDataCleaner` already walks every island's store for the reason
+    /// it documents: a promise kept only for the island you happened to be
+    /// standing in is not a promise.
     func clear() {
-        entries.removeAll()
+        buckets.removeAll()
         try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    /// Drops one island's trail, when the island itself is deleted.
+    ///
+    /// Not scheduled — saved now. The island is going away in the same turn,
+    /// and a debounce that lost the race would leave a deleted island's
+    /// browsing in the file for the next launch to read back.
+    func forget(island: UUID) {
+        guard buckets.removeValue(forKey: island) != nil else { return }
+        saveNow()
     }
 
     // MARK: - Optional persistence
 
-    private func loadIfPersisting() {
+    /// Reads the file, migrating the pre-island shape into `home`.
+    ///
+    /// `live` is the islands that actually exist, so a bucket belonging to one
+    /// deleted while the app wasn't running is dropped rather than restored.
+    func load(home: UUID, live: Set<UUID>) {
         guard PrivacySettings.current.rememberHistory else {
             // The setting may have just been turned off — erase what an earlier
             // run wrote rather than leaving it behind.
@@ -93,9 +120,9 @@ final class HistoryStore {
             return
         }
         guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([HistoryEntry].self, from: data)
+              let decoded = try? JSONDecoder().decode(PersistedHistory.self, from: data)
         else { return }
-        entries = Dictionary(uniqueKeysWithValues: decoded.map { ($0.url, $0) })
+        buckets = decoded.resolved(home: home, live: live)
     }
 
     private func scheduleSaveIfPersisting() {
@@ -115,7 +142,8 @@ final class HistoryStore {
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try JSONEncoder().encode(Array(entries.values)).write(to: fileURL, options: .atomic)
+            let encoded = try JSONEncoder().encode(PersistedHistory(buckets: buckets))
+            try encoded.write(to: fileURL, options: .atomic)
         } catch {
             fputs("[surf] history save failed: \(error)\n", stderr)
         }

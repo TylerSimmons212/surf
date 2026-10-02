@@ -33,6 +33,39 @@ public struct HistoryEntry: Codable, Equatable, Sendable, Identifiable {
 /// The ordering rule that matters: a prefix match on the address always beats a
 /// match buried in the middle of a title, because typing "git" means "take me
 /// to github", not "find pages about git".
+/// How much history one island keeps, and what goes first when it is full.
+///
+/// Pure, and in SurfCore, because `HistoryStore` is a main-actor singleton in
+/// the app target that no test can construct — so the decision moves out and
+/// the store is left holding only the dictionary.
+public enum HistoryBudget {
+
+    /// Per island, not shared between them.
+    ///
+    /// The cap bounds memory and keeps ranking fast, and autocomplete only ever
+    /// asks about one island. A shared budget would let a busy island evict a
+    /// quiet one's entries, which makes an island's address bar depend on
+    /// browsing done in another island — the exact leak islands exist to
+    /// prevent, arriving by the back door. Four small fields times a handful of
+    /// islands is nothing.
+    public static let capacity = 2_000
+
+    /// The urls to drop so a bucket fits: oldest first, and among equally old
+    /// ones, the least visited.
+    public static func evictions(
+        from entries: [HistoryEntry], capacity: Int = capacity
+    ) -> [String] {
+        guard entries.count > capacity else { return [] }
+        return entries
+            .sorted { lhs, rhs in
+                if lhs.lastVisit != rhs.lastVisit { return lhs.lastVisit < rhs.lastVisit }
+                return lhs.visitCount < rhs.visitCount
+            }
+            .prefix(entries.count - capacity)
+            .map(\.url)
+    }
+}
+
 public enum HistorySearch {
 
     /// Strength of the match itself, before recency and frequency adjust it.

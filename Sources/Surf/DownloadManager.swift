@@ -114,9 +114,24 @@ final class DownloadItem: Identifiable {
     /// pick means starting the transfer over.
     @ObservationIgnored var chosenRenditionID: String?
 
+    /// The island this download belongs to.
+    ///
+    /// Captured at creation rather than read back through `tab?.islandID`,
+    /// because `tab` is weak and a download outliving its tab is ordinary —
+    /// the list is history, and entries stay until cleared.
+    ///
+    /// Optional, and nil should be unreachable: every path that starts a
+    /// download has a tab, and the two that used to lose it are fixed. An item
+    /// that still arrives without one is listed in *every* island rather than
+    /// hidden in one, so a download can never become unreachable, and it says
+    /// so in the log.
+    @ObservationIgnored let islandID: UUID?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
-    init(filename: String) {
+    init(filename: String, islandID: UUID?) {
         self.filename = filename
+        self.islandID = islandID
+        if islandID == nil { debugLog("download: no island for '\(filename)'") }
     }
 }
 
@@ -165,14 +180,39 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func activeItem(for tab: Tab) -> DownloadItem? { itemsByTab[tab.id] }
 
-    var activeCount: Int { items.filter(\.isActive).count }
+    // MARK: - One island's downloads
 
-    /// Aggregate progress across everything still running, for the toolbar ring.
-    var activeProgress: Double {
-        let running = items.filter(\.isActive)
+    /// What the sidebar lists while you are standing in this island.
+    ///
+    /// The bytes of a download were always island-scoped — every fetch path
+    /// carries that island's cookies, which is why saving from a work account
+    /// works at all — but the bookkeeping was global, so a video saved in one
+    /// island appeared in every island's list. Only the bookkeeping changes
+    /// here; `items` is still the storage, and still newest-first.
+    ///
+    /// An item with no island is listed everywhere. That should be
+    /// unreachable, and showing it in all of them rather than in one guarantees
+    /// no download is ever invisible — which is the stronger property than
+    /// filing it under home on a guess.
+    func items(in island: UUID) -> [DownloadItem] {
+        items.filter { $0.islandID == island || $0.islandID == nil }
+    }
+
+    func activeCount(in island: UUID) -> Int {
+        items(in: island).filter(\.isActive).count
+    }
+
+    /// Aggregate progress across everything still running here, for the ring
+    /// on the sidebar's button.
+    func activeProgress(in island: UUID) -> Double {
+        let running = items(in: island).filter(\.isActive)
         guard !running.isEmpty else { return 0 }
         return running.reduce(0) { $0 + $1.fraction } / Double(running.count)
     }
+
+    /// Every island's, for the places that genuinely span them — the quit-time
+    /// check that something is still running, and the `SURF_DOWNLOAD` driver.
+    var activeCount: Int { items.filter(\.isActive).count }
 
     // MARK: - List management
 
@@ -225,9 +265,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         itemsByTab = itemsByTab.filter { $0.value !== item }
     }
 
-    func clearFinished() {
-        let doomed = items.filter { !$0.isActive }
-        for item in doomed { remove(item) }
+    /// Clears the finished rows of one island, which is the only list anybody
+    /// is looking at when they press it.
+    func clearFinished(in island: UUID) {
+        for item in items(in: island) where !item.isActive { remove(item) }
     }
 
     func retry(_ item: DownloadItem, in tab: Tab?) {
@@ -270,7 +311,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         guard let url = item.sourceURL else { return }
         remove(item)
-        let fresh = DownloadItem(filename: item.filename)
+        // Carried forward rather than taken from `tab`, which may be a
+        // different island's by now — the panel retries with whatever tab is
+        // selected, and a retry belongs to the download it is retrying.
+        let fresh = DownloadItem(filename: item.filename, islandID: item.islandID)
         fresh.sourceURL = url
         fresh.host = url.host
         items.insert(fresh, at: 0)
@@ -292,10 +336,15 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     func adopt(_ download: WKDownload, from tab: Tab?) {
         // No filename of our own: the server's Content-Disposition knows best
         // for a file the user asked for by name.
-        let item = DownloadItem(filename: "")
+        let item = DownloadItem(filename: "", islandID: tab?.islandID)
         item.sourceURL = download.originalRequest?.url
         item.host = download.originalRequest?.url?.host
         item.pageURL = tab?.webView.url
+        // The tab, not only the `itemsByTab` index. This is the ordinary
+        // link-click download and therefore the commonest of all, and it was
+        // the one path that produced an item with no tab on it at all — so it
+        // had no island either, and no way to find one later.
+        item.tab = tab
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
         bind(item, to: download)
@@ -455,7 +504,10 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // a worse message, and the page has already told us why.
                 if seen?.isProtected == true {
                     debugLog("download: a key system was requested; refusing")
-                    let item = DownloadItem(filename: self.sanitize(media.title) + ".mp4")
+                    let item = DownloadItem(
+                        filename: self.sanitize(media.title) + ".mp4",
+                        islandID: tab.islandID
+                    )
                     item.host = pageURL.host
                     item.pageURL = pageURL
                     item.tab = tab
@@ -518,7 +570,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     private func startDirectDownload(from tab: Tab, media: MediaState) {
         guard let url = URL(string: media.sourceURL) else { return }
 
-        let item = DownloadItem(filename: suggestedName(for: media, url: url))
+        let item = DownloadItem(
+            filename: suggestedName(for: media, url: url), islandID: tab.islandID
+        )
         item.sourceURL = url
         item.host = tab.webView.url?.host ?? url.host
         item.pageURL = tab.webView.url
@@ -623,7 +677,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     ) {
         guard let first = manifests.first else { return }
         let placeholder = sanitize(title.isEmpty ? (first.host ?? "video") : title)
-        let item = DownloadItem(filename: placeholder + ".mp4")
+        let item = DownloadItem(filename: placeholder + ".mp4", islandID: tab?.islandID)
         item.sourceURL = first
         item.host = pageURL?.host ?? first.host
         item.pageURL = pageURL
@@ -727,7 +781,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         expecting expectation: SavedMedia.Expectation?
     ) {
         let placeholder = sanitize(title.isEmpty ? (pageURL?.host ?? "video") : title)
-        let item = DownloadItem(filename: placeholder + ".mp4")
+        let item = DownloadItem(filename: placeholder + ".mp4", islandID: tab?.islandID)
         item.host = pageURL?.host
         item.pageURL = pageURL
         item.tab = tab
@@ -798,7 +852,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         // "Downloading…" for the thirty seconds it takes to resolve formats
         // looks stalled.
         let placeholder = sanitize(title.isEmpty ? (pageURL.host ?? "video") : title)
-        let item = DownloadItem(filename: placeholder + (audioOnly ? ".m4a" : ".mp4"))
+        let item = DownloadItem(
+            filename: placeholder + (audioOnly ? ".m4a" : ".mp4"), islandID: tab?.islandID
+        )
         item.host = pageURL.host
         item.pageURL = pageURL
         item.isExtracted = true

@@ -159,6 +159,15 @@ final class BrowserSession {
         let claimed = Set(built.compactMap(\.dataStoreID))
         Task { @MainActor in await IslandStores.shared.collectTombstones(sparing: claimed) }
 
+        // History is keyed by island, and the file may predate that — in which
+        // case its entries belong to home, the only island that existed when
+        // it was written. Loaded here rather than lazily on first use because
+        // this is the first moment anybody knows which island is home and
+        // which ones still exist.
+        HistoryStore.shared.load(
+            home: homeIsland.id, live: Set(built.map(\.id))
+        )
+
         startReclaimTimer()
 
         // Quitting doesn't give the debounced save time to fire, so flush.
@@ -808,6 +817,10 @@ final class BrowserSession {
         }
         island.replaceTabs(with: [])
         island.recentlyClosed.removeAll()
+        // Its trail goes with it. Keyed by island id, so nothing else can be
+        // reached by mistake even when the jar it browsed with is shared and
+        // survives.
+        HistoryStore.shared.forget(island: island.id)
         islands.remove(at: index)
         saveNow()
 

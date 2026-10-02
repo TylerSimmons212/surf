@@ -92,12 +92,16 @@ final class SuggestionController {
         return suggestions[highlighted]
     }
 
-    func update(for query: String, isFocused: Bool) {
+    /// `island` is which trail to search. Autocomplete only ever offers the
+    /// island you are standing in: a work page surfacing while you type in a
+    /// personal tab is the leak islands exist to prevent, arriving in the one
+    /// place you cannot help reading.
+    func update(for query: String, isFocused: Bool, in island: UUID) {
         guard isFocused, !query.trimmingCharacters(in: .whitespaces).isEmpty else {
             dismiss()
             return
         }
-        suggestions = HistoryStore.shared.suggestions(for: query)
+        suggestions = HistoryStore.shared.suggestions(for: query, in: island)
         // Typing invalidates the previous selection — otherwise Return could
         // navigate somewhere the list no longer even shows.
         highlighted = -1

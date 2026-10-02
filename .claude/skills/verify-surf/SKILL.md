@@ -88,6 +88,8 @@ Drivers are environment variables read at launch (`Sources/Surf/ContentView.swif
 | `SURF_DOWNLOAD=1` | save whatever is playing, once it is playing |
 | `SURF_DOWNLOAD=2` | and press retry once if it fails, after a 10s pause |
 | `SURF_DOWNLOAD_PICK=<height>` | take that row from the quality menu; `=audio` for sound alone |
+| `SURF_ISLAND_MENU=1` | print the island menu's rows, and the jar they were built from |
+| `SURF_ISLAND_MENU=2` | and prove the history and download partitions: two islands, one query |
 | `SURF_KEEP_SCRATCH=1` | keep a stream download's working directory for inspection |
 | `SURF_STATE_DIR=<dir>` | replace `~/Library/Application Support/Surf` (launch.sh sets this) |
 

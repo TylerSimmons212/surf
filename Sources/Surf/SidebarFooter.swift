@@ -209,50 +209,57 @@ private struct FooterDownloadsButton: View {
     private var manager: DownloadManager { DownloadManager.shared }
 
     var body: some View {
-        Group {
-            if !manager.items.isEmpty {
+        // This island's, not every island's. A video saved in Work has no
+        // business showing a row — or spinning a progress ring — while you are
+        // standing in Personal.
+        let island = session.currentIsland.id
+        let active = manager.activeCount(in: island)
+
+        return Group {
+            if !manager.items(in: island).isEmpty {
                 Button {
                     isShowingList.wrappedValue.toggle()
                 } label: {
                     Image(systemName: "arrow.down")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(
-                            manager.activeCount > 0
+                            active > 0
                                 ? AnyShapeStyle(Color.accentColor)
                                 : AnyShapeStyle(.primary)
                         )
                         .frame(width: 30, height: 30)
                         .glassEffect(.regular.interactive(), in: Circle())
-                        .overlay { if manager.activeCount > 0 { progressRing } }
+                        .overlay { if active > 0 { progressRing(in: island) } }
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: isShowingList, arrowEdge: .top) {
                     DownloadsList(session: session)
                 }
-                .help(
-                    manager.activeCount > 0
-                        ? "\(manager.activeCount) downloading"
-                        : "Downloads"
-                )
+                .help(active > 0 ? "\(active) downloading" : "Downloads")
                 .pointerStyle(.link)
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
                 // Clearing the last item takes this button away, and a popover
                 // whose anchor is gone never reports itself dismissed — the
-                // hold would be stuck on and the sidebar stuck open.
+                // hold would be stuck on and the sidebar stuck open. Switching
+                // islands can now take it away too, for the same reason.
                 .onDisappear { hold.set(Self.holdReason, false) }
             }
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.7), value: manager.items.isEmpty)
+        .animation(
+            .spring(response: 0.35, dampingFraction: 0.7),
+            value: manager.items(in: island).isEmpty
+        )
     }
 
-    private var progressRing: some View {
-        Circle()
-            .trim(from: 0, to: max(0.04, manager.activeProgress))
+    private func progressRing(in island: UUID) -> some View {
+        let progress = manager.activeProgress(in: island)
+        return Circle()
+            .trim(from: 0, to: max(0.04, progress))
             .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, lineCap: .round))
             .rotationEffect(.degrees(-90))
             .padding(1.5)
-            .animation(.easeOut(duration: 0.25), value: manager.activeProgress)
+            .animation(.easeOut(duration: 0.25), value: progress)
             .allowsHitTesting(false)
     }
 }
