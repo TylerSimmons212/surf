@@ -1007,6 +1007,17 @@ offering a file that would not be produced. Sizes come from the format's own
 `contentLength`: estimating from bitrate ran more than double the real file, and
 a menu whose whole job is comparing sizes cannot be out by that much.
 
+An itag does not name one rendition. A page can list itag 140 three times —
+plain, Stable Volume, voice boost — told apart only by `xtags`, each with its
+own revision. The tap kept the itag and the revision and dropped the rest, and
+the pick took the highest bitrate, which was voice boost by a few bits a second.
+So the request named a format that does not exist, and YouTube answered with
+nothing but a request to reload the player. Nothing in that looked like a
+refusal: the protection status was fine, and the same request without our
+format ids returned a megabyte of media. A format id is all three parts now,
+and the pick is a plain soundtrack when there is one, which is what YouTube's
+own player plays unless someone opts into a variant.
+
 Sound on its own is one row, not a list, and that is a finding rather than a
 simplification. It took a rendition id at first, the way a quality does, until a
 real manifest showed why that cannot work: Apple's carries ten audio renditions

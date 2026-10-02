@@ -53,31 +53,9 @@ enum StreamTap {
         var formats: [Format] = []
     }
 
-    /// One rendition the page listed.
-    struct Format: Decodable {
-        var itag: Int
-        /// A string across the bridge and a `UInt64` here. The value is around
-        /// 1.7×10¹⁸, past where a JSON number holds integers exactly, and the
-        /// server rejects a request carrying a rounded one.
-        var lastModified: String
-        var mimeType: String
-        var height: Int
-        var bitrate: Int
-        /// Stated by the page, exactly. Empty when it says nothing.
-        var contentLength: String = ""
-
-        var bytes: Int? {
-            let value = Int(contentLength)
-            return (value ?? 0) > 0 ? value : nil
-        }
-
-        var revision: UInt64? { UInt64(lastModified) }
-        var isVideo: Bool { mimeType.hasPrefix("video/") }
-        var isAudio: Bool { mimeType.hasPrefix("audio/") }
-        /// Whether AVFoundation can read it. WebM and its codecs it cannot, and
-        /// asking for one produces a download that finishes and will not mux.
-        var isMP4: Bool { mimeType.contains("mp4") }
-    }
+    /// One rendition the page listed. Defined in SurfCore, where choosing
+    /// between them can be tested.
+    typealias Format = YouTubeRendition
 
     /// A `videoplayback` POST the player made, which on YouTube is the only
     /// route to its media: nothing is served by URL any more.
@@ -176,7 +154,11 @@ enum StreamTap {
                 // The exact size, which YouTube states and a bitrate only
                 // approximates. A string for the same reason as lastModified:
                 // it is a byte count that can exceed what a JSON number holds.
-                contentLength: String(f.contentLength || '')
+                contentLength: String(f.contentLength || ''),
+                // What tells apart renditions sharing an itag: plain, Stable
+                // Volume, voice boost, a dub. Without it a request names one
+                // that does not exist. Absent on the plain rendition.
+                xtags: f.xtags || null
               });
             }
             return out;

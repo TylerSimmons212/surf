@@ -57,60 +57,6 @@ enum SABRClient {
         /// request.
         var formats: [Data]
 
-        /// Picks the best pair AVFoundation can actually read.
-        ///
-        /// Without this the server chooses, and on a real download it chose 144p
-        /// VP9 in WebM — which arrived complete and then would not mux, because
-        /// AVFoundation reads neither WebM nor VP9. The quality was an accident
-        /// too: nothing had asked for anything.
-        ///
-        /// MP4 only, therefore, and the tallest of those. Falls back to whatever
-        /// is on offer if nothing is MP4, where the mux will fail honestly rather
-        /// than this refusing to try.
-        static func choose(
-            from formats: [StreamTap.Format], maxHeight: Int? = nil
-        ) -> (video: StreamTap.Format, audio: StreamTap.Format)? {
-            let usable = formats.filter { $0.revision != nil }
-            let videos = usable.filter { $0.isVideo && $0.isMP4 }
-            let audios = usable.filter { $0.isAudio && $0.isMP4 }
-            guard !videos.isEmpty, !audios.isEmpty else { return nil }
-
-            let eligible = maxHeight.map { cap in videos.filter { $0.height <= cap } } ?? videos
-            let candidates = eligible.isEmpty ? videos : eligible
-
-            // Tallest wins, as it does everywhere else in this engine, and the
-            // codec only breaks a tie between equals.
-            //
-            // It was the other way round first — H.264 preferred outright — on
-            // the grounds that a browser download should play in anything. That
-            // reasoning is sound and the consequence was not: YouTube offers
-            // H.264 no higher than 1080p, so preferring it silently capped every
-            // download at 1080p on a site whose whole point above that is VP9 and
-            // AV1. A rule about codecs turned into a rule about resolution
-            // without saying so.
-            //
-            // There is no technical reason for the cap. ffmpeg muxes the 2160p
-            // AV1 in about a second and the result reads back at exactly the
-            // right duration.
-            guard let video = candidates.max(by: { a, b in
-                if a.height != b.height { return a.height < b.height }
-                // Same picture, two encodings: take the one more things can play.
-                let rank = { (format: StreamTap.Format) -> Int in
-                    for (index, codec) in ["avc1", "avc3", "hvc1", "hev1"].enumerated()
-                    where format.mimeType.contains(codec) {
-                        return ["avc1", "avc3", "hvc1", "hev1"].count - index
-                    }
-                    return 0
-                }
-                if rank(a) != rank(b) { return rank(a) < rank(b) }
-                return a.bitrate < b.bitrate
-            }) else { return nil }
-            // The best sound available: it is a fraction of the video's size, so
-            // there is nothing to save by taking less.
-            guard let audio = audios.max(by: { $0.bitrate < $1.bitrate }) else { return nil }
-            return (video, audio)
-        }
-
         /// Reads a captured request rather than building one.
         ///
         /// Everything here is lifted out of bytes the player sent. Taking the

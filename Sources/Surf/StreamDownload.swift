@@ -654,32 +654,25 @@ extension StreamDownload {
         // A row from the menu names an itag, and it is used as given. The whole
         // point of offering a choice is that it is not second-guessed.
         if let asked = choosing, let itag = Int(asked.id),
-           let format = formats.first(where: { $0.itag == itag }),
-           let revision = format.revision {
+           let format = YouTubeRendition.named(itag, in: formats),
+           let id = format.formatID {
             let sound = asked.isAudioOnly
                 ? format
-                : SABRClient.Session.choose(from: formats)?.audio
+                : YouTubeRendition.choose(from: formats)?.audio
             if !asked.isAudioOnly {
-                session.videoFormats = [
-                    SABR.FormatID(itag: itag, lastModified: revision).encodedID,
-                ]
+                session.videoFormats = [id.encodedID]
                 wantedVideo = itag
             }
-            if let sound, let soundRevision = sound.revision {
-                session.audioFormats = [
-                    SABR.FormatID(itag: sound.itag, lastModified: soundRevision).encodedID,
-                ]
+            if let sound, let soundID = sound.formatID {
+                session.audioFormats = [soundID.encodedID]
                 wantedAudio = sound.itag
             }
             debugLog("sabr: asked for \(asked.title) — video \(wantedVideo.map(String.init) ?? "none")"
                 + ", audio \(wantedAudio.map(String.init) ?? "none")")
-        } else if let chosen = SABRClient.Session.choose(from: formats) {
-            session.videoFormats = [SABR.FormatID(
-                itag: chosen.video.itag, lastModified: chosen.video.revision ?? 0
-            ).encodedID]
-            session.audioFormats = [SABR.FormatID(
-                itag: chosen.audio.itag, lastModified: chosen.audio.revision ?? 0
-            ).encodedID]
+        } else if let chosen = YouTubeRendition.choose(from: formats),
+                  let videoID = chosen.video.formatID, let audioID = chosen.audio.formatID {
+            session.videoFormats = [videoID.encodedID]
+            session.audioFormats = [audioID.encodedID]
             wantedVideo = chosen.video.itag
             wantedAudio = chosen.audio.itag
             debugLog("sabr: asking for \(chosen.video.itag) "
