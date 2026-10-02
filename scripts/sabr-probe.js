@@ -17,18 +17,69 @@
 (async () => {
   const log = (...a) => console.log('%c[sabr]', 'color:#0a0', ...a);
 
-  const player = window.ytInitialPlayerResponse;
-  const sd = player && player.streamingData;
-  const cfg = player && player.playerConfig && player.playerConfig.mediaCommonConfig
-    && player.playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig
-    && player.playerConfig.mediaCommonConfig.mediaUstreamerRequestConfig
-      .videoPlaybackUstreamerConfig;
+  // Where the player response lives depends on how you arrived. A cold load
+  // leaves it on `ytInitialPlayerResponse`; navigating within YouTube replaces
+  // the page without replacing that global, so it goes stale or missing. The
+  // player element always knows, so it is asked first.
+  const sources = [];
+  const movie = document.getElementById('movie_player');
+  if (movie && typeof movie.getPlayerResponse === 'function') {
+    try { sources.push(['movie_player.getPlayerResponse()', movie.getPlayerResponse()]); }
+    catch (e) { /* the player exists but is not ready */ }
+  }
+  if (window.ytInitialPlayerResponse) {
+    sources.push(['ytInitialPlayerResponse', window.ytInitialPlayerResponse]);
+  }
+  try {
+    const raw = window.ytplayer && window.ytplayer.config
+      && window.ytplayer.config.args && window.ytplayer.config.args.raw_player_response;
+    if (raw) sources.push(['ytplayer.config.args.raw_player_response', raw]);
+  } catch (e) { /* not present */ }
 
-  if (!sd || !sd.serverAbrStreamingUrl || !cfg) {
-    log('this page has no SABR streaming url or no ustreamer config.');
-    log('open a normal watch page (youtube.com/watch?v=...) and try again.');
+  // Rather than trust one path for the config, look for it. The path has moved
+  // before and a probe that dies on a rename teaches nothing.
+  const findKey = (root, key, maxDepth) => {
+    const seen = new Set();
+    const walk = (node, depth) => {
+      if (!node || typeof node !== 'object' || depth > maxDepth || seen.has(node)) return null;
+      seen.add(node);
+      if (typeof node[key] === 'string' && node[key]) return node[key];
+      for (const k of Object.keys(node)) {
+        const hit = walk(node[k], depth + 1);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(root, 0);
+  };
+
+  let sd = null, cfg = null, from = null;
+  for (const [name, response] of sources) {
+    const streaming = response && response.streamingData;
+    const abr = streaming && streaming.serverAbrStreamingUrl;
+    const config = findKey(response, 'videoPlaybackUstreamerConfig', 8);
+    if (abr && config) { sd = streaming; cfg = config; from = name; break; }
+  }
+
+  if (!sd || !cfg) {
+    log('could not find what is needed. What is on this page:');
+    for (const [name, response] of sources) {
+      const streaming = response && response.streamingData;
+      log('  ' + name + ':',
+        'streamingData=' + (!!streaming),
+        'serverAbrStreamingUrl=' + !!(streaming && streaming.serverAbrStreamingUrl),
+        'ustreamerConfig=' + !!findKey(response, 'videoPlaybackUstreamerConfig', 8),
+        'adaptiveFormats=' + ((streaming && streaming.adaptiveFormats || []).length),
+        'formatsWithUrl=' + ((streaming && streaming.adaptiveFormats || [])
+          .filter((f) => f.url).length));
+    }
+    if (!sources.length) {
+      log('  (none — no player found at all. Is this a watch page, and has it loaded?)');
+    }
+    log('paste these lines back; they say which part is missing.');
     return;
   }
+  log('read from', from);
 
   // --- protobuf writing -----------------------------------------------------
   // BigInt throughout. lastModified is a uint64 around 1.7e18, past
