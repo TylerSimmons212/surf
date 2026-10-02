@@ -85,12 +85,20 @@ final class StreamDownload {
         manifests: [URL], pageURL: URL?, title: String, tab: Tab?,
         choosing: DownloadOption? = nil
     ) async -> Result<Produced, StreamRefusal> {
-        // A row from the menu, carried as the one thing `pick` needs from it.
-        // Nil means the engine decides, which is what it did before the menu
-        // existed and still does when the button is pressed rather than held.
-        let preference = StreamPreference(renditionID: choosing?.id)
+        // A row from the menu, carried as the two things `pick` needs from it.
+        // Nil and false mean the engine decides, which is what it did before the
+        // menu existed and still does on a plain press.
+        //
+        // An audio row carries no rendition id, deliberately: which soundtrack
+        // is not a choice anyone makes, and an HLS soundtrack's id is its NAME,
+        // which a real manifest reused across five bitrates.
+        let preference = StreamPreference(
+            renditionID: choosing.flatMap { $0.isAudioOnly ? nil : $0.id },
+            wantsAudioOnly: choosing?.isAudioOnly ?? false
+        )
         if let choosing {
-            debugLog("stream: asked for \(choosing.title) (\(choosing.id))")
+            debugLog("stream: asked for \(choosing.title)"
+                + (choosing.isAudioOnly ? "" : " (\(choosing.id))"))
         }
         debugLog("stream: \(manifests.count) candidate(s), first \(manifests.first?.absoluteString ?? "-")")
         let credentials = await SegmentFetcher.credentials(for: tab, page: pageURL)
@@ -133,22 +141,33 @@ final class StreamDownload {
         }
         guard let (master, pick) = found else { return .failure(lastRefusal) }
 
-        let videoIndex: StreamIndex
-        if let next = pick.video.manifestURL, master.needsSecondPass {
-            guard let text = await fetcher.text(at: next),
-                  let parsed = StreamManifest.parse(text, baseURL: next)
-            else { return .failure(.unreadable) }
-            videoIndex = parsed
-        } else {
-            videoIndex = master
+        var videoIndex: StreamIndex?
+        if let chosen = pick.video {
+            if let next = chosen.manifestURL, master.needsSecondPass {
+                guard let text = await fetcher.text(at: next),
+                      let parsed = StreamManifest.parse(text, baseURL: next)
+                else { return .failure(.unreadable) }
+                videoIndex = parsed
+            } else {
+                videoIndex = master
+            }
         }
 
         var audioIndex: StreamIndex?
-        if let next = pick.audio?.manifestURL {
-            guard let text = await fetcher.text(at: next),
-                  let parsed = StreamManifest.parse(text, baseURL: next)
-            else { return .failure(.unreadable) }
-            audioIndex = parsed
+        if let chosen = pick.audio {
+            if let next = chosen.manifestURL {
+                guard let text = await fetcher.text(at: next),
+                      let parsed = StreamManifest.parse(text, baseURL: next)
+                else { return .failure(.unreadable) }
+                audioIndex = parsed
+            } else if pick.video == nil {
+                // Sound alone, out of a manifest that described everything at
+                // once — a DASH soundtrack arrives already carrying its
+                // segments, so there is nothing further to fetch. The master is
+                // still handed over because it is the only thing that knows the
+                // declared duration, which is what the truncation check reads.
+                audioIndex = master
+            }
         }
 
         let plan: StreamPlan
@@ -160,9 +179,10 @@ final class StreamDownload {
         case .failure(let refusal): return .failure(refusal)
         }
 
-        debugLog("stream: \(plan.video.width ?? 0)x\(plan.video.height ?? 0) "
+        let shape = plan.video.map { "\($0.width ?? 0)x\($0.height ?? 0)" } ?? "audio only"
+        debugLog("stream: \(shape) "
             + "\(plan.segmentCount) segments over \(plan.hosts.sorted().joined(separator: ",")) "
-            + "codecs=\(plan.video.codecs ?? "?")")
+            + "codecs=\((plan.video ?? plan.audio)?.codecs ?? "?")")
 
         guard !isCancelled else { return .failure(.unreadable) }
 
@@ -170,25 +190,32 @@ final class StreamDownload {
         // download each is. A soundtrack is a tenth the size of its picture, and
         // giving them half the bar each makes the second half appear to finish
         // ten times faster than the first.
-        let videoWeight = plan.audio == nil ? 1.0 : 0.9
+        // Sound alone gets the whole bar, because there is nothing to share it
+        // with and a soundtrack creeping to one tenth and stopping would read as
+        // a stall.
+        let videoWeight = plan.video == nil ? 0.0 : (plan.audio == nil ? 1.0 : 0.9)
         var videoFraction = 0.0
         var audioFraction = 0.0
         var videoBytes = 0
         var audioBytes = 0
 
-        let videoFile = workingDirectory.appendingPathComponent("video.mp4")
-        let videoResult = await fetch(
-            plan.video, into: videoFile, with: fetcher, label: "video",
-            onStep: { fraction, bytes in
-                videoFraction = fraction
-                videoBytes = bytes
-                self.onProgress(
-                    (videoFraction * videoWeight) + (audioFraction * (1 - videoWeight)),
-                    videoBytes + audioBytes
-                )
-            }
-        )
-        if case .failure(let refusal) = videoResult { return .failure(refusal) }
+        var videoFile: URL?
+        if let video = plan.video {
+            let file = workingDirectory.appendingPathComponent("video.mp4")
+            let videoResult = await fetch(
+                video, into: file, with: fetcher, label: "video",
+                onStep: { fraction, bytes in
+                    videoFraction = fraction
+                    videoBytes = bytes
+                    self.onProgress(
+                        (videoFraction * videoWeight) + (audioFraction * (1 - videoWeight)),
+                        videoBytes + audioBytes
+                    )
+                }
+            )
+            if case .failure(let refusal) = videoResult { return .failure(refusal) }
+            videoFile = file
+        }
 
         var audioFile: URL?
         if let audio = plan.audio {
@@ -213,7 +240,28 @@ final class StreamDownload {
         // Assembly is its own phase and says so. A 4K mux is fast but not
         // instant, and a bar sitting at 100% while it runs reads as a hang.
         let output: URL
-        if let audioFile {
+        if let audioFile, videoFile == nil {
+            onDetail("Preparing the audio")
+            let named = workingDirectory.appendingPathComponent(
+                Self.sanitised(title) + ".m4a"
+            )
+            // Through AVFoundation rather than renamed, which is what rebases
+            // the timeline — see `repackage`. A rename would be enough on most
+            // streams and leaves Apple's Dolby track starting ten seconds in.
+            switch await StreamAssembler.repackage(audio: audioFile, into: named) {
+            case .success(let url):
+                output = url
+            case .failure(let failure):
+                // The concatenation is already a playable file, so a format
+                // AVFoundation will not rewrite costs the rebase rather than
+                // the download.
+                debugLog("stream: audio repackage failed (\(failure)); "
+                    + "keeping the concatenation")
+                try? FileManager.default.moveItem(at: audioFile, to: named)
+                output = FileManager.default.fileExists(atPath: named.path)
+                    ? named : audioFile
+            }
+        } else if let audioFile, let videoFile {
             onDetail("Combining audio and video")
             let merged = workingDirectory.appendingPathComponent(
                 Self.sanitised(title) + ".mp4"
@@ -226,7 +274,7 @@ final class StreamDownload {
                 // discarded before falling back rather than left looking real.
                 return .failure(.unsupportedContainer(plan.container))
             }
-        } else {
+        } else if let videoFile {
             // A muxed stream needs no muxing. The concatenated segments are
             // already a file AVFoundation reads, so this is a rename.
             let named = workingDirectory.appendingPathComponent(
@@ -234,6 +282,10 @@ final class StreamDownload {
             )
             try? FileManager.default.moveItem(at: videoFile, to: named)
             output = FileManager.default.fileExists(atPath: named.path) ? named : videoFile
+        } else {
+            // `make` refuses a plan with neither track, so this is unreachable
+            // rather than a case with behaviour.
+            return .failure(.noRenditions)
         }
 
         onDetail("Checking the file")

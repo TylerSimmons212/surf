@@ -360,8 +360,8 @@ struct DASHManifestTests {
         // would be the wrong shape.
         let index = try #require(parse(StreamFixtures.numberTemplateMPD))
         let pick = try StreamPlan.pick(from: index).get()
-        #expect(pick.video.role == .video)
-        #expect(pick.video.height == 2160)
+        #expect(pick.video?.role == .video)
+        #expect(pick.video?.height == 2160)
         #expect(pick.audio != nil)
         #expect(try #require(pick.audio).codecs == "mp4a.40.5")
     }
@@ -402,23 +402,23 @@ struct DASHManifestTests {
         let pick = try StreamPlan.pick(from: index).get()
         let plan = try StreamPlan.make(video: index, audio: index, labelledBy: pick).get()
 
-        #expect(plan.video.height == 2160)
+        #expect(plan.video?.height == 2160)
         // The proof is the URL, not the label.
-        #expect(plan.video.segments.first?.url.absoluteString
+        #expect(plan.video?.segments.first?.url.absoluteString
             == "https://cdn.example.com/dash/high/high_1.m4v")
         let audio = try #require(plan.audio)
         #expect(audio.segments.first?.url.absoluteString
             == "https://cdn.example.com/dash/aud/aud_1.m4a")
         #expect(plan.expectation.wantsVideo)
         #expect(plan.expectation.wantsAudio)
-        #expect(plan.segmentCount == plan.video.segments.count + audio.segments.count)
+        #expect(plan.segmentCount == (plan.video?.segments.count ?? 0) + audio.segments.count)
     }
 
     @Test("A height cap applies the same way it does to a playlist")
     func heightCap() throws {
         let index = try #require(parse(StreamFixtures.numberTemplateMPD))
         let pick = try StreamPlan.pick(from: index, preferring: .init(maxHeight: 720)).get()
-        #expect(pick.video.height == 180)
+        #expect(pick.video?.height == 180)
     }
 
     // MARK: - ISO 8601 durations
@@ -514,7 +514,7 @@ struct StreamManifestTests {
         )
         let pick = try StreamPlan.pick(from: master).get()
         // Not nested inside the outer `#require`: the macro expands recursively.
-        let videoURL = try #require(pick.video.manifestURL)
+        let videoURL = try #require(pick.video?.manifestURL)
         let videoIndex = try #require(
             HLSPlaylist.parse(StreamFixtures.fmp4Media, baseURL: videoURL)
         )

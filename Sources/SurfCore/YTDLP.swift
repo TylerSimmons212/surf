@@ -49,7 +49,8 @@ public enum YTDLP {
         pageURL: String,
         workingDirectory: String,
         cookieFile: String? = nil,
-        ffmpegPath: String? = nil
+        ffmpegPath: String? = nil,
+        audioOnly: Bool = false
     ) -> [String] {
         var args = [
             // Progress as discrete lines instead of one line rewritten in place.
@@ -85,8 +86,21 @@ public enum YTDLP {
         ]
 
         if let ffmpegPath {
+            args += ["--ffmpeg-location", ffmpegPath]
+        }
+
+        if audioOnly {
+            // `ba` and nothing after it. The usual selectors end in `/b`, which
+            // falls back to a complete file — and a complete file is a video, so
+            // on a site with no audio-only stream the fallback would answer a
+            // different question than the one asked. Failing with "requested
+            // format is not available" is the honest outcome.
+            //
+            // No `--extract-audio` either: that re-encodes, and the stream is
+            // already a finished audio file.
+            args += ["--format", "ba"]
+        } else if ffmpegPath != nil {
             args += [
-                "--ffmpeg-location", ffmpegPath,
                 "--format", "bv*+ba/b",
                 // Ask for a container that QuickTime and Finder preview both
                 // understand; fall back rather than fail if it can't be had.

@@ -99,6 +99,13 @@ final class DownloadItem: Identifiable {
     /// A retry continues in it instead of starting the transfer again.
     @ObservationIgnored var resumeDirectory: URL?
 
+    /// Sound was asked for and not picture. Kept on the item because a
+    /// download can change engines after the choice was made — the stream
+    /// engine refusing hands the job to yt-dlp — and the question "was this a
+    /// request for audio" has to survive that. Without it, asking for a song
+    /// and having the engine refuse gets you the film.
+    @ObservationIgnored var wantsAudioOnly = false
+
     /// The rendition the user asked for, kept so a retry asks for the same one.
     ///
     /// Without it a resumed download would pick the engine's own answer, which
@@ -369,27 +376,37 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         guard let text = await fetcher.text(at: url),
               let index = StreamManifest.parse(text, baseURL: url)
         else { return [] }
-        // Picture only, from a manifest.
-        //
-        // Not an oversight. `StreamPick` and `StreamPlan` both hold `video`
-        // non-optionally, so there is no way through this engine that saves a
-        // soundtrack on its own from a manifest, and `pick` only ever considers
-        // video and muxed renditions. An audio row here would therefore set a
-        // choice that `pick` cannot match, fall through to the ordinary rule,
-        // and hand back the whole film to someone who asked for the music —
-        // which is worse than not offering it. YouTube's own format list is a
-        // different path and does offer sound alone.
-        return index.renditions.compactMap { rendition in
+        var options = index.renditions.compactMap { rendition -> DownloadOption? in
             switch rendition.role {
             case .video, .muxed:
                 return DownloadOption(
                     id: rendition.id, height: rendition.height,
                     bitrate: rendition.bandwidth, codecs: rendition.codecs ?? ""
                 )
+            // Soundtracks are added below, as one row, and subtitles are not
+            // saved by anything here yet.
             case .audio, .other:
                 return nil
             }
         }
+
+        // One soundtrack row, and it describes the track that would actually be
+        // fetched, because it is the same answer `pick` gives the download.
+        //
+        // Not one row per audio rendition. Apple's own manifest carries ten,
+        // five of them called "English" — the id of an HLS soundtrack is its
+        // NAME — and `EXT-X-MEDIA` declares no bandwidth, so there is nothing to
+        // tell them apart with and nothing to rank them by. The manifest does
+        // say which one belongs to the picture being taken, which is the only
+        // soundtrack worth offering.
+        if case .success(let chosen) = StreamPlan.pick(from: index),
+           let audio = chosen.audio {
+            options.append(DownloadOption(
+                id: audio.id, bitrate: audio.bandwidth,
+                codecs: audio.codecs ?? "", isAudioOnly: true
+            ))
+        }
+        return options
     }
 
     // MARK: - Starting
@@ -449,11 +466,14 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                     return
                 }
 
+                // Read once, here, because all three engines below need it
+                // and `takeChoice` clears on read.
+                let chosen = self.takeChoice()
+
                 // YouTube first, because on YouTube there is nothing else: no
                 // manifest is fetched and no format carries a URL, so a captured
                 // streaming request is the only route to its media.
                 if let captured = seen?.abr {
-                    let chosen = self.takeChoice()
                     debugLog("download: using a captured streaming request, "
                         + "\(seen?.formats.count ?? 0) formats on offer"
                         + (chosen.map { ", asked for \($0.title)" } ?? ""))
@@ -474,7 +494,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                     self.startStreamDownload(
                         from: candidates, page: pageURL,
                         title: media.title, tab: tab, expecting: expectation,
-                        choosing: self.takeChoice()
+                        choosing: chosen
                     )
                     return
                 }
@@ -484,7 +504,9 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // was armed. yt-dlp knows sites; we only know what we watched.
                 debugLog("download: nothing in the tap; handing over")
                 self.startExtraction(
-                    from: pageURL, title: media.title, tab: tab, expecting: expectation
+                    from: pageURL, title: media.title, tab: tab,
+                    expecting: expectation,
+                    audioOnly: chosen?.isAudioOnly ?? false
                 )
             }
 
@@ -609,7 +631,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.expectation = expectation
         item.manifests = manifests
         item.resumeDirectory = resuming
-        item.chosenRenditionID = choosing?.id
+        item.chosenRenditionID = choosing.flatMap { $0.isAudioOnly ? nil : $0.id }
+        item.wantsAudioOnly = choosing?.isAudioOnly ?? false
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
 
@@ -677,9 +700,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // Quietly. A download that succeeds by another route is not an
                 // error, and the row is removed so the retry button knows which
                 // engine it is retrying.
+                let audioOnly = item.wantsAudioOnly
                 self.remove(item)
                 self.startExtraction(
-                    from: pageURL, title: title, tab: tab, expecting: expectation
+                    from: pageURL, title: title, tab: tab, expecting: expectation,
+                    audioOnly: audioOnly
                 )
             }
         }
@@ -750,9 +775,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                     self.releaseTabBinding(for: item, after: .seconds(6))
                     return
                 }
+                let audioOnly = item.wantsAudioOnly
                 self.remove(item)
                 self.startExtraction(
-                    from: pageURL, title: title, tab: tab, expecting: expectation
+                    from: pageURL, title: title, tab: tab, expecting: expectation,
+                    audioOnly: audioOnly
                 )
             }
         }
@@ -762,7 +789,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// the direct path uses, so the UI needs no idea which engine is running.
     func startExtraction(
         from pageURL: URL, title: String, tab: Tab?,
-        expecting expectation: SavedMedia.Expectation? = nil
+        expecting expectation: SavedMedia.Expectation? = nil,
+        audioOnly: Bool = false
     ) {
         guard MediaExtractor.shared.isAvailable else { return }
 
@@ -770,11 +798,22 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         // "Downloading…" for the thirty seconds it takes to resolve formats
         // looks stalled.
         let placeholder = sanitize(title.isEmpty ? (pageURL.host ?? "video") : title)
-        let item = DownloadItem(filename: placeholder + ".mp4")
+        let item = DownloadItem(filename: placeholder + (audioOnly ? ".m4a" : ".mp4"))
         item.host = pageURL.host
         item.pageURL = pageURL
         item.isExtracted = true
-        item.expectation = expectation
+        // Restated rather than passed through, and this one matters. The
+        // expectation handed down was built for a video — `wantsVideo: true` —
+        // so a soundtrack arriving correctly would fail the track check and be
+        // discarded as flawed. The guard would have thrown away exactly what was
+        // asked for, which is the guard inventing a bug.
+        item.expectation = audioOnly
+            ? SavedMedia.Expectation(
+                wantsVideo: false, wantsAudio: true,
+                declaredDuration: expectation?.declaredDuration
+            )
+            : expectation
+        item.wantsAudioOnly = audioOnly
         item.tab = tab
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
@@ -786,6 +825,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // a web view just to read cookies, waking a sleeping tab.
                 cookies: (tab?.dataStore ?? IslandStores.shared.store(forIdentifier: nil))
                     .httpCookieStore,
+                audioOnly: audioOnly,
                 // Held strongly on purpose: the manager is a singleton and the
                 // item is in `items` until the user clears it, so there is no
                 // cycle to break and nothing to outlive.
@@ -859,9 +899,13 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         }
         let tab = item.tab
         let expectation = item.expectation
+        let audioOnly = item.wantsAudioOnly
         let title = (item.filename as NSString).deletingPathExtension
         remove(item)
-        startExtraction(from: pageURL, title: title, tab: tab, expecting: expectation)
+        startExtraction(
+            from: pageURL, title: title, tab: tab, expecting: expectation,
+            audioOnly: audioOnly
+        )
     }
 
     private func releaseExtraction(for item: DownloadItem) {

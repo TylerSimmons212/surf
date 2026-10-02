@@ -134,6 +134,57 @@ enum StreamAssembler {
         }
     }
 
+    /// One track into a file of its own, with its timeline rebased to zero.
+    ///
+    /// Concatenating a soundtrack's segments already gives a playable file, and
+    /// on most streams that would be the end of it. Apple's Dolby track is
+    /// packaged with its timeline starting ten seconds in, which is meaningful
+    /// inside HLS — each rendition has its own timeline and the player aligns
+    /// them by segment — and meaningless the moment the track is on its own:
+    /// `ffprobe` reads `start_time=10`, and a player shows ten seconds of
+    /// silence and a duration ten seconds too long.
+    ///
+    /// So sound alone gets the same pass the two-track case gets, which is also
+    /// how we know this works: the mux of that very stream comes out with its
+    /// audio at zero, from the same `startSession` call.
+    static func repackage(audio: URL, into output: URL) async -> Result<URL, Failure> {
+        try? FileManager.default.removeItem(at: output)
+
+        let asset = AVURLAsset(url: audio)
+        guard let track = try? await asset.loadTracks(withMediaType: .audio).first
+        else { return .failure(.missingTrack) }
+
+        do {
+            // `.m4a` rather than `.mp4`, because that is what a file holding
+            // only sound is, and everything from the Finder to Music reads the
+            // extension before it reads the container.
+            let writer = try AVAssetWriter(outputURL: output, fileType: .m4a)
+            let input = AVAssetWriterInput(
+                mediaType: .audio, outputSettings: nil,
+                sourceFormatHint: try await track.load(.formatDescriptions).first
+            )
+            guard writer.canAdd(input) else {
+                return .failure(.muxFailed("this audio can't be written to m4a"))
+            }
+            let reader = try AVAssetReader(asset: asset)
+            // One task touches each, which is the invariant the annotation
+            // asserts — same reasoning as the two-track case above.
+            nonisolated(unsafe) let receiver = writer.inputReceiver(for: input)
+            nonisolated(unsafe) let provider = reader.outputProvider(
+                for: AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            )
+
+            try writer.start()
+            writer.startSession(atSourceTime: .zero)
+            try reader.start()
+            try await copy(from: provider, to: receiver)
+            await writer.finishWriting()
+            return .success(output)
+        } catch {
+            return .failure(.muxFailed(error.localizedDescription))
+        }
+    }
+
     /// Every sample from one track into one writer input, untouched.
     private static func copy(
         from provider: AVAssetReaderOutput.Provider<

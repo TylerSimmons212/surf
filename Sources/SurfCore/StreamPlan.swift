@@ -14,10 +14,17 @@ import Foundation
 public struct StreamPlan: Equatable, Sendable {
 
     /// The picture, or the whole thing when picture and sound arrive together.
-    public var video: StreamRendition
+    /// Nil when sound is all that was asked for.
+    public var video: StreamRendition?
 
     /// The sound, when it arrives separately. Nil means `video` carries it.
     public var audio: StreamRendition?
+
+    /// Which of the three shapes this is. Both tracks means a mux, picture
+    /// alone means the concatenation is already the file, and sound alone means
+    /// the same but named `.m4a`, because a `.mp4` holding only audio confuses
+    /// everything that opens it.
+    public var isAudioOnly: Bool { video == nil && audio != nil }
 
     public var container: StreamContainer
 
@@ -30,10 +37,12 @@ public struct StreamPlan: Equatable, Sendable {
     public var hosts: Set<String>
 
     public var segmentCount: Int {
-        video.segments.count + (audio?.segments.count ?? 0)
+        (video?.segments.count ?? 0) + (audio?.segments.count ?? 0)
     }
 
-    public var duration: Double { video.duration }
+    /// Whichever track there is. They describe the same timeline, so either
+    /// answers, and a download of sound alone still has a length.
+    public var duration: Double { video?.duration ?? audio?.duration ?? 0 }
 
     // MARK: - Choosing
 
@@ -71,6 +80,33 @@ public struct StreamPlan: Equatable, Sendable {
         }
         guard let video = asked ?? best(of: playable, under: preference.maxHeight) else {
             return .failure(.noRenditions)
+        }
+
+        // Sound on its own, which is a request about *kind* rather than about
+        // which rendition.
+        //
+        // It took an id at first, the way a quality does, and a real manifest
+        // showed why that cannot work: Apple's carries ten audio renditions and
+        // the id of an HLS soundtrack is its NAME, so "English" names five of
+        // them — 64k AAC-HE through 768k Dolby. Matching by id would have taken
+        // whichever the publisher happened to list first. `EXT-X-MEDIA` has no
+        // BANDWIDTH either, so there is nothing to rank them by and no honest
+        // menu of them to offer.
+        //
+        // There is only one soundtrack worth having, though, and the manifest
+        // already says which: the default of the group the best picture points
+        // at. So this resolves it exactly as a video download resolves its own,
+        // and the two cannot disagree.
+        if preference.wantsAudioOnly {
+            guard video.role == .video, let group = video.audioGroup,
+                  let audio = soundtrack(forGroup: group, in: index.renditions)
+            else {
+                // A muxed stream has its sound welded in. Pulling it out is
+                // demuxing, which this engine does not do, so say so rather
+                // than quietly saving the picture too.
+                return .failure(.noSeparateAudio)
+            }
+            return .success(StreamPick(audio: audio))
         }
 
         guard video.role == .video else {
@@ -139,7 +175,7 @@ public struct StreamPlan: Equatable, Sendable {
     /// bandwidth and codecs, which a media playlist does not restate. Neither
     /// side has the whole picture, which is why both are arguments.
     public static func make(
-        video videoIndex: StreamIndex,
+        video videoIndex: StreamIndex?,
         audio audioIndex: StreamIndex? = nil,
         labelledBy pick: StreamPick,
         preferring preference: StreamPreference = .init()
@@ -155,24 +191,29 @@ public struct StreamPlan: Equatable, Sendable {
             if index.isLive { return .failure(.live) }
         }
 
-        guard var video = expanded(videoIndex, matching: pick.video) else {
-            return .failure(.noSegments)
-        }
+        var video: StreamRendition?
+        if let chosenVideo = pick.video {
+            guard let videoIndex,
+                  var track = expanded(videoIndex, matching: chosenVideo)
+            else { return .failure(.noSegments) }
 
-        // fMP4 concatenates into a file AVFoundation reads, and separate fMP4
-        // tracks mux into one with no re-encode. Nothing else does either, and
-        // attempting it produces something that looks like a video and is not.
-        guard video.container == .fragmentedMP4 else {
-            return .failure(.unsupportedContainer(video.container))
-        }
+            // fMP4 concatenates into a file AVFoundation reads, and separate
+            // fMP4 tracks mux into one with no re-encode. Nothing else does
+            // either, and attempting it produces something that looks like a
+            // video and is not.
+            guard track.container == .fragmentedMP4 else {
+                return .failure(.unsupportedContainer(track.container))
+            }
 
-        // Carry the master's description across. The media playlist knows the
-        // segments; only the master knew what they are.
-        video.id = pick.video.id
-        video.width = pick.video.width ?? video.width
-        video.height = pick.video.height ?? video.height
-        video.bandwidth = pick.video.bandwidth ?? video.bandwidth
-        video.codecs = pick.video.codecs ?? video.codecs
+            // Carry the master's description across. The media playlist knows
+            // the segments; only the master knew what they are.
+            track.id = chosenVideo.id
+            track.width = chosenVideo.width ?? track.width
+            track.height = chosenVideo.height ?? track.height
+            track.bandwidth = chosenVideo.bandwidth ?? track.bandwidth
+            track.codecs = chosenVideo.codecs ?? track.codecs
+            video = track
+        }
 
         var audio: StreamRendition?
         if let chosenAudio = pick.audio {
@@ -200,8 +241,12 @@ public struct StreamPlan: Equatable, Sendable {
             audio = track
         }
 
-        let segments = ([video.initSegment] + [audio?.initSegment]).compactMap { $0 }
-            + video.segments + (audio?.segments ?? [])
+        // One of the two is always there: `pick` never produces an empty pick,
+        // and a plan for nothing would be a download of nothing.
+        guard video != nil || audio != nil else { return .failure(.noRenditions) }
+
+        let segments = [video?.initSegment, audio?.initSegment].compactMap { $0 }
+            + (video?.segments ?? []) + (audio?.segments ?? [])
         let hosts = Set(segments.compactMap { $0.url.host })
         // The manifest names the hosts we are about to send cookies to, which
         // makes a manifest reaching across a dozen of them worth refusing. Real
@@ -215,14 +260,16 @@ public struct StreamPlan: Equatable, Sendable {
             audio: audio,
             container: .fragmentedMP4,
             expectation: SavedMedia.Expectation(
-                wantsVideo: true,
+                wantsVideo: video != nil,
                 // A separate audio track is the manifest stating outright that
                 // this has sound. Otherwise only a CODECS attribute naming an
                 // audio format counts: a variant that declared nothing is not a
                 // promise, and failing a silent stream for lacking what nothing
                 // claimed it had would be the guard inventing a bug.
-                wantsAudio: audio != nil || StreamCodecs.declaresAudio(video.codecs),
-                declaredDuration: videoIndex.declaredDuration
+                wantsAudio: audio != nil
+                    || StreamCodecs.declaresAudio(video?.codecs),
+                // Whichever index describes the track being taken.
+                declaredDuration: (videoIndex ?? audioIndex)?.declaredDuration
             ),
             hosts: hosts
         ))
@@ -261,11 +308,12 @@ public struct StreamPlan: Equatable, Sendable {
 /// it" and "a video stream and its soundtrack" are the same decision with
 /// different packaging, and every caller downstream has to handle both anyway.
 public struct StreamPick: Equatable, Sendable {
-    public var video: StreamRendition
+    /// Nil when sound alone was asked for.
+    public var video: StreamRendition?
     /// Nil when `video` carries its own sound.
     public var audio: StreamRendition?
 
-    public init(video: StreamRendition, audio: StreamRendition? = nil) {
+    public init(video: StreamRendition? = nil, audio: StreamRendition? = nil) {
         self.video = video
         self.audio = audio
     }
@@ -288,6 +336,13 @@ public struct StreamPreference: Equatable, Sendable {
     /// describing when the user read it.
     public var renditionID: String?
 
+    /// Save the soundtrack and not the picture.
+    ///
+    /// A flag rather than a rendition id, because which soundtrack is not a
+    /// decision anyone makes: see the long note in `pick`, where a real
+    /// manifest offered ten of them with one name between five.
+    public var wantsAudioOnly = false
+
     /// How many distinct hosts one download may touch.
     ///
     /// Four, because a manifest naming its own CDN plus a backup is ordinary and
@@ -297,10 +352,12 @@ public struct StreamPreference: Equatable, Sendable {
     public var hostLimit: Int
 
     public init(
-        maxHeight: Int? = nil, renditionID: String? = nil, hostLimit: Int = 4
+        maxHeight: Int? = nil, renditionID: String? = nil,
+        wantsAudioOnly: Bool = false, hostLimit: Int = 4
     ) {
         self.maxHeight = maxHeight
         self.renditionID = renditionID
+        self.wantsAudioOnly = wantsAudioOnly
         self.hostLimit = hostLimit
     }
 }
@@ -333,6 +390,11 @@ public enum StreamRefusal: Error, Equatable, Sendable {
     /// Picture and sound in separate playlists, which needs a muxer.
     case separateTracks
 
+    /// Sound was asked for on its own, and this stream has none to give
+    /// separately — it is muxed, so the sound is welded into the picture.
+    /// Extracting it is demuxing, which this engine does not do.
+    case noSeparateAudio
+
     case unsupportedContainer(StreamContainer)
 
     /// More hosts than a plan may send cookies to.
@@ -362,7 +424,7 @@ public enum StreamRefusal: Error, Equatable, Sendable {
     /// worse message, so refusing immediately in a sentence someone wrote is the
     /// better outcome.
     public var allowsFallback: Bool {
-        self != .protected && self != .interrupted
+        self != .protected && self != .interrupted && self != .noSeparateAudio
     }
 
     /// Shown only when there is no fallback left. Everything else is invisible,
@@ -377,6 +439,12 @@ public enum StreamRefusal: Error, Equatable, Sendable {
             // Says what to do, because unlike the others this one is worth
             // doing: the partial file is kept and a retry carries on from it.
             "The download stopped partway — retry to carry on from here"
+        case .noSeparateAudio:
+            // No fallback, because the subprocess would be asked to save this
+            // video and would succeed at saving the video — which is not what
+            // was asked for. Better to say the sound cannot be had on its own
+            // than to answer a different question.
+            "This video's sound can't be saved on its own"
         default:
             "Couldn't save this video"
         }

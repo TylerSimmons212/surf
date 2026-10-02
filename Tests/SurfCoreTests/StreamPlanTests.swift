@@ -24,7 +24,7 @@ struct StreamPlanTests {
         preference: StreamPreference = .init()
     ) throws -> Result<StreamPlan, StreamRefusal> {
         let chosen = try pick(master, preference).get()
-        let videoIndex = try index(media, try #require(chosen.video.manifestURL))
+        let videoIndex = try index(media, try #require(chosen.video?.manifestURL))
         let audioIndex = try audio.map { text in
             try index(text, try #require(chosen.audio?.manifestURL))
         }
@@ -38,7 +38,7 @@ struct StreamPlanTests {
 
     @Test("The best rendition is the tallest")
     func picksTallest() throws {
-        #expect(try pick(StreamFixtures.fmp4Master).get().video.height == 1080)
+        #expect(try pick(StreamFixtures.fmp4Master).get().video?.height == 1080)
     }
 
     @Test("A muxed stream needs no second track")
@@ -48,13 +48,13 @@ struct StreamPlanTests {
 
     @Test("A height cap is a ceiling, not a target")
     func heightCap() throws {
-        #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 720)).get().video.height == 720)
+        #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 720)).get().video?.height == 720)
     }
 
     @Test("A cap between renditions takes the one below it")
     func capBetweenRenditions() throws {
         // 360, 720 and 1080 on offer. Asking for 900 must not round up.
-        #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 900)).get().video.height == 720)
+        #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 900)).get().video?.height == 720)
     }
 
     @Test("A cap below everything takes the smallest rather than refusing")
@@ -63,7 +63,7 @@ struct StreamPlanTests {
         // obey the letter of a preference at the cost of the download, and
         // returning the tallest — which is what this did at first — makes the cap
         // worse than having no cap at all.
-        #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 100)).get().video.height == 360)
+        #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 100)).get().video?.height == 360)
     }
 
     // MARK: - An asked-for rendition
@@ -76,18 +76,18 @@ struct StreamPlanTests {
         let chosen = try pick(
             StreamFixtures.fmp4Master, .init(renditionID: "720/stream.m3u8")
         ).get()
-        #expect(chosen.video.id == "720/stream.m3u8")
-        #expect(chosen.video.height == 720)
+        #expect(chosen.video?.id == "720/stream.m3u8")
+        #expect(chosen.video?.height == 720)
     }
 
     @Test("Choosing beats the tallest-wins rule")
     func chosenOverridesBest() throws {
         // 1080 is on offer and is what the engine takes unasked. Asking for 360
         // has to get 360 rather than the best available.
-        #expect(try pick(StreamFixtures.fmp4Master).get().video.height == 1080)
+        #expect(try pick(StreamFixtures.fmp4Master).get().video?.height == 1080)
         #expect(try pick(
             StreamFixtures.fmp4Master, .init(renditionID: "360/stream.m3u8")
-        ).get().video.height == 360)
+        ).get().video?.height == 360)
     }
 
     @Test("Choosing and a cap together: the choice wins")
@@ -98,7 +98,7 @@ struct StreamPlanTests {
             StreamFixtures.fmp4Master,
             .init(maxHeight: 360, renditionID: "1080/stream.m3u8")
         ).get()
-        #expect(chosen.video.height == 1080)
+        #expect(chosen.video?.height == 1080)
     }
 
     @Test("An id that is no longer there falls back instead of failing")
@@ -110,19 +110,107 @@ struct StreamPlanTests {
         let chosen = try pick(
             StreamFixtures.fmp4Master, .init(renditionID: "2160/stream.m3u8")
         ).get()
-        #expect(chosen.video.height == 1080)
+        #expect(chosen.video?.height == 1080)
     }
 
-    @Test("An audio rendition cannot be chosen as the picture")
-    func audioIDIgnored() throws {
-        // `pick` only ever considers video and muxed renditions, so an audio id
-        // matches nothing and the ordinary rule answers. The menu does not offer
-        // one on this path for exactly that reason; this is the guard under it.
+    // MARK: - Sound on its own
+
+    /// Apple's own shape: ten soundtracks, five of them called "English",
+    /// because an HLS soundtrack's id is its NAME and each bitrate lives in its
+    /// own group. No BANDWIDTH anywhere, because `EXT-X-MEDIA` has none.
+    private static let manySoundtracks = """
+    #EXTM3U
+    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aache-64",NAME="English",DEFAULT=YES,URI="a/he64.m3u8"
+    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aaclc-160",NAME="English",DEFAULT=YES,URI="a/lc160.m3u8"
+    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="ec3-768",NAME="English",DEFAULT=YES,URI="a/ec3.m3u8"
+    #EXT-X-STREAM-INF:BANDWIDTH=2400000,RESOLUTION=1280x720,CODECS="avc1.64001f",AUDIO="aache-64"
+    v/720.m3u8
+    #EXT-X-STREAM-INF:BANDWIDTH=9000000,RESOLUTION=1920x1080,CODECS="avc1.640028",AUDIO="ec3-768"
+    v/1080.m3u8
+    """
+
+    @Test("Asking for sound alone gives sound alone")
+    func audioOnly() throws {
         let chosen = try pick(
-            StreamFixtures.separateAudioMaster,
-            .init(renditionID: "audio/en/128k.m3u8")
+            StreamFixtures.separateAudioMaster, .init(wantsAudioOnly: true)
         ).get()
-        #expect(chosen.video.role == .video)
+        #expect(chosen.video == nil)
+        #expect(chosen.audio != nil)
+    }
+
+    @Test("The soundtrack taken is the one the chosen picture points at")
+    func audioOnlyFollowsTheBestPicture() throws {
+        // The whole reason this is a flag and not a rendition id. Three
+        // soundtracks share the name "English", so an id would have matched
+        // whichever the publisher listed first — the 64k one. The manifest says
+        // the 1080p variant uses the Dolby group, and 1080p is what wins, so
+        // that is the soundtrack.
+        let chosen = try pick(Self.manySoundtracks, .init(wantsAudioOnly: true)).get()
+        #expect(chosen.audio?.audioGroup == "ec3-768")
+        #expect(chosen.audio?.id == "English")
+    }
+
+    @Test("A cap moves the soundtrack with the picture")
+    func audioOnlyFollowsTheCap() throws {
+        // Consistency with the pairing a video download would get: cap the
+        // height and the soundtrack that belongs to that variant comes instead.
+        let chosen = try pick(
+            Self.manySoundtracks, .init(maxHeight: 720, wantsAudioOnly: true)
+        ).get()
+        #expect(chosen.audio?.audioGroup == "aache-64")
+    }
+
+    @Test("A muxed stream has no sound to give on its own")
+    func muxedHasNoSeparateAudio() throws {
+        // The sound is welded into the picture; taking it out is demuxing,
+        // which this engine does not do.
+        let result = try pick(StreamFixtures.fmp4Master, .init(wantsAudioOnly: true))
+        #expect(result == .failure(.noSeparateAudio))
+    }
+
+    @Test("That refusal does not become a video download by another route")
+    func noSeparateAudioDoesNotFallBack() {
+        // yt-dlp would succeed at saving the video, which is not the question
+        // that was asked. Answering a different question is worse than saying
+        // no to this one.
+        #expect(StreamRefusal.noSeparateAudio.allowsFallback == false)
+        #expect(StreamRefusal.noSeparateAudio.message.isEmpty == false)
+    }
+
+    @Test("A plan for sound alone wants sound and not picture")
+    func audioOnlyPlan() throws {
+        let chosen = try pick(
+            StreamFixtures.separateAudioMaster, .init(wantsAudioOnly: true)
+        ).get()
+        let audioIndex = try index(StreamFixtures.fmp4Media)
+        let plan = try StreamPlan.make(
+            video: nil, audio: audioIndex, labelledBy: chosen
+        ).get()
+        #expect(plan.video == nil)
+        #expect(plan.audio != nil)
+        #expect(plan.isAudioOnly)
+        #expect(plan.expectation.wantsVideo == false)
+        #expect(plan.expectation.wantsAudio)
+        // The segments are the soundtrack's, and the duration still reads.
+        #expect(plan.segmentCount == plan.audio?.segments.count)
+        #expect(plan.duration > 0)
+    }
+
+    @Test("A plan with neither track is refused rather than built")
+    func emptyPlan() throws {
+        let audioIndex = try index(StreamFixtures.fmp4Media)
+        let result = StreamPlan.make(
+            video: nil, audio: audioIndex, labelledBy: StreamPick()
+        )
+        #expect(result == .failure(.noRenditions))
+    }
+
+    @Test("Not asking for sound alone still pairs the two")
+    func videoStillPairsAudio() throws {
+        // The flag is off by default, so the tallest picture wins as always and
+        // the soundtrack rides along with it rather than replacing it.
+        let chosen = try pick(StreamFixtures.separateAudioMaster).get()
+        #expect(chosen.video?.height == 1080)
         #expect(chosen.audio != nil)
     }
 
@@ -135,7 +223,7 @@ struct StreamPlanTests {
         #EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"
         high.m3u8
         """
-        #expect(try pick(text).get().video.id == "high.m3u8")
+        #expect(try pick(text).get().video?.id == "high.m3u8")
     }
 
     @Test("A rendition that declares no height is still a candidate")
@@ -147,7 +235,7 @@ struct StreamPlanTests {
         #EXT-X-STREAM-INF:BANDWIDTH=800000
         only.m3u8
         """
-        #expect(try pick(text).get().video.id == "only.m3u8")
+        #expect(try pick(text).get().video?.id == "only.m3u8")
     }
 
     @Test("A declared rendition beats an undeclared one")
@@ -159,7 +247,7 @@ struct StreamPlanTests {
         #EXT-X-STREAM-INF:BANDWIDTH=500000,RESOLUTION=640x360,CODECS="avc1.64001e,mp4a.40.2"
         known.m3u8
         """
-        #expect(try pick(text).get().video.id == "known.m3u8")
+        #expect(try pick(text).get().video?.id == "known.m3u8")
     }
 
     @Test("The order renditions appear in does not decide")
@@ -169,7 +257,7 @@ struct StreamPlanTests {
         reversed.renditions.reverse()
         let a = try StreamPlan.pick(from: index).get()
         let b = try StreamPlan.pick(from: reversed).get()
-        #expect(a.video.id == b.video.id)
+        #expect(a.video?.id == b.video?.id)
     }
 
     // MARK: - Separate tracks, which is how modern streams are packaged
@@ -177,8 +265,8 @@ struct StreamPlanTests {
     @Test("A video-only rendition is paired with its soundtrack")
     func pairsSeparateTracks() throws {
         let chosen = try pick(StreamFixtures.separateAudioMaster).get()
-        #expect(chosen.video.role == .video)
-        #expect(chosen.video.height == 1080)
+        #expect(chosen.video?.role == .video)
+        #expect(chosen.video?.height == 1080)
         let audio = try #require(chosen.audio)
         #expect(audio.role == .audio)
         // The group the video variant named, not just any audio in the manifest.
@@ -252,7 +340,7 @@ struct StreamPlanTests {
         video1080.m3u8
         """
         let chosen = try pick(text).get()
-        #expect(chosen.video.id == "video1080.m3u8")
+        #expect(chosen.video?.id == "video1080.m3u8")
         #expect(chosen.audio != nil)
     }
 
@@ -269,7 +357,7 @@ struct StreamPlanTests {
         video720.m3u8
         """
         let chosen = try pick(text).get()
-        #expect(chosen.video.id == "muxed1080.m3u8")
+        #expect(chosen.video?.id == "muxed1080.m3u8")
         #expect(chosen.audio == nil)
     }
 
@@ -341,9 +429,9 @@ struct StreamPlanTests {
         let plan = try plan(master: StreamFixtures.fmp4Master, media: StreamFixtures.fmp4Media).get()
         // A media playlist does not restate resolution or codecs, and the master
         // does not list segments. Neither alone is a plan.
-        #expect(plan.video.height == 1080)
-        #expect(plan.video.codecs == "avc1.640028,mp4a.40.2")
-        #expect(plan.video.segments.count == 7)
+        #expect(plan.video?.height == 1080)
+        #expect(plan.video?.codecs == "avc1.640028,mp4a.40.2")
+        #expect(plan.video?.segments.count == 7)
         #expect(plan.segmentCount == 7)
         #expect(plan.duration == 28)
         #expect(plan.container == .fragmentedMP4)
@@ -357,7 +445,7 @@ struct StreamPlanTests {
             media: StreamFixtures.fmp4Media,
             audio: StreamFixtures.audioMedia
         ).get()
-        #expect(plan.video.segments.count == 7)
+        #expect(plan.video?.segments.count == 7)
         let audio = try #require(plan.audio)
         // Audio and video segment on their own boundaries, so the counts differ
         // and only the durations match. Anything assuming a shared count breaks
@@ -455,7 +543,7 @@ struct StreamPlanTests {
     @Test("A missing soundtrack playlist is a refusal, not a silent file")
     func missingAudioIndex() throws {
         let chosen = try pick(StreamFixtures.separateAudioMaster).get()
-        let videoIndex = try index(StreamFixtures.fmp4Media, try #require(chosen.video.manifestURL))
+        let videoIndex = try index(StreamFixtures.fmp4Media, try #require(chosen.video?.manifestURL))
         // The pick says there is a soundtrack and nothing was fetched for it.
         // Producing a video-only file here is exactly the bug this whole branch
         // exists to prevent.

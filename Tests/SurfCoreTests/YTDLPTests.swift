@@ -5,13 +5,65 @@ import Testing
 @Suite("yt-dlp arguments")
 struct YTDLPArgumentTests {
 
-    private func args(cookies: String? = nil, ffmpeg: String? = nil) -> [String] {
+    private func args(
+        cookies: String? = nil, ffmpeg: String? = nil, audioOnly: Bool = false
+    ) -> [String] {
         YTDLP.arguments(
             pageURL: "https://example.com/watch?v=1",
             workingDirectory: "/tmp/work",
             cookieFile: cookies,
-            ffmpegPath: ffmpeg
+            ffmpegPath: ffmpeg,
+            audioOnly: audioOnly
         )
+    }
+
+    /// The value after `--format`, which is the whole of what is being asked for.
+    private func selector(_ arguments: [String]) -> String? {
+        guard let i = arguments.firstIndex(of: "--format"),
+              arguments.indices.contains(i + 1)
+        else { return nil }
+        return arguments[i + 1]
+    }
+
+    // MARK: - Sound on its own
+
+    @Test("Sound alone asks for sound alone")
+    func audioOnlySelector() {
+        #expect(selector(args(ffmpeg: "/usr/local/bin", audioOnly: true)) == "ba")
+    }
+
+    @Test("The audio selector has no fallback to a whole file")
+    func audioOnlyNeverFallsBackToVideo() {
+        // `ba/b` would be the usual shape, and `b` is a complete file, which is
+        // a video. On a site with no audio-only stream that fallback answers a
+        // different question than the one asked — so there is none, and yt-dlp
+        // failing with "requested format is not available" is the honest result.
+        let selector = selector(args(ffmpeg: "/usr/local/bin", audioOnly: true))
+        #expect(selector?.contains("/") == false)
+        #expect(selector?.contains("v") == false)
+    }
+
+    @Test("Sound alone is not merged into an mp4")
+    func audioOnlyKeepsItsContainer() {
+        // `--merge-output-format mp4` exists to give a muxed video a container
+        // Finder can preview. There is nothing to merge here, and a `.mp4`
+        // holding only audio confuses everything that opens it.
+        #expect(!args(ffmpeg: "/usr/local/bin", audioOnly: true)
+            .contains("--merge-output-format"))
+    }
+
+    @Test("ffmpeg is still located when sound alone is asked for")
+    func audioOnlyStillLocatesFFmpeg() {
+        // It was inside the `if let ffmpegPath` branch that also chose the
+        // format, so pulling the format out had to leave the location behind.
+        #expect(args(ffmpeg: "/usr/local/bin", audioOnly: true)
+            .contains("--ffmpeg-location"))
+    }
+
+    @Test("Asking for a video still asks for both tracks")
+    func videoUnchanged() {
+        #expect(selector(args(ffmpeg: "/usr/local/bin")) == "bv*+ba/b")
+        #expect(selector(args()) == "b")
     }
 
     @Test("The page URL is the last argument")

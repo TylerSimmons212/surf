@@ -86,6 +86,7 @@ final class MediaExtractor {
     func start(
         pageURL: URL,
         cookies: WKHTTPCookieStore,
+        audioOnly: Bool = false,
         onProgress: @escaping @MainActor (YTDLP.Progress) -> Void,
         onFinish: @escaping @MainActor (Result<URL, ExtractionFailure>) -> Void
     ) async -> Extraction? {
@@ -109,7 +110,8 @@ final class MediaExtractor {
                 pageURL: pageURL.absoluteString,
                 workingDirectory: workingDirectory.path,
                 cookieFile: cookieFile?.path,
-                ffmpegPath: ffmpegURL?.deletingLastPathComponent().path
+                ffmpegPath: ffmpegURL?.deletingLastPathComponent().path,
+                audioOnly: audioOnly
             ),
             workingDirectory: workingDirectory,
             cookieFile: cookieFile
