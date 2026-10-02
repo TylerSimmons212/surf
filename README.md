@@ -633,6 +633,45 @@ tightly as the claim: only while a click on a video or its controls is being
 handled, and only for somewhere other than the site you are on. A share button
 that opens a window still opens it.
 
+Whether a click was on a video is judged by what lies under the pointer, not by
+what received the click. The two differ exactly when a sheet has been laid over
+the player, so asking only the second misses the case the rule exists for. It
+first did when the player was an iframe: the page around it covered the frame
+with a sheet and opened the window from its own click handler. Nothing the click
+touched was named like a player, the video was in a document this one can't see
+into, and the player's own document never heard the click. So an iframe big
+enough to hold a player counts as one, both for this rule and for making the
+sheet transparent to the pointer. The exception is a real control: a button or
+link laid over an embed was aimed at by someone who read it, so the window it
+opens opens. `testpages/iframe-trap.html` is the case.
+
+The rule is armed when the button goes down, not when the click arrives. The
+scripts that do this open their window on `mousedown`, and the new tab takes the
+`mouseup` with it, so in the case that matters the click never reaches the page
+at all. A rule listening for clicks was always one event too late. It listens on
+the window, capturing, so no listener the page registers can stop the event
+first.
+
+A refused window is also evidence about what caught the click. A trap that has
+been named, so the anonymous-sheet rule passes it by, still gives itself away
+the moment it tries to open a window from a click on the player. So when that
+happens and the element covers the player, it is made transparent to the
+pointer there and then, and the next click plays. Without that, every click is
+refused and none of them plays, which feels the same as being sent to an ad.
+The test is coverage: a play button is smaller than the picture it sits on, and
+a player that opens a window from its own play button still has to be playable.
+
+The pop-under has a mirror image that no window rule can see, because the window
+it opens is innocent. The page opens the video you clicked in a new tab, its own
+site, which a window to your own site always may, and then sends the tab you
+clicked in to an ad. Each half is ordinary on its own. Together, moments apart,
+they swap the tabs under you. So the second half is refused when it follows the
+first. Within two seconds of a page opening a window to its own site, a
+navigation of that tab to another site that the page started, rather than you,
+is cancelled. The new tab keeps what you wanted and the old one stays where you
+left it. Going somewhere yourself ends the watch. The rule is `TabSwap` in
+`SurfCore`.
+
 A blocked script is invisible to a page that never checks, and a video player is
 not that page. It loads Google's ad SDK, waits for `google.ima` to appear, and
 hands the viewer to it. Refuse the script and the global never arrives, so the

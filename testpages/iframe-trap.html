@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A sheet over an embedded player</title>
+<!-- The pop-under that survived the player-click guard: the player is an
+     iframe, and the page around it lays an anonymous transparent sheet over
+     the frame and opens a window from its own click handler. Nothing the click
+     touches is named like a player, and the player's document never hears the
+     click. srcdoc keeps it one file; a cross-origin frame behaves the same.
+
+     Drive: SURF_URL=file://$PWD/testpages/iframe-trap.html swift run, then
+     click the player. Pass: no "[surf] loaded https://example.com/iframe-trap"
+     line and no new tab. Before the fix, one click opened it. -->
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  .stage, iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+</style>
+<div class="stage">
+  <iframe srcdoc="<style>html,body{margin:0;height:100%;background:#000}video{width:100%;height:100%}</style><video controls></video>"></iframe>
+  <div style="position:absolute; inset:0; z-index:10"></div>
+</div>
+<script>
+  let fired = false;
+  document.addEventListener('click', function () {
+    if (fired) return;
+    fired = true;
+    window.open('https://example.com/iframe-trap', '_blank');
+  }, true);
+</script>
