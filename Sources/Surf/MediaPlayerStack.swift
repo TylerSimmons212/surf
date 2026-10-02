@@ -124,18 +124,17 @@ struct MediaRow: View {
     /// — including Surf's own download ring and loading border — so a playing
     /// video read as a download in progress. A time cannot be mistaken for
     /// one.
+    ///
+    /// `MediaCaption` holds the rule that this line must never repeat the one
+    /// above it, which it did: both fall back through the same candidates, so
+    /// a video with no artist and no host printed the title twice.
     private func subtitle(_ media: MediaState) -> String {
-        let source: String = {
-            if !media.artist.isEmpty { return media.artist }
-            if let address = tab.currentURL, let host = URL(string: address)?.host() {
-                return host
-            }
-            return tab.displayTitle
-        }()
-        guard let position = MediaTime.position(media.currentTime, of: media.duration) else {
-            return source
-        }
-        return "\(source) · \(position)"
+        MediaCaption.text(
+            besides: media.title.isEmpty ? tab.displayTitle : media.title,
+            artist: media.artist,
+            host: tab.currentURL.flatMap { URL(string: $0)?.host() },
+            position: MediaTime.position(media.currentTime, of: media.duration)
+        )
     }
 
     /// Same corner as a tab row, so the player reads as part of the column
@@ -166,10 +165,13 @@ struct MediaRow: View {
                                     .help("Playing without sound")
                             }
                         }
-                        Text(subtitle(media))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        let caption = subtitle(media)
+                        if !caption.isEmpty {
+                            Text(caption)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
 
                     Spacer(minLength: 0)
