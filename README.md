@@ -59,7 +59,9 @@ A plain media file is saved by WebKit itself, so it inherits the page's session
 and referrer. Video that's streamed in segments has no single file to fetch, and
 takes one of two routes.
 
-An HLS manifest is downloaded by Surf. The manifest is the one the page itself
+A manifest Surf can read is downloaded by Surf. HLS and DASH both parse into one
+shape, so everything after the parser is the same code either way, and the entry
+point the app calls never names a format. The manifest is the one the page itself
 fetched to play the video, so what gets parsed is a specification rather than a
 site — there are no per-site extractors here and there is no intention of adding
 any. Segments are fetched four at a time with the tab's own cookies, including
@@ -1062,9 +1064,14 @@ makes it unit-testable — the UI targets can't be.
   cookies, and runs the process
 - `Sources/SurfCore/StreamIndex.swift` — what a manifest offers, with no trace of
   which kind of manifest said it; the one shape both parsers produce
+- `Sources/SurfCore/StreamManifest.swift` — the one entry point the app uses, so
+  a third format will not touch it
 - `Sources/SurfCore/HLSPlaylist.swift` — m3u8 into a `StreamIndex`; master and
   media playlists through one function, because which you have is something you
   find out by reading it
+- `Sources/SurfCore/DASHManifest.swift` — MPD into the same shape; four ways of
+  addressing a segment, attributes that inherit, and a pairing the format never
+  states
 - `Sources/SurfCore/StreamPlan.swift` — which rendition to take and what to
   refuse, decided before anything is requested
 - `Sources/SurfCore/SegmentSchedule.swift` — a cursor rather than a worklist, so
@@ -1149,6 +1156,15 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
+- Watching a page for the manifest behind a `blob:` source. DASH is parsed,
+  planned and tested against five real manifests, and is unreachable: WebKit
+  cannot play it, so the element never reports and `tab.media` stays nil. Real
+  DASH sites play through dash.js or Shaka, which means Media Source Extensions
+  and a source with no URL in it, so the manifest has to be found from what the
+  page fetched rather than from what the element says it is playing.
+  `testpages/dash-native.html` is the regression test: today it logs `download:
+  nothing playing to save`, and it should one day log a plan. The same tap is
+  what would let a stream in a cross-origin iframe be saved at all.
 - Registering as a browser, so links from other apps arrive — and land in a
   mini window, which is the case that feature exists for
 - A back/forward menu on long-press
