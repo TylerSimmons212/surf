@@ -102,6 +102,7 @@ final class MediaExtractor {
 
         let cookieFile = await writeCookieFile(for: pageURL, in: workingDirectory, from: cookies)
 
+        debugLog("extract: ytdlp=\(executableURL.path) ffmpeg=\(ffmpegURL?.path ?? "NOT FOUND")")
         let extraction = Extraction(
             executableURL: executableURL,
             arguments: YTDLP.arguments(
