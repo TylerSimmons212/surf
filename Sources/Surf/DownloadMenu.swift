@@ -1,199 +1,188 @@
+import AppKit
 import SurfCore
 import SwiftUI
 
-/// What to download, when there is more than one answer.
+/// The download button, and the menu behind it.
 ///
-/// The engine picks for itself perfectly well — tallest wins, codec breaks a
-/// tie — and for most of the web there is nothing to pick between. This exists
-/// for the sites where the difference is large enough to be someone else's
-/// decision: 4K AV1 is two and a half times the size of 1080p H.264 for the same
-/// ten minutes, and on a metered connection or an older machine that is not
-/// obviously the better answer.
+/// A press opens a menu rather than downloading outright, because the engine's
+/// pick and the right pick are not always the same thing: on YouTube that is the
+/// difference between 712MB of 4K and 258MB of 1080p, and on a metered
+/// connection or an older machine the bigger file is not obviously the better
+/// answer.
 ///
-/// Two pages rather than two popovers, the same arrangement `SiteToolsPopover`
-/// uses and for the same reason: a popover that opens a second popover leaves the
-/// first hanging behind it with nothing to say which a click belongs to.
-struct DownloadMenu: View {
+/// It is a real `NSMenu`, and it was a SwiftUI popover first. Two things were
+/// wrong with that. The sidebar closes when the pointer leaves it and a popover
+/// lives in its own window, so reaching for a row read as leaving the sidebar:
+/// it collapsed, took the anchor with it, and dismissed the menu before anything
+/// could be clicked — which is the exact failure `SidebarHold` was written for,
+/// and this was the one sidebar popover that never registered a hold. The second
+/// is simpler: a short list of choices where you pick one is a menu, and macOS
+/// has a control for that, with keyboard navigation, submenus and edge flipping
+/// already in it.
+///
+/// Both are fixed here. The hold is taken for as long as the menu is tracking,
+/// so the sidebar cannot collapse underneath it even though `NSMenu` would have
+/// survived that on its own.
+struct DownloadMenuButton: View {
     let tab: Tab
-    /// Dismisses the popover. Held rather than inferred, because every row here
-    /// starts something and then wants to be gone.
-    let close: () -> Void
+    let hold: SidebarHold
+    let systemName: String
+    let help: String
+    let isEnabled: Bool
+    let bounces: Bool
 
-    @State private var isChoosing = false
-    @State private var options: [DownloadOption] = []
-    @State private var duration: Double?
-    @State private var isLoading = true
+    private static let holdReason = "download-menu"
 
-    private var videoOptions: [DownloadOption] { DownloadOptions.video(from: options) }
-    private var audioOption: DownloadOption? { DownloadOptions.audio(from: options) }
+    /// Somewhere for the menu to hang from, and a guard against a second press
+    /// while the first is still finding out what is on offer.
+    @State private var anchor = MenuAnchor()
+    @State private var isAsking = false
 
     var body: some View {
-        Group {
-            if isChoosing {
-                choosing
-            } else {
-                summary
-            }
+        IconButton(
+            systemName: systemName,
+            size: 13, width: 26, height: 26, cornerRadius: 13,
+            isEnabled: isEnabled,
+            motion: bounces ? .bounce : .none,
+            help: help
+        ) {
+            present()
         }
-        .frame(width: 228)
-        .task {
+        .background(MenuAnchorView(anchor: anchor))
+    }
+
+    /// Finds out what is on offer, then shows the menu.
+    ///
+    /// In that order, and it costs a moment on a manifest because working out
+    /// the renditions means fetching it. Deliberately not done when the card
+    /// appears: that would fetch a manifest, with the tab's cookies, for every
+    /// page with a video on it whether or not anyone ever means to save one.
+    /// Paying for the menu when the menu is asked for is the right trade.
+    private func present() {
+        guard !isAsking else { return }
+        isAsking = true
+        Task { @MainActor in
             let found = await DownloadManager.shared.options(for: tab)
-            options = found.options
-            duration = found.duration
-            isLoading = false
+            isAsking = false
+            show(found.options, duration: found.duration)
         }
     }
 
-    // MARK: - What it opens on
-
-    private var summary: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            MenuRow(
-                title: "Download Video",
-                detail: best.map { $0.title + " · " + $0.detail(duration: duration) },
-                systemImage: "arrow.down.circle"
-            ) {
-                close()
-                DownloadManager.shared.downloadMedia(from: tab)
-            }
-
-            // Only when there is something to choose between. One rendition and
-            // a menu offering to choose is a menu that wastes a click to tell you
-            // there was never a decision.
-            if videoOptions.count > 1 {
-                MenuRow(
-                    title: "Choose Quality…",
-                    detail: "\(videoOptions.count) sizes",
-                    systemImage: "slider.horizontal.3"
-                ) {
-                    withAnimation(.easeOut(duration: 0.15)) { isChoosing = true }
-                }
-            }
-
-            if let audioOption {
-                MenuRow(
-                    title: "Audio Only",
-                    detail: audioOption.detail(duration: duration),
-                    systemImage: "waveform"
-                ) {
-                    close()
-                    DownloadManager.shared.downloadMedia(from: tab, choosing: audioOption)
-                }
-            }
-
-            if isLoading {
-                // Said rather than shown as an empty space. Working out what is
-                // on offer can mean fetching a manifest, and a menu that silently
-                // has fewer rows for a moment reads as a menu that is finished.
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small).scaleEffect(0.7)
-                    Text("Looking for other sizes…")
-                        .font(Typeface.figtree(size: 11, weight: 500))
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-            }
+    private func show(_ options: [DownloadOption], duration: Double?) {
+        guard let view = anchor.view, view.window != nil else {
+            // No menu to hang anywhere. Downloading is still the thing that was
+            // asked for, so it happens rather than nothing happening.
+            DownloadManager.shared.downloadMedia(from: tab)
+            return
         }
-        .padding(.vertical, 5)
+
+        // Held across the whole of tracking. `popUp` runs its own event loop and
+        // does not return until the menu closes, which is what makes the pair of
+        // calls around it correct rather than hopeful — there is no window in
+        // which the menu is up and the hold is not.
+        hold.set(Self.holdReason, true)
+        defer { hold.set(Self.holdReason, false) }
+
+        menu(for: options, duration: duration).popUp(
+            positioning: nil,
+            // The view is unflipped, so zero is its bottom edge. A few points
+            // below that leaves the gap a menu normally has from its button.
+            at: NSPoint(x: 0, y: -5),
+            in: view
+        )
     }
 
-    /// The one the plain download would take, so the first row can say what it
-    /// is about to do rather than leaving someone to find out afterwards.
-    private var best: DownloadOption? { videoOptions.first }
+    // MARK: - Building it
 
-    // MARK: - The second page
+    private func menu(for options: [DownloadOption], duration: Double?) -> NSMenu {
+        let videos = DownloadOptions.video(from: options)
+        let sound = DownloadOptions.audio(from: options)
+        let menu = NSMenu()
 
-    private var choosing: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) { isChoosing = false }
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 10, weight: .bold))
-                    Text("Download")
-                        .font(Typeface.figtree(size: 12, weight: 600))
-                    Spacer(minLength: 0)
+        // What a plain press used to do, named so it says what it will take
+        // rather than leaving someone to find out from the finished file.
+        let top = videos.first
+        add(
+            top.map { "Download Video — \($0.title) · \($0.detail(duration: duration))" }
+                ?? "Download Video",
+            to: menu
+        ) { DownloadManager.shared.downloadMedia(from: tab) }
+
+        // Only when there is something to choose between. One rendition and a
+        // submenu offering to choose is a submenu that wastes a hover to tell
+        // you there was never a decision.
+        if videos.count > 1 {
+            let choose = NSMenuItem(title: "Choose Quality", action: nil, keyEquivalent: "")
+            let ladder = NSMenu()
+            for option in videos {
+                add("\(option.title) — \(option.detail(duration: duration))", to: ladder) {
+                    DownloadManager.shared.downloadMedia(from: tab, choosing: option)
                 }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(videoOptions) { option in
-                        MenuRow(
-                            title: option.title,
-                            detail: option.detail(duration: duration),
-                            systemImage: nil
-                        ) {
-                            close()
-                            DownloadManager.shared.downloadMedia(from: tab, choosing: option)
-                        }
-                    }
-                }
-                .padding(.vertical, 5)
-            }
-            // Tall enough for the five or six a site usually offers, and
-            // scrolling past that rather than growing a popover off the screen.
-            .frame(maxHeight: 260)
+            choose.submenu = ladder
+            menu.addItem(choose)
         }
+
+        if let sound {
+            menu.addItem(.separator())
+            add("Audio Only — \(sound.detail(duration: duration))", to: menu) {
+                DownloadManager.shared.downloadMedia(from: tab, choosing: sound)
+            }
+        }
+        return menu
+    }
+
+    private func add(_ title: String, to menu: NSMenu, _ run: @escaping () -> Void) {
+        let item = NSMenuItem(
+            title: title, action: #selector(MenuAction.fire), keyEquivalent: ""
+        )
+        let action = MenuAction(run)
+        item.target = action
+        // `target` is weak, so the only thing keeping the closure alive is this.
+        // Without it every item in the menu does nothing, which is a quiet
+        // failure rather than a crash.
+        item.representedObject = action
+        menu.addItem(item)
     }
 }
 
-/// A row in either page.
-///
-/// Its own view rather than `SidebarMenuRow` because these carry a second line:
-/// the choice being made here is between sizes, and a menu of resolutions with
-/// no sizes beside them is asking someone to decide on the one fact it withheld.
-private struct MenuRow: View {
-    let title: String
-    var detail: String?
-    let systemImage: String?
-    let action: () -> Void
+/// Carries a closure into `NSMenuItem`, which wants a target and a selector.
+private final class MenuAction: NSObject {
+    private let run: () -> Void
 
-    @State private var isHovering = false
+    init(_ run: @escaping () -> Void) {
+        self.run = run
+        super.init()
+    }
 
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                if let systemImage {
-                    Image(systemName: systemImage)
-                        .font(.system(size: 11, weight: .medium))
-                        .frame(width: 16)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title)
-                        .font(Typeface.figtree(size: 12.5, weight: 500))
-                        .lineLimit(1)
-                    if let detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(Typeface.figtree(size: 10.5, weight: 500))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(isHovering ? 0.08 : 0))
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 5)
-        .onHover { isHovering = $0 }
-        .animation(.easeOut(duration: 0.12), value: isHovering)
-        .pointerStyle(.link)
+    @objc func fire() { run() }
+}
+
+/// A reference to the `NSView` a menu is positioned in.
+@MainActor
+private final class MenuAnchor {
+    weak var view: NSView?
+}
+
+/// Puts a real view behind a SwiftUI button, because `NSMenu` is positioned in
+/// one and SwiftUI does not hand its own out.
+private struct MenuAnchorView: NSViewRepresentable {
+    let anchor: MenuAnchor
+
+    func makeNSView(context: Context) -> NSView {
+        let view = PassThroughView()
+        anchor.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        anchor.view = nsView
+    }
+
+    /// Never takes a click. It sits over the same rectangle as the button, and
+    /// an ordinary `NSView` hit-tests to itself, which would swallow every press
+    /// the button exists for.
+    private final class PassThroughView: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

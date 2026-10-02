@@ -8,6 +8,10 @@ import SwiftUI
 /// announced by a count chip. Hovering fans them into full rows.
 struct MediaPlayerStack: View {
     let session: BrowserSession
+    /// Kept open while the download menu is tracking, because the menu is a
+    /// window of its own and reaching for it otherwise reads as leaving the
+    /// sidebar.
+    let hold: SidebarHold
 
     @State private var isExpanded = false
 
@@ -36,7 +40,7 @@ struct MediaPlayerStack: View {
                 ZStack(alignment: .bottom) {
                     // Reversed so the nearest card draws last and lands on top.
                     ForEach(Array(others.enumerated()).reversed(), id: \.element.id) { index, tab in
-                        MediaRow(tab: tab, session: session, isPrimary: false)
+                        MediaRow(tab: tab, session: session, hold: hold, isPrimary: false)
                             .frame(height: rowHeight)
                             .offset(y: offset(forCardAt: index))
                             .scaleEffect(cardScale(index), anchor: .bottom)
@@ -50,6 +54,7 @@ struct MediaPlayerStack: View {
                     MediaRow(
                         tab: primary,
                         session: session,
+                        hold: hold,
                         isPrimary: true,
                         stackedCount: isExpanded ? 0 : others.count
                     )
@@ -105,6 +110,7 @@ struct MediaPlayerStack: View {
 struct MediaRow: View {
     let tab: Tab
     let session: BrowserSession
+    let hold: SidebarHold
     let isPrimary: Bool
     /// How many other tabs are holding media, shown as a chip on the front row
     /// so the hidden stack is still discoverable. Zero hides the chip.
@@ -397,8 +403,8 @@ struct MediaRow: View {
                 }
             }
         } else if media.isDownloadable {
-            DownloadButton(
-                tab: tab, systemName: "arrow.down.circle",
+            DownloadMenuButton(
+                tab: tab, hold: hold, systemName: "arrow.down.circle",
                 help: "Download Video", isEnabled: true, bounces: false
             )
         } else if media.needsExtraction {
@@ -408,8 +414,8 @@ struct MediaRow: View {
             // machinery behind it is never named. As far as anyone using Surf
             // is concerned this is just what downloading a stream looks like.
             let isReady = MediaExtractor.shared.isAvailable
-            DownloadButton(
-                tab: tab, systemName: "arrow.down.circle.dotted",
+            DownloadMenuButton(
+                tab: tab, hold: hold, systemName: "arrow.down.circle.dotted",
                 help: isReady
                     ? "Download Video — reassembled from the stream"
                     : "This video is streamed in segments and can't be saved as a file",
@@ -422,34 +428,3 @@ struct MediaRow: View {
 
 
 
-/// The download button, which opens a menu when there is something to choose.
-///
-/// A press still downloads — the menu's first row is the same thing the button
-/// used to do on its own, and it is where the pointer already is. The rest of the
-/// menu exists for the cases where the engine's pick and the right pick are not
-/// the same, which on YouTube is the difference between 543MB of 4K and 214MB of
-/// 1080p.
-private struct DownloadButton: View {
-    let tab: Tab
-    let systemName: String
-    let help: String
-    let isEnabled: Bool
-    let bounces: Bool
-
-    @State private var isShowingMenu = false
-
-    var body: some View {
-        IconButton(
-            systemName: systemName,
-            size: 13, width: 26, height: 26, cornerRadius: 13,
-            isEnabled: isEnabled,
-            motion: bounces ? .bounce : .none,
-            help: help
-        ) {
-            isShowingMenu = true
-        }
-        .popover(isPresented: $isShowingMenu, arrowEdge: .bottom) {
-            DownloadMenu(tab: tab) { isShowingMenu = false }
-        }
-    }
-}

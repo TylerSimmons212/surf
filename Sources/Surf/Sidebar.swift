@@ -104,7 +104,7 @@ struct Sidebar: View {
             )
             StickerShelf(session: session)
             tabList
-            SidebarMediaSection(session: session)
+            SidebarMediaSection(session: session, hold: hold)
             SidebarFooter(session: session, hold: hold)
                 // The island list grows upward out of the dots, over the tab
                 // list behind it.
@@ -1250,12 +1250,13 @@ private struct TabReorderDropDelegate: DropDelegate {
 /// on all of it. A playing tab reports its position about once a second.
 private struct SidebarMediaSection: View {
     let session: BrowserSession
+    let hold: SidebarHold
 
     var body: some View {
         let mediaTabs = session.mediaTabs
         Group {
             if !mediaTabs.isEmpty {
-                MediaPlayerStack(session: session)
+                MediaPlayerStack(session: session, hold: hold)
             }
         }
         .animation(.spring(response: 0.32, dampingFraction: 0.8), value: mediaTabs.count)

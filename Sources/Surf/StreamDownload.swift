@@ -827,7 +827,7 @@ extension StreamDownload {
         let sizes = [videoFile, audioFile].map { url in
             (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
         }
-        debugLog("sabr: video \(sizes[0] ?? 0) bytes, audio \(sizes[1] ?? 0) bytes, "
+        debugLog("sabr: video \(sizes[0]) bytes, audio \(sizes[1]) bytes, "
             + "\(seenSegments.count) segments, \(duplicates) repeats, "
             + "\(unwanted) bytes of formats we did not ask for")
 
