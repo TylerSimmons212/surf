@@ -1007,6 +1007,31 @@ offering a file that would not be produced. Sizes come from the format's own
 `contentLength`: estimating from bitrate ran more than double the real file, and
 a menu whose whole job is comparing sizes cannot be out by that much.
 
+Sound on its own is one row, not a list, and that is a finding rather than a
+simplification. It took a rendition id at first, the way a quality does, until a
+real manifest showed why that cannot work: Apple's carries ten audio renditions
+and the id of an HLS soundtrack is its NAME, so "English" names five of them —
+64k AAC-HE through 768k Dolby, one per group. An id would have taken whichever
+the publisher listed first. `EXT-X-MEDIA` declares no bandwidth either, so there
+is nothing to rank them by. The manifest does say which soundtrack belongs to
+which picture, so the request is a kind rather than a rendition, and the track is
+resolved exactly as a video download resolves its own — the default of the group
+the chosen variant points at. The two cannot disagree, and capping the height
+moves the soundtrack with it.
+
+A muxed stream has no sound to hand over separately, so it is refused rather than
+answered with the picture as well. The menu never offers the row there, because
+the row is built from the same answer the download uses: the refusal is the guard
+underneath, not the behaviour.
+
+One thing a saved soundtrack needs that a saved video does not. Apple's Dolby
+track is packaged with its timeline starting ten seconds in, which is meaningful
+inside HLS, where each rendition has its own timeline and the player aligns them,
+and meaningless once the track is alone — concatenated and renamed it reads
+`start_time=10` and plays ten seconds of silence first. So sound goes through the
+same AVFoundation pass the two-track case gets, which is where the rebase to zero
+has always come from.
+
 ### Helpers
 
 Two binaries Surf runs but doesn't build sit behind the engine above: yt-dlp,
