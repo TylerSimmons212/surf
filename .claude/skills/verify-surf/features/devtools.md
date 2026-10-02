@@ -32,3 +32,29 @@ Any pane name from `DevToolsSession.Pane` works: `elements`, `styles`, `network`
 
 - Attach waits 2 s after launch for the first document to commit; attaching to `about:blank` and navigating is a different path. Don't shorten the wait.
 - The contract between `DevToolsMethod` and the scripts is checked offline by `scripts/check-js.sh` (needs `node`). Run it first when a pane is blank; it is faster than launching.
+
+## Trusted Types
+
+`testpages/trusted-types.html` sends `require-trusted-types-for 'script'`, which
+is what YouTube sends. Every string handed to a code sink throws there, and the
+console prompt is a sink — so evaluation went through a Trusted Types policy
+rather than a bare string.
+
+Drive it, and read three things off the log:
+
+```bash
+SURF_DEVTOOLS=console SURF_CONSOLE=$'var ttX = 1\nttX + 41\nwindow.surfFixture.where' \
+  .claude/skills/verify-surf/scripts/launch.sh tt "file://$PWD/testpages/trusted-types.html"
+```
+
+- `result log — 42` on the second line: the policy worked **and** global scope
+  survived, which is the part a function body injected from outside would lose.
+- `result log — trusted-types`: page state is visible, so evaluation really is
+  in the page's own world.
+- Exactly **one** `CSP blocked trusted-types-sink` line, against the first entry
+  only. A bare string is tried once per document and the refusal remembered; one
+  violation is true and informative, one per keystroke is noise.
+
+The control is any ordinary page: `var` persists, nothing is logged about CSP,
+and no policy is registered, because the policy is only ever created after a
+refusal.

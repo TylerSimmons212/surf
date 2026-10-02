@@ -577,6 +577,37 @@ struct ContentView: View {
             // then navigating is a different path from attaching to a page.
             try? await Task.sleep(for: .seconds(2))
             DevToolsController.shared.open(tab, pane: pane)
+            await evaluateInConsoleIfAsked(on: tab)
+        }
+    }
+
+    /// Dev affordance: `SURF_CONSOLE=<expression>` alongside `SURF_DEVTOOLS`
+    /// runs entries through the real prompt and prints what came back. Separate
+    /// several with newlines to type them in order.
+    ///
+    /// The console is otherwise reachable only by typing into it, which left
+    /// the evaluation path — and what a page's own CSP does to that path —
+    /// provable only by a human describing what they saw. It goes through
+    /// `DevToolsSession.evaluate`, the same method the text field calls.
+    private func evaluateInConsoleIfAsked(on tab: Tab) async {
+        guard let expression = ProcessInfo.processInfo.environment["SURF_CONSOLE"],
+              !expression.isEmpty
+        else { return }
+        // The agent installs on the page's own schedule, and evaluating before
+        // it is there reports a missing handler rather than the page's answer.
+        try? await Task.sleep(for: .seconds(1))
+        guard let session = DevToolsController.shared.session(for: tab) else {
+            debugLog("console: no session open to evaluate in")
+            return
+        }
+        // Newline-separated, so several lines can be typed in order — which is
+        // the only way to show that `var x = 1` is still there on the next one.
+        for line in expression.split(separator: "\n", omittingEmptySubsequences: true) {
+            await session.evaluate(String(line))
+        }
+        for entry in session.visibleConsoleEntries.suffix(8) {
+            let text = entry.arguments.map(\.description).joined(separator: " ")
+            debugLog("console: \(entry.kind) \(entry.level) — \(text)")
         }
     }
 }
