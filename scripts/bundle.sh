@@ -7,6 +7,17 @@ CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/Surf.app"
 
+# What a release stamps. A local build has no reason to care, and the default
+# keeps `./scripts/bundle.sh` doing exactly what it always did.
+VERSION="${SURF_VERSION:-0.1}"
+BUILD="${SURF_BUILD:-1}"
+
+# "-" is an ad-hoc signature, which is all a local build needs: unsigned
+# binaries can't spawn WebKit's XPC services, and nothing else here checks.
+# A release passes a Developer ID, and that is the one case that also needs
+# the hardened runtime — notarization refuses a bundle without it.
+IDENTITY="${SURF_SIGN_IDENTITY:--}"
+
 swift build -c "$CONFIG" --package-path "$ROOT"
 BIN="$(swift build -c "$CONFIG" --package-path "$ROOT" --show-bin-path)/Surf"
 
@@ -68,9 +79,23 @@ for ENTRY in \
     fi
 done
 
+# Sparkle, the one framework Surf links. SwiftPM leaves it in the artifacts
+# directory; an app assembled by hand has to carry its own copy, which is what
+# the @executable_path/../Frameworks rpath in Package.swift is looking for.
+FRAMEWORK="$(find "$ROOT/.build/artifacts" -maxdepth 6 -type d \
+    -name Sparkle.framework -path "*macos-arm64*" 2>/dev/null | head -1)"
+if [ -z "$FRAMEWORK" ]; then
+    echo "error: Sparkle.framework not found — run swift build first." >&2
+    exit 1
+fi
+mkdir -p "$APP/Contents/Frameworks"
+# -R preserves the version symlinks a framework is made of; cp -r flattens
+# them and produces a bundle that fails to sign.
+cp -R "$FRAMEWORK" "$APP/Contents/Frameworks/"
+
 # Surf's two faces. `ATSApplicationFontsPath` is what registers them at launch —
 # no CTFontManager call anywhere — which also means they exist only in a built
-# app: `swift run` gets the system font and a wordmark that looks a size off.
+# app: `swift run` gets the system font instead.
 mkdir -p "$APP/Contents/Resources/Fonts"
 cp "$ROOT"/Resources/Fonts/*.ttf "$APP/Contents/Resources/Fonts/"
 # The licence travels with the fonts; OFL requires it be distributed alongside.
@@ -96,7 +121,7 @@ else
     echo "warning: actool not found (needs Xcode) — the app will use a generic icon." >&2
 fi
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -108,19 +133,127 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleIconName</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.1</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$BUILD</string>
     <key>LSMinimumSystemVersion</key><string>27.0</string>
     <key>ATSApplicationFontsPath</key><string>Fonts</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSRemindersFullAccessUsageDescription</key>
     <string>Surf adds a recipe's remaining ingredients to your grocery list when you ask it to.</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+    <!-- Sparkle. The public half of the key updates are signed with; the
+         private half lives in the keychain of whoever cuts releases and
+         never leaves it. An update that doesn't verify against this is not
+         installed, which is what makes downloading one over the network an
+         acceptable thing for an app to do at all. -->
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/TylerSimmons212/surf/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>qEWeFK8yNh0gb7jhHr+b/dGZsFgfeanZpzEYLmkOkDM=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <!-- Off, and stated rather than left to the default: this is the flag
+         that would attach a profile of the machine to the feed request. -->
+    <key>SUEnableSystemProfiling</key><false/>
+    <!-- Without this Surf is not a browser as far as macOS is concerned: it
+         never appears in the default-browser list, and no link ever reaches
+         it. The code half is \`onOpenURL\` in SurfApp. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key><string>Web site URL</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>CFBundleURLSchemes</key>
+            <array><string>http</string><string>https</string></array>
+        </dict>
+    </array>
+    <!-- Alternate, not Owner: being the default browser is about http and
+         https. Taking every .html file on the disk away from whatever opens
+         them today is a separate decision, and not one an install should make
+         on someone's behalf. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key><string>HTML document</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array><string>public.html</string><string>public.xhtml</string></array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key><string>Web location</string>
+            <key>CFBundleTypeRole</key><string>Viewer</string>
+            <key>LSHandlerRank</key><string>Alternate</string>
+            <key>LSItemContentTypes</key><array><string>public.url</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 PLIST
 
-# Ad-hoc signature: unsigned binaries can't spawn WebKit's XPC services.
-codesign --force --sign - "$APP" >/dev/null 2>&1
+# Signing. Ad-hoc for a local build; a real identity gets the hardened runtime
+# and a timestamp, because those are what notarization checks for.
+#
+# The entitlements are not optional extras. WebKit's JavaScript JIT and the
+# dlopen of the downloaded Kokoro runtime are both things the hardened runtime
+# stops by default, and a signed build without them is an app whose pages
+# don't run scripts and whose enhanced voice never loads.
+#
+# Inside out, and that ordering is the whole game. A signature covers what is
+# inside the bundle at the time it is made, so signing the app first and its
+# framework second invalidates the app's own seal. Sparkle carries two nested
+# executables of its own — Autoupdate, and the Updater it launches to swap the
+# app while Surf is not running — and each has to be signed before the
+# framework that contains it, which has to be signed before the app.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
+sign() {
+    if [ "$IDENTITY" = "-" ]; then
+        codesign --force --sign - "$@" >/dev/null 2>&1
+    else
+        codesign --force --options runtime --timestamp --sign "$IDENTITY" "$@"
+    fi
+}
+# The XPC services first, and they are the ones easy to miss: they arrive
+# already signed by the Sparkle project, so `codesign --verify --deep` is
+# perfectly happy with them and Apple is not. A valid signature belonging to
+# somebody else is exactly what notarization exists to reject.
+for XPC in "$SPARKLE/Versions/B/XPCServices/"*.xpc; do
+    [ -e "$XPC" ] && sign "$XPC"
+done
+sign "$SPARKLE/Versions/B/Updater.app"
+sign "$SPARKLE/Versions/B/Autoupdate"
+sign "$SPARKLE"
 
-echo "Built $APP"
+if [ "$IDENTITY" = "-" ]; then
+    codesign --force --sign - "$APP" >/dev/null 2>&1
+else
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ROOT/scripts/Surf.entitlements" \
+        --sign "$IDENTITY" "$APP"
+    # --deep, only to verify: it walks the nested code the plain check skips,
+    # which is exactly where a mis-ordered signature would still be hiding.
+    codesign --verify --deep --strict --verbose=2 "$APP"
+
+    # And then the question --deep does not ask: is every nested piece signed
+    # by *us*? Sparkle's XPC services ship with the Sparkle project's own
+    # signature, which is valid, which is why the check above waves them
+    # through and notarization refuses them ten minutes into a release. Asking
+    # here turns that into a failure at the point the mistake was made.
+    TEAM="$(echo "$IDENTITY" | sed -E 's/.*\(([A-Z0-9]+)\)$/\1/')"
+    # Captured, not piped into `grep -q`. Under `pipefail` that pipeline
+    # reports a failure whenever grep exits on its match before codesign has
+    # finished writing — codesign takes a SIGPIPE, and a correctly signed
+    # bundle gets reported as an unsigned one, intermittently and with no
+    # pattern to it.
+    while IFS= read -r NESTED; do
+        INFO="$(codesign -dv "$NESTED" 2>&1 || true)"
+        case "$INFO" in
+        *"TeamIdentifier=$TEAM"*) continue ;;
+        esac
+        echo "error: $NESTED is not signed by team $TEAM." >&2
+        echo "       Notarization would reject it. Sign it before the bundle that holds it." >&2
+        exit 1
+    done < <(find "$APP" \( -name "*.xpc" -o -name "*.app" -o -name "*.framework" \) -print)
+fi
+
+echo "Built $APP ($VERSION build $BUILD)"

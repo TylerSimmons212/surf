@@ -225,8 +225,9 @@ final class Tab: NSObject, Identifiable {
 
         blockingObserver = NotificationCenter.default.addObserver(
             forName: .surfBlockingChanged, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.blockingRulesChanged() }
+        ) { [weak self] note in
+            let flipped = note.userInfo?[ContentBlocker.enabledChangedKey] as? Bool ?? false
+            MainActor.assumeIsolated { self?.blockingRulesChanged(settingFlipped: flipped) }
         }
 
         // Narration and a playing video are two voices in one room. The page
@@ -264,7 +265,9 @@ final class Tab: NSObject, Identifiable {
         }
         providedConfiguration = nil
 
-        let created = WKWebView(frame: .zero, configuration: config)
+        let created = SurfWebView(frame: .zero, configuration: config)
+        // Lazy, so `self` is fully formed by the time this runs.
+        created.tab = self
         created.allowsBackForwardNavigationGestures = true
         created.allowsMagnification = true
         created.navigationDelegate = self
@@ -292,7 +295,9 @@ final class Tab: NSObject, Identifiable {
         // Before anything can be loaded into it. A view that starts a page load
         // and gains its rules afterwards has already let the first wave of
         // requests through, which is the wave the ads are in.
-        ContentBlocker.shared.apply(to: config)
+        blockingHost = nil
+        ContentBlocker.shared.apply(to: config, host: nil)
+        isBlocking = ContentBlocker.shared.isActive(for: nil)
 
         installAgents()
         reinstallUserScripts()
@@ -442,6 +447,142 @@ final class Tab: NSObject, Identifiable {
     // MARK: - The page agent
 
     /// Claims both worlds' channels and injects the agent into every page.
+    // MARK: - Context menu
+
+    /// What the page last reported was under the pointer at a right-click, and
+    /// when it said so. Cleared when the menu closes, so a payload can only
+    /// ever describe the click the open menu belongs to — losing the race
+    /// costs items, never accuracy.
+    @ObservationIgnored private(set) var contextHit: ContextHit?
+    @ObservationIgnored private var contextHitAt: Date?
+
+    private func handleContextEvent(_ event: String, _ data: Data) {
+        guard event == "hit",
+              let decoded = try? JSONDecoder().decode(
+                  PageProtocol.Event<ContextHit>.self, from: data
+              )
+        else { return }
+        contextHit = decoded.payload
+        contextHitAt = Date()
+        debugLog("context: hit \(decoded.payload.summary)")
+    }
+
+    /// WebKit is about to show its page menu; Surf's items go on the front of
+    /// it.
+    ///
+    /// WebKit's own items are kept rather than replaced. Look Up, Services,
+    /// spelling and the editing verbs are all things Surf would otherwise have
+    /// to reimplement worse, and a page menu that lost them to gain "Enter
+    /// Focus" would be a bad trade.
+    func willOpenContextMenu(_ menu: NSMenu, with event: NSEvent) {
+        let age = contextHitAt.map { Date().timeIntervalSince($0) * 1000 }
+        debugLog(
+            "context: menu — "
+                + (age.map { String(format: "hit %.0fms old", $0) } ?? "no hit in hand")
+        )
+
+        // No hit means the push lost its race with the menu. The stock menu is
+        // still correct, just smaller — which is the whole reason this degrades
+        // by dropping items rather than by guessing at them.
+        guard let hit = contextHit else { return }
+        // In a text field WebKit's menu is already the right one, and Surf has
+        // nothing to add to typing.
+        guard !hit.editable else { return }
+
+        var items: [NSMenuItem] = []
+
+        if let link = hit.linkURL, let url = URL(string: link) {
+            items.append(ActionMenuItem("Open Link in New Tab") { [weak self] in
+                self?.openInNewTab(url, select: false)
+            })
+            items.append(ActionMenuItem("Open Link in Split") { [weak self] in
+                guard let self, let session, let opened = openInNewTab(url, select: false)
+                else { return }
+                session.openSplit(with: opened, on: .trailing)
+            })
+            items.append(ActionMenuItem("Open Link in Mini Window") { [weak self] in
+                guard let session = self?.session else { return }
+                MiniWindowController.shared.open(url, from: session)
+            })
+            items.append(ActionMenuItem("Copy Link") { Tab.copyToPasteboard(link) })
+        }
+
+        if let image = hit.imageURL {
+            if let url = URL(string: image) {
+                items.append(ActionMenuItem("Open Image in New Tab") { [weak self] in
+                    self?.openInNewTab(url, select: false)
+                })
+            }
+            // The address, not the pixels — WebKit's own "Copy Image" already
+            // covers the pixels, and the two are different things to want.
+            items.append(ActionMenuItem("Copy Image Address") { Tab.copyToPasteboard(image) })
+        }
+
+        // Gated on the media report rather than on what was clicked: pop-out
+        // stages the element that report found, and offering it for a video
+        // the report hasn't seen would be an item that does nothing.
+        if hit.mediaIsVideo, media?.hasVideo == true {
+            items.append(ActionMenuItem("Pop Out Video") { [weak self] in
+                guard let self else { return }
+                PopOutController.shared.toggle(self)
+            })
+        }
+
+        if !items.isEmpty { items.append(.separator()) }
+
+        items.append(ActionMenuItem(isFocusActive ? "Leave Focus" : "Enter Focus") {
+            [weak self] in self?.toggleFocus()
+        })
+        items.append(ActionMenuItem("Screenshot Area…") { [weak self] in
+            self?.beginAreaCapture()
+        })
+
+        if let host = currentURL.flatMap(URL.init(string:))?.host,
+           !ContentBlocker.shared.isUserBlocked(domain: host) {
+            items.append(ActionMenuItem("Block Content From \(host)") {
+                ContentBlocker.shared.block(domain: host)
+            })
+        }
+
+        for (offset, item) in items.enumerated() { menu.insertItem(item, at: offset) }
+        menu.insertItem(.separator(), at: items.count)
+    }
+
+    /// A new tab in this tab's own island, on `url`.
+    @discardableResult
+    /// A tab WebKit is about to load into by itself.
+    ///
+    /// The mode is the point. A popup used to start on the home screen like
+    /// every other new tab and only reach `.browsing` when its first URL
+    /// arrived — but `addTab` selects it immediately and nothing calls
+    /// `submit`, so everything between those two moments was the home screen,
+    /// water animation and all, on a tab that was never home. How long that
+    /// lasted was however long WebKit took to start the navigation, which is
+    /// why it looked intermittent: a flicker on a fast host and the whole
+    /// animation on a slow one.
+    func willBeLoadedByPage(from opener: UUID) {
+        wasOpenedByPage = true
+        openerTabID = opener
+        mode = .browsing
+    }
+
+    private func openInNewTab(_ url: URL, select: Bool) -> Tab? {
+        guard let session else { return nil }
+        let opened = session.addTab(select: select)
+        opened.submit(url.absoluteString)
+        return opened
+    }
+
+    private static func copyToPasteboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    func contextMenuDidClose() {
+        contextHit = nil
+        contextHitAt = nil
+    }
+
     private func installAgents() {
         let controller = webView.configuration.userContentController
         // Both agent channels, and the events each world reports on its own.
@@ -455,6 +596,8 @@ final class Tab: NSObject, Identifiable {
                 if header.event == "mutated" { pageDidMutate() }
             case "capture":
                 handleCaptureEvent(header.event, data)
+            case "context":
+                handleContextEvent(header.event, data)
             default:
                 break
             }
@@ -509,7 +652,7 @@ final class Tab: NSObject, Identifiable {
         PageScripts.install(
             on: live.configuration.userContentController,
             themePreflight: target,
-            blocking: ContentBlocker.isEnabled,
+            blocking: isBlocking,
             devTools: devToolsBridge?.isAttached == true
         )
         live.underPageBackgroundColor = target.map {
@@ -567,10 +710,46 @@ final class Tab: NSObject, Identifiable {
     /// setting that needs a reload to be believed reads as broken. The requests
     /// a page already made are already made — what changes is everything from
     /// here on, and a reload makes it total.
-    private func blockingRulesChanged() {
+    ///
+    /// When it was a switch — the setting, or this site's pause — and the
+    /// page's own state actually changed, the reload is done here, but only
+    /// for a tab someone is looking at. The shield's count was gathered under
+    /// the old rules and is emptied first; the reload is what fills it again —
+    /// or leaves it empty, which is the point. A background tab keeps its page
+    /// and picks the rules up on its next load; a sleeping one has no page to
+    /// reload, and waking it for this would cost a web content process each.
+    private func blockingRulesChanged(settingFlipped: Bool) {
         guard isLive else { return }
-        ContentBlocker.shared.apply(to: webView.configuration)
+        let changed = applyBlockingRules(for: blockingHost)
+        guard settingFlipped, changed else { return }
+        blockLog = BlockLog()
+        if isVisible || MiniWindowController.shared.tab === self { reload() }
+    }
+
+    /// Whether this tab's view currently holds the rule lists. The pause is
+    /// per site and the tab moves between sites, so this is re-decided on
+    /// every main-frame navigation and the answer is kept to know when it
+    /// moved.
+    @ObservationIgnored private var isBlocking = true
+
+    /// The host the lists were last decided for: the navigation's
+    /// destination, from the moment it is allowed. Not `webView.url`, which
+    /// still names the old page while the new one is provisional — and a
+    /// rule update landing in that gap would otherwise re-decide for the
+    /// page being left, stripping the lists from the one arriving.
+    @ObservationIgnored private var blockingHost: String?
+
+    /// Gives the view the lists a page on `host` should have, and the scripts
+    /// that go with them. Returns whether that was a change.
+    @discardableResult
+    private func applyBlockingRules(for host: String?) -> Bool {
+        let blocker = ContentBlocker.shared
+        let active = blocker.isActive(for: host)
+        blocker.apply(to: webView.configuration, host: host)
+        let changed = active != isBlocking
+        isBlocking = active
         reinstallUserScripts()
+        return changed
     }
 
     /// The page has changed under us — content revealed on scroll, a lazily
@@ -1263,10 +1442,12 @@ final class Tab: NSObject, Identifiable {
                     self.focusDetection = nil
                     self.focusPrevalidated = nil
                     self.scheduleFocusDetection()
-                    // A popup tab starts in .home but is loaded by WebKit
-                    // directly, so the mode has to follow the URL. Not during
-                    // a dive, though: there the load starting is precisely the
-                    // moment the home screen must stay up.
+                    // A backstop, for any tab that ends up loading a page
+                    // without anything having moved it off the home screen.
+                    // This used to be how popups got there — see
+                    // `willBeLoadedByPage`, which is why they no longer arrive
+                    // here. Not during a dive: there the load starting is
+                    // precisely the moment the home screen must stay up.
                     if self.mode == .home && !self.isDiving { self.mode = .browsing }
                     // Swap the icon as soon as the host changes, so a stale
                     // favicon never sits next to a different site's title.
@@ -1437,8 +1618,15 @@ final class Tab: NSObject, Identifiable {
     /// why `resetFocus` takes an instruction to leave it standing.
     private(set) var focusSite: SiteFocusSite?
 
-    /// The YouTube lens's state, alive only while that lens is up.
-    private(set) var youtubeLens: YouTubeLens?
+    /// The site lens's state, alive only while one is up.
+    ///
+    /// One property rather than one per site. `Tab` calls exactly three
+    /// methods on it (`SiteLens`), and the views ask for the concrete type
+    /// they know how to draw.
+    private(set) var siteLens: (any SiteLens)?
+
+    var youtubeLens: YouTubeLens? { siteLens as? YouTubeLens }
+    var amazonLens: AmazonLens? { siteLens as? AmazonLens }
 
     /// The site lens on offer here, if this address has one.
     ///
@@ -1461,8 +1649,11 @@ final class Tab: NSObject, Identifiable {
         focusDetection = nil
         focusPrevalidated = nil
         focusSite = site
-        let lens = YouTubeLens(tab: self)
-        youtubeLens = lens
+        // Exhaustive over the enum, so a new site cannot ship without a lens
+        // of its own — this line used to name YouTube outright, and adding a
+        // second site would have compiled and put the wrong lens on it.
+        let lens = site.makeLens(tab: self)
+        siteLens = lens
         focusPhase = .active
         // Whatever is already on screen is the lens's first screen: opening
         // it on a video should land on that video, not on a blank field.
@@ -1474,8 +1665,8 @@ final class Tab: NSObject, Identifiable {
         guard focusSite != nil else { return }
         // By hand rather than by navigation, so the page is still there and
         // still wearing the stage — it has to be handed back as it was.
-        youtubeLens?.tearDown()
-        youtubeLens = nil
+        siteLens?.tearDown()
+        siteLens = nil
         focusSite = nil
         focusPhase = .inactive
     }
@@ -1517,6 +1708,78 @@ final class Tab: NSObject, Identifiable {
 
     func youtubeSetCaptions(_ language: String) {
         pageAgent.send(.youtubeCaptions, ["language": language])
+    }
+
+    /// Installs the Amazon domain and reads the page. Idempotent and free
+    /// after the first call on a document, so every read carries it and no
+    /// caller has to remember to.
+    ///
+    /// The selectors travel with the call rather than living in the script.
+    /// That is what keeps every piece of Amazon knowledge in Swift, where a
+    /// change to it is an edit with a test beside it.
+    func amazonRead() async -> AmazonPageReply? {
+        _ = try? await webView.callAsyncJavaScript(
+            AmazonBridge.installScript, arguments: [:],
+            in: nil, contentWorld: PageProtocol.World.page.contentWorld
+        )
+        return await pageAgent.value(
+            .amazonPage, ["selectors": AmazonSelectors.payload],
+            as: AmazonPageReply.self
+        )
+    }
+
+    /// Just the navigation bar's cart count and account name — the cheap
+    /// read, for confirming a write. A whole page read to check one number
+    /// would be absurd.
+    func amazonNav() async -> AmazonNavWire? {
+        await pageAgent.value(
+            .amazonNav, ["selectors": AmazonSelectors.payload],
+            as: AmazonNavWire.self
+        )
+    }
+
+    /// Presses Amazon's own Add to Cart button. True only means there was a
+    /// button to press; whether anything reached the cart is observed
+    /// afterwards, from the page.
+    func amazonAddToCart(quantity: Int) async -> Bool {
+        await pageAgent.value(
+            .amazonAddToCart,
+            ["selectors": AmazonSelectors.payload, "quantity": quantity],
+            as: Bool.self
+        ) ?? false
+    }
+
+    /// Reads the cart page. Only meaningful on one — everywhere else the
+    /// rows simply are not there, and an empty reply is indistinguishable
+    /// from an empty cart, which is why the lens navigates first and asks
+    /// second.
+    func amazonCart() async -> AmazonCartReply? {
+        _ = try? await webView.callAsyncJavaScript(
+            AmazonBridge.installScript, arguments: [:],
+            in: nil, contentWorld: PageProtocol.World.page.contentWorld
+        )
+        return await pageAgent.value(
+            .amazonCart, ["selectors": AmazonSelectors.payload],
+            as: AmazonCartReply.self
+        )
+    }
+
+    /// Presses one of Amazon's own cart controls on one line.
+    ///
+    /// True only means there was a control to press. Whether the cart changed
+    /// is observed afterwards by reading it again — the same split as
+    /// `amazonAddToCart`, and for the same reason: the click resolves at once
+    /// and the request behind it lands a second or two later.
+    func amazonCartWrite(itemID: String, action: String) async -> String {
+        await pageAgent.value(
+            .amazonCartWrite,
+            [
+                "selectors": AmazonSelectors.payload,
+                "itemID": itemID,
+                "action": action,
+            ],
+            as: String.self
+        ) ?? "unreachable"
     }
 
     /// The element the stage was applied to, pinned at entry. The ranking
@@ -1979,7 +2242,7 @@ final class Tab: NSObject, Identifiable {
         guard !keepingSiteLens else { return }
         // No unstage here either, and for the same reason: this path is a
         // document that has already gone. Leaving by hand is `exitSiteFocus`.
-        youtubeLens = nil
+        siteLens = nil
         focusSite = nil
         focusPhase = .inactive
     }
@@ -2028,7 +2291,7 @@ extension Tab: WKNavigationDelegate {
         // asked for — but only while the address still belongs to its site, so
         // a link out of YouTube closes the lens rather than framing the web.
         let lensSurvives = focusSite?.claims(webView.url) == true
-        if lensSurvives { youtubeLens?.documentWillChange() }
+        if lensSurvives { siteLens?.documentWillChange() }
         resetFocus(keepingSiteLens: lensSurvives)
     }
 
@@ -2049,7 +2312,7 @@ extension Tab: WKNavigationDelegate {
         // The lens reads the page it just asked for. After `scheduleFocus-
         // Detection` deliberately: the two never both run, because a tab in a
         // site lens is not `.inactive` and the detector's work is discarded.
-        youtubeLens?.documentDidLoad()
+        siteLens?.documentDidLoad()
         debugLog("loaded \(webView.url?.absoluteString ?? "?")")
     }
 
@@ -2070,6 +2333,29 @@ extension Tab: WKNavigationDelegate {
             debugLog("closed a window whose only load failed")
             session?.close(self)
         }
+    }
+
+    /// The one place a tab learns where it is going before any of the
+    /// page's requests go out: the lists for the destination are settled here,
+    /// so a tab leaving a paused site is blocked from its first subresource
+    /// and one arriving at a paused site isn't. `didStartProvisionalNavigation`
+    /// is too late — the main resource is already in flight by then.
+    ///
+    /// The download answer is what WebKit gives when no delegate answers at
+    /// all, kept so adding this changes nothing else.
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        preferences: WKWebpagePreferences
+    ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
+        if navigationAction.targetFrame?.isMainFrame == true,
+           let host = navigationAction.request.url?.host {
+            blockingHost = host
+            if ContentBlocker.shared.isActive(for: host) != isBlocking {
+                applyBlockingRules(for: host)
+            }
+        }
+        return (navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
 
     /// A navigation that turns out to be a download — an `<a download>` link,
@@ -2189,8 +2475,7 @@ extension Tab: WKUIDelegate {
         // Must be built with WebKit's configuration, not a fresh one, or the
         // new view won't be linked to the opener.
         let tab = session.addTab(configuration: configuration)
-        tab.wasOpenedByPage = true
-        tab.openerTabID = id
+        tab.willBeLoadedByPage(from: id)
         tab.watchForAnEmptyWindow()
         // No explicit load here — WebKit drives the returned view itself.
         return tab.webView
@@ -2232,29 +2517,65 @@ extension Tab: WKUIDelegate {
         return true
     }
 
-    /// Closes a window that opened with nothing in it.
+    /// Closes a window a page opened that turns out to hold nothing.
     ///
     /// The destination check above catches a pop-under aimed at a domain the
-    /// lists name. What it can't catch is one aimed somewhere unlisted whose
-    /// *contents* are then blocked — WebKit hands over the window and fails the
-    /// load afterwards, leaving a blank tab with no address and no title. That
-    /// tab is an artefact of blocking rather than anything the reader asked
-    /// for, so it goes.
+    /// lists name. It can't catch one aimed somewhere unlisted, and those fail
+    /// in two different ways.
     ///
-    /// Only ever a tab the page opened, and only while nothing has committed in
-    /// it: a tab the user opened stays open however empty it is, because they
+    /// The first never gets off the ground: WebKit hands the window over and
+    /// the load fails, leaving a tab with no address at all.
+    ///
+    /// The second is the one that gets *seen*. The landing page commits, so
+    /// there is an address and a document, and then everything it exists to
+    /// fetch is refused — leaving a blank tab with no title, no text, and a
+    /// blocked count climbing on the shield. Its emptiness is not incidental;
+    /// it is what a page whose entire contents were blocked looks like, and it
+    /// is a better signal than any guess about how the window was opened.
+    ///
+    /// All three conditions together, never one alone, and only on a tab a page
+    /// opened. A tab you opened stays open however empty it is, because you
     /// opened it.
     func watchForAnEmptyWindow() {
         emptyPopupWatchdog?.cancel()
         emptyPopupWatchdog = Task { @MainActor [weak self] in
-            // Long enough for a slow redirect chain to arrive, short enough that
-            // a blank tab isn't left sitting there.
-            try? await Task.sleep(for: .seconds(4))
-            guard let self, !Task.isCancelled else { return }
-            guard wasOpenedByPage, !hasCommittedDocument, liveWebView?.url == nil else { return }
+            // Twice, not once: a redirect chain through three ad exchanges can
+            // still be moving at four seconds, and the tab it lands on can take
+            // as long again to give up.
+            for delay in [4, 10] {
+                try? await Task.sleep(for: .seconds(delay))
+                guard let self, !Task.isCancelled, wasOpenedByPage else { return }
+                if await closeIfEmpty() { return }
+            }
+        }
+    }
+
+    /// Returns whether the tab was closed.
+    private func closeIfEmpty() async -> Bool {
+        guard let live = liveWebView else { return false }
+
+        // Nothing ever arrived.
+        if !hasCommittedDocument, live.url == nil {
             debugLog("closed a window that never loaded anything")
             session?.close(self)
+            return true
         }
+
+        // Something arrived and was hollowed out. A title is the cheapest test
+        // and the one that fails first, so it goes first.
+        guard pageTitle.isEmpty, blockLog.blockedCount >= 3 else { return false }
+
+        // Asking the page itself, because a document can carry a full DOM and
+        // still show the reader nothing — and closing a tab that had something
+        // in it would be far worse than leaving one that didn't.
+        let text = try? await live.evaluateJavaScript(
+            "document.body ? document.body.innerText.trim().length : 0"
+        )
+        guard let length = text as? Int, length < 20 else { return false }
+
+        debugLog("closed a window whose page was entirely blocked")
+        session?.close(self)
+        return true
     }
 
     func webViewDidClose(_ webView: WKWebView) {

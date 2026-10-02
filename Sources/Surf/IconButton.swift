@@ -23,6 +23,19 @@ enum IconMotion {
 /// - a scale that grows on hover and dips on press, to say "this is a button"
 /// - a symbol effect on activation, to say "that worked"
 struct IconButton: View {
+
+    /// The size of a control in the sidebar's action row, and so the default
+    /// here: every one of the eight buttons in that row takes it, and every
+    /// other `IconButton` in the app states its own. Square, because the row is
+    /// the one you reach for with the pointer rather than the keyboard, and the
+    /// height is what decides whether you land in it on the way up from the
+    /// page. It was 26×22, which is a target you have to aim at.
+    ///
+    /// `ScreenshotButton` is a `Menu` and cannot be one of these, so it draws
+    /// its label at this size by hand — from here, so the two cannot drift.
+    static let actionSize = CGSize(width: 28, height: 28)
+    static let actionCornerRadius: CGFloat = 8
+
     let systemName: String
 
     /// Swapped in while hovered. Lets one button show state at rest and the
@@ -31,9 +44,9 @@ struct IconButton: View {
 
     var size: CGFloat = 12
     var weight: Font.Weight = .medium
-    var width: CGFloat = 26
-    var height: CGFloat = 22
-    var cornerRadius: CGFloat = 6
+    var width: CGFloat = IconButton.actionSize.width
+    var height: CGFloat = IconButton.actionSize.height
+    var cornerRadius: CGFloat = IconButton.actionCornerRadius
     var tint: Color?
     var isEnabled: Bool = true
     var motion: IconMotion = .bounce
@@ -134,7 +147,15 @@ struct IconButton: View {
     }
 }
 
-private struct IconButtonStyle: ButtonStyle {
+/// The look of a chrome control: the hover plate, the press dip, and the
+/// foreground that brightens under the pointer.
+///
+/// Not private, because `IconButton` is not the only thing that has to wear it.
+/// `ScreenshotButton` is a `Menu` rather than a `Button` and so cannot be an
+/// `IconButton` at all — and for as long as this style was private, the only
+/// way to put it in the same row was to leave it plain. It was the one control
+/// there that did not respond to the pointer.
+struct IconButtonStyle: ButtonStyle {
     let isHovering: Bool
     let isEnabled: Bool
     let cornerRadius: CGFloat

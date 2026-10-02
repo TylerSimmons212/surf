@@ -39,9 +39,14 @@ struct Sidebar: View {
 
     /// Wide enough that the roomier rows don't buy their height back out of
     /// the title: taller rows with the same width would just truncate sooner.
-    /// Wider again now that the top holds a full address pill rather than a
-    /// row of squares — a pill narrow enough to truncate "docs.swift.org" is
-    /// not worth having.
+    ///
+    /// It went 264 → 284 when the action row above the list ran out of room:
+    /// nine controls at `IconButton.actionSize` plus their gaps came to 268,
+    /// so the row was over its own width before the buttons were enlarged at
+    /// all. That row is gone now — the window's controls are in the top bar
+    /// and the page's are behind the address — so the constraint that set 284
+    /// no longer exists. 292 is for the pill instead: one narrow enough to
+    /// truncate "docs.swift.org" is not worth having.
     static let width: CGFloat = 292
     /// One 21pt control.
     static let actionsWidth: CGFloat = 21
@@ -140,6 +145,17 @@ struct Sidebar: View {
                                                 .fill(Color.primary.opacity(0.10))
                                                 .frame(width: 1)
                                                 .padding(.leading, 4)
+                                                // Half the stack's spacing at
+                                                // each end, so consecutive rows'
+                                                // segments meet. The rule is
+                                                // drawn per row — one for the
+                                                // whole section would mean an
+                                                // eager `VStack` around it — and
+                                                // without this it stops at every
+                                                // row boundary and reads as a
+                                                // column of little bars rather
+                                                // than a line.
+                                                .padding(.vertical, -2)
                                         }
                                 }
                             }
@@ -622,8 +638,34 @@ private struct TabRowMenu: View {
     let onPin: () -> Void
 
     var body: some View {
-        // A home tab has no page to pin or copy, so both items would only ever
-        // silently do nothing there.
+        // A home tab has no page behind it, so everything that acts on one is
+        // withheld rather than offered and silently ignored.
+        if tab.mode == .browsing {
+            Button("Reload") { tab.reload() }
+            Button("Duplicate Tab") { session.duplicate(tab) }
+            Divider()
+        }
+
+        // The split was reachable by dragging a tab onto the page, or from the
+        // menu bar, and by neither route from here — which is where the hand
+        // already is when it wants *this* tab beside the current one.
+        Button("Split With This Tab") { session.openSplit(with: tab, on: .trailing) }
+            .disabled(!session.canOpenSplit(with: tab))
+
+        // Pop-out stages a video element; there is nothing to float for a tab
+        // that has none.
+        if tab.media?.hasVideo == true {
+            Button(PopOutController.shared.isPoppedOut(tab) ? "Put Back" : "Pop Out") {
+                PopOutController.shared.toggle(tab)
+            }
+        }
+
+        if tab.mode == .browsing {
+            Button(tab.isFocusActive ? "Leave Focus" : "Enter Focus") { tab.toggleFocus() }
+        }
+
+        Divider()
+
         if tab.mode == .browsing {
             Button(action: onPin) {
                 Label("Add Sticker", systemImage: "star.square.on.square")
@@ -655,6 +697,12 @@ private struct TabRowMenu: View {
         Button(role: .destructive) { session.close(tab) } label: {
             Label("Close Tab", systemImage: "xmark")
         }
+
+        Button("Close Other Tabs", role: .destructive) { session.closeTabs(besides: tab) }
+            .disabled(session.tabs.count < 2)
+
+        Button("Close Tabs Below", role: .destructive) { session.closeTabsBelow(tab) }
+            .disabled(session.tabsBelow(tab).isEmpty)
     }
 
     private func copyURL() {
@@ -1020,7 +1068,13 @@ final class TabDragContext {
     func noteMoved() { didMove = true }
 
     /// The group being dragged by its header, if that's what this drag is.
-    @ObservationIgnored private(set) var draggedGroupID: UUID?
+    ///
+    /// Observed, not ignored: the section header hides itself while it is the
+    /// one being carried, and this is the only thing it reads to know that.
+    /// Ignored, the header was never told the drag had ended and stayed at
+    /// opacity zero — a section that had just been moved came back with no
+    /// title, while its rows (which key off `draggedID`) reappeared.
+    private(set) var draggedGroupID: UUID?
 
     var isDraggingGroup: Bool { draggedGroupID != nil }
 

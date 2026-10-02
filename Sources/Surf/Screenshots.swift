@@ -94,6 +94,22 @@ extension Tab {
         captureOverlay = nil
     }
 
+    /// What Escape means for this tab: an armed pick first, then Focus. A
+    /// pick can be armed from inside Focus (`beginAreaCapture` checks the
+    /// mode, not the reader), and the one started last should go first.
+    /// Returns whether anything was there to dismiss.
+    func dismissTransientState() -> Bool {
+        if captureOverlay != nil {
+            cancelAreaCapture()
+            return true
+        }
+        if isFocusActive {
+            exitFocus()
+            return true
+        }
+        return false
+    }
+
     func handleCaptureEvent(_ event: String, _ data: Data) {
         switch event {
         case "hover":

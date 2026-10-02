@@ -6,6 +6,22 @@ import WebKit
 /// particular. Isolated world, like everything else that only observes.
 enum PageDomain {
 
+    /// The always-resident page domain.
+    ///
+    /// It also carries the right-click listener, which has to be resident:
+    /// `capture.js` is injected lazily on first use, and a menu that only
+    /// worked after you had already taken a screenshot would be worse than
+    /// none. The listener pushes what was under the pointer rather than
+    /// waiting to be asked, because WebKit builds its context menu in the UI
+    /// process, synchronously, while the DOM event is dispatched over here —
+    /// there is no round trip to be had at the moment the menu is built.
+    ///
+    /// It never calls `preventDefault`: WebKit's own menu still opens exactly
+    /// as it would have, and this only says what it opened on.
+    ///
+    /// The comments here are terse on purpose. This string is injected into
+    /// every page Surf loads and is budgeted by `check-js.sh` for that reason,
+    /// so the reasoning lives out here where it ships to nobody.
     static var domainScript: String {
         """
         (function () {
@@ -55,6 +71,26 @@ enum PageDomain {
             Array.from(document.querySelectorAll('link[rel~="icon" i]'))
               .map((l) => ({ href: l.href || '', sizes: l.getAttribute('sizes') || '' }))
           );
+          // Right-click target, pushed. See the note above `domainScript`.
+          window.addEventListener('contextmenu', (event) => {
+            const el = document.elementFromPoint(event.clientX, event.clientY);
+            const near = (sel) => (el && el.closest ? el.closest(sel) : null);
+            const link = near('a[href]');
+            const image = near('img');
+            const media = near('video, audio');
+            const sel = window.getSelection();
+            const inSel = sel && !sel.isCollapsed && el && sel.containsNode(el, true);
+            agent.emit('context', 'hit', {
+              linkURL: link ? link.href : null,
+              linkText: link ? (link.textContent || '').trim().slice(0, 120) : null,
+              imageURL: image ? (image.currentSrc || image.src || null) : null,
+              mediaURL: media ? (media.currentSrc || media.src || null) : null,
+              mediaIsVideo: media ? media.tagName === 'VIDEO' : false,
+              selection: inSel ? String(sel).trim().slice(0, 500) : '',
+              editable: !!near('input, textarea, [contenteditable=""], [contenteditable="true"]')
+            });
+          }, { capture: true, passive: true });
+
         })();
         """
     }
@@ -128,7 +164,10 @@ enum PageScripts {
             to: controller, world: .page, mainFrameOnly: true)
         if blocking {
             add(
-                BlockBridge.script,
+                // The reader can turn element hiding off on its own, which
+                // is a different script rather than the same script applied
+                // differently — see ContentBlocker.hidingDidChange.
+                BlockBridge.script(collapsing: ContentBlocker.hidesAdContainers),
                 to: controller, world: .page,
                 // Every frame: a third-party iframe is where much of an ad
                 // stack does its work, and a panel blind to it would report one
@@ -234,10 +273,11 @@ extension PageScripts {
             // Not resident either — the site lens installs it when it opens.
             // In the dump so the contract check sees its registrations.
             "youtube.js": YouTubeBridge.installScript,
+            "amazon.js": AmazonBridge.installScript,
             "preflight.js": ThemeBridge.preflightScript(for: .dark),
             // Not agent domains, but `install` owns them too — and a dump that
             // showed only half of what goes into a page would be worse than none.
-            "block.js": BlockBridge.script,
+            "block.js": BlockBridge.script(collapsing: true),
             "console.js": ConsoleAgent.script,
             "network.js": NetworkAgent.script,
             "devtools.js": DevToolsAgent.script,

@@ -34,11 +34,30 @@ struct SurfApp: App {
     var body: some Scene {
         WindowGroup("Surf") {
             ContentView(session: session)
-                .frame(minWidth: 720, minHeight: 480)
+                .frame(
+                    minWidth: WindowPlacement.minimumSize.width,
+                    minHeight: WindowPlacement.minimumSize.height
+                )
+                // Only fires for schemes `CFBundleURLTypes` claims, which is
+                // why being the default browser is a bundle change and a code
+                // change rather than either one alone.
+                .onOpenURL { session.openFromOutside($0) }
         }
         .windowStyle(.hiddenTitleBar)
+        // Only ever seen for the instant before `MainWindowFrame` places the
+        // window; SwiftUI insists on a number, and this is a reasonable one to
+        // be wrong at.
         .defaultSize(width: 980, height: 640)
-        .commands { tabCommands }
+        .commands {
+            tabCommands
+            CommandGroup(after: .appInfo) {
+                // Where every Mac app keeps it, directly under About.
+                Button("Check for Updates\u{2026}") {
+                    SoftwareUpdater.shared.checkForUpdates()
+                }
+                .disabled(!SoftwareUpdater.shared.canCheck)
+            }
+        }
 
         Settings {
             SettingsView()
@@ -47,18 +66,39 @@ struct SurfApp: App {
 
     /// Standard browser shortcuts. These live in the menu bar because that's
     /// what makes ⌘-keys work app-wide, even while a web view has focus.
+    ///
+    /// Split one computed property per menu. It was a single block before, and
+    /// a single block is how View ended up holding navigation, tab switching,
+    /// splits and groups: there was nowhere else for anything to go.
     @CommandsBuilder
     private var tabCommands: some Commands {
-        CommandGroup(after: .newItem) {
+        fileCommands
+        findCommands
+        viewCommands
+        historyCommands
+        windowCommands
+        islandCommands
+        developCommands
+    }
+
+    // MARK: - File
+
+    /// Replaces the stock "New Window" (⌘N) rather than sitting after it. Surf
+    /// is one window: there is a single `BrowserSession` and each tab owns one
+    /// `WKWebView`, which can be in one view hierarchy at a time — a second
+    /// window from the same `WindowGroup` would share every tab and
+    /// `WebViewContainer.present` would pull each page out of whichever window
+    /// showed it last. ⌘N is left unbound on purpose. Pointing it at New Tab
+    /// would mean a shortcut the menu cannot draw (one item, one key), and a
+    /// key that beeps is easier to understand than one that does something the
+    /// menu never admitted to.
+    private var fileCommands: some Commands {
+        CommandGroup(replacing: .newItem) {
             Button("New Tab") { session.openNewTabAndPrompt() }
                 .keyboardShortcut("t", modifiers: .command)
 
             Button("Close Tab") { session.closeSelectedTab() }
                 .keyboardShortcut("w", modifiers: .command)
-
-            Button("Reopen Closed Tab") { session.reopenClosedTab() }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
-                .disabled(!session.canReopenClosedTab)
 
             // ⌘W belongs to the tab in a browser, so the window moves up one.
             Button("Close Window") { NSApp.keyWindow?.performClose(nil) }
@@ -66,8 +106,16 @@ struct SurfApp: App {
 
             Divider()
 
-            // In File, beside the other "get something out of the page"
-            // verbs — a screenshot is an export, not a view option.
+            // Typing an address is how you open something, which is the verb
+            // this menu is named for. It lived in View only because View was
+            // where everything lived.
+            Button("Open Location…") { session.requestAddressFocus() }
+                .keyboardShortcut("l", modifiers: .command)
+
+            Divider()
+
+            // Beside the other "get something out of the page" verbs — a
+            // screenshot is an export, not a view option.
             Button("Screenshot Area…") {
                 session.selectedTab.beginAreaCapture()
             }
@@ -90,9 +138,13 @@ struct SurfApp: App {
                 }
             }
         }
+    }
 
-        // Replaces the stock Edit-menu find items, which act on text fields and
-        // know nothing about the page.
+    // MARK: - Edit
+
+    /// Replaces the stock Edit-menu find items, which act on text fields and
+    /// know nothing about the page.
+    private var findCommands: some Commands {
         CommandGroup(replacing: .textEditing) {
             Button("Find…") { session.requestFind() }
                 .keyboardShortcut("f", modifiers: .command)
@@ -106,79 +158,28 @@ struct SurfApp: App {
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(session.selectedTab.mode != .browsing)
         }
+    }
 
+    // MARK: - View
+
+    /// Only what changes how the current page is presented. Everything that
+    /// used to sit here alongside it — back and forward, tab switching, splits,
+    /// groups, Open Location — was somewhere else's business.
+    /// "Actual Size", plus the current level when there is one to report.
+    private var zoomResetTitle: String {
+        let tab = session.selectedTab
+        return tab.isZoomed ? "Actual Size (\(tab.zoomLabel))" : "Actual Size"
+    }
+
+    private var viewCommands: some Commands {
         CommandGroup(after: .toolbar) {
+            // ⌘⇧L, not ⌘S: Save is the most universally spoken-for key on the
+            // Mac, and Safari has trained the same hand to reach for ⌘⇧L to
+            // show a browser sidebar.
             Button(isSidebarPinned ? "Unpin Sidebar" : "Pin Sidebar") {
                 isSidebarPinned.toggle()
             }
-            .keyboardShortcut("s", modifiers: .command)
-
-            Divider()
-
-            Button("Show Next Tab") { session.selectNextTab() }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
-                .disabled(session.tabs.count < 2)
-
-            Button("Show Previous Tab") { session.selectPreviousTab() }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
-                .disabled(session.tabs.count < 2)
-
-            Divider()
-
-            // The split is made by dragging a tab onto the page, which is
-            // discoverable but unguessable — so the menu is where it says it
-            // exists, and where you find out how to undo it.
-            Button("Split With Next Tab") { session.splitWithNextTab() }
-                .keyboardShortcut("d", modifiers: .command)
-                .disabled(session.tabs.count < 2 || session.isSplit)
-
-            Button("Close Split") { session.closeSplit() }
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-                .disabled(!session.isSplit)
-
-            Button("Swap Split Sides") { session.swapSplitSides() }
-                .keyboardShortcut("d", modifiers: [.command, .option])
-                .disabled(!session.isSplit)
-
-            Divider()
-
-            Button("New Group with Current Tab") {
-                session.createGroup(with: session.selectedTab)
-            }
-            .keyboardShortcut("g", modifiers: [.command, .control])
-
-            Button("Remove Tab from Group") {
-                session.removeFromGroup(session.selectedTab)
-            }
-            .keyboardShortcut("g", modifiers: [.command, .control, .shift])
-            .disabled(session.selectedTab.groupID == nil)
-
-            Divider()
-
-            Button("Open Location…") { session.requestAddressFocus() }
-                .keyboardShortcut("l", modifiers: .command)
-
-            Divider()
-
-            // With the toolbar gone these are the primary way to navigate when
-            // the sidebar is hidden.
-            Button("Back") { session.selectedTab.goBack() }
-                .keyboardShortcut("[", modifiers: .command)
-                .disabled(!session.selectedTab.canGoBackOrClose)
-
-            Button("Forward") { session.selectedTab.goForward() }
-                .keyboardShortcut("]", modifiers: .command)
-                .disabled(!session.selectedTab.canGoForward)
-
-            Button("Reload") { session.selectedTab.reload() }
-                .keyboardShortcut("r", modifiers: .command)
-
-            Button("Reload Ignoring Cache") { session.selectedTab.reloadIgnoringCache() }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-
-            Button("Stop") { session.selectedTab.stop() }
-                .keyboardShortcut(".", modifiers: .command)
-                .disabled(!session.selectedTab.isLoading)
+            .keyboardShortcut("l", modifiers: [.command, .shift])
 
             Divider()
 
@@ -193,14 +194,34 @@ struct SurfApp: App {
 
             Divider()
 
+            Button("Reload") { session.selectedTab.reload() }
+                .keyboardShortcut("r", modifiers: .command)
+
+            Button("Reload Ignoring Cache") { session.selectedTab.reloadIgnoringCache() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+
+            Button("Stop") { session.selectedTab.stop() }
+                .keyboardShortcut(".", modifiers: .command)
+                .disabled(!session.selectedTab.isLoading)
+
+            Divider()
+
             // Zoom is per-tab, so these read against whatever is on screen.
+            // Bound to "=" rather than "+": + is a shifted key on most layouts,
+            // so binding it literally means ⌘= — what people actually press —
+            // never arrives. AppKit draws it as ⌘+ regardless.
             Button("Zoom In") { session.selectedTab.zoomIn() }
-                .keyboardShortcut("+", modifiers: .command)
+                .keyboardShortcut("=", modifiers: .command)
 
             Button("Zoom Out") { session.selectedTab.zoomOut() }
                 .keyboardShortcut("-", modifiers: .command)
 
-            Button("Actual Size") { session.selectedTab.resetZoom() }
+            // Carries the level, because this is now the only place that says
+            // what it is. The sidebar used to show a pill; the menu already had
+            // every zoom control and this item already greyed out at 100%, so
+            // the pill was spending width in the action row to repeat what an
+            // enabled menu item was saying anyway.
+            Button(zoomResetTitle) { session.selectedTab.resetZoom() }
                 .keyboardShortcut("0", modifiers: .command)
                 .disabled(!session.selectedTab.isZoomed)
 
@@ -218,19 +239,119 @@ struct SurfApp: App {
             .onChange(of: appearanceMode) { _, mode in
                 AppearanceController.apply(mode)
             }
+        }
+    }
+
+    // MARK: - History
+
+    /// Back and forward are the whole reason this menu exists: they are what a
+    /// browser's users reach here for, and a tab's own back/forward list is the
+    /// only history Surf keeps by default.
+    ///
+    /// There is deliberately no list of visited pages. `HistoryStore` lives in
+    /// memory so that typing "git" can offer github, and it dies with the
+    /// process unless the user turns persistence on — so a menu that browsed it
+    /// would contradict the promise the app is built around.
+    private var historyCommands: some Commands {
+        CommandMenu("History") {
+            Button("Back") { session.selectedTab.goBack() }
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!session.selectedTab.canGoBackOrClose)
+
+            Button("Forward") { session.selectedTab.goForward() }
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!session.selectedTab.canGoForward)
+
+            Button("Home") { session.selectedTab.goHome() }
+                .disabled(session.selectedTab.mode == .home)
 
             Divider()
 
-            // ⌘1–⌘9 jump by position; ⌘9 means "last", per convention.
-            ForEach(1...9, id: \.self) { index in
-                Button("Show Tab \(index)") { session.selectTab(atOneBasedIndex: index) }
-                    .keyboardShortcut(
-                        KeyEquivalent(Character("\(index)")),
-                        modifiers: .command
-                    )
+            Button("Reopen Closed Tab") { session.reopenClosedTab() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
+                .disabled(!session.canReopenClosedTab)
+        }
+    }
+
+    // MARK: - Window
+
+    /// Tab switching and the split live here rather than in a Tabs menu of
+    /// their own, which is both where Safari puts them and what keeps the menu
+    /// bar at the nine menus a browser is expected to have.
+    ///
+    /// Grouping is absent on purpose: it is a drag-and-right-click gesture in
+    /// the sidebar, and the sidebar's own context menu already carries it.
+    private var windowCommands: some Commands {
+        CommandGroup(after: .windowSize) {
+            Button("Show Previous Tab") { session.selectPreviousTab() }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled(session.tabs.count < 2)
+
+            Button("Show Next Tab") { session.selectNextTab() }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled(session.tabs.count < 2)
+
+            Divider()
+
+            // One key for both halves of the same state, in the house style of
+            // Enter/Leave Focus and Show/Hide Developer Tools. The split was on
+            // ⌘D, which every other browser spends on bookmarking, and swapping
+            // sides was on ⌘⌥D — the system's Dock-hiding shortcut, which never
+            // reaches the app at all. Swapping is rare enough to live without
+            // one rather than be given some third awkward chord.
+            if session.isSplit {
+                Button("Close Split") { session.closeSplit() }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+
+                Button("Swap Split Sides") { session.swapSplitSides() }
+            } else {
+                Button("Split With Next Tab") { session.splitWithNextTab() }
+                    .keyboardShortcut("d", modifiers: [.command, .shift])
+                    .disabled(session.tabs.count < 2)
+            }
+
+            Divider()
+
+            // The tabs that are actually open, by name. This was nine fixed
+            // "Show Tab N" items, seven of which usually pointed at nothing and
+            // did nothing when picked — enabled, silently inert.
+            ForEach(Array(session.tabs.enumerated()), id: \.element.id) { entry in
+                tabMenuItem(entry.element, at: entry.offset, of: session.tabs.count)
             }
         }
+    }
 
+    @ViewBuilder
+    private func tabMenuItem(_ tab: Tab, at index: Int, of count: Int) -> some View {
+        let item = Toggle(
+            isOn: Binding(
+                get: { session.selectedTab.id == tab.id },
+                set: { _ in session.select(tab) }
+            )
+        ) {
+            Text(tab.displayTitle)
+        }
+
+        if let position = Self.shortcutPosition(at: index, of: count) {
+            item.keyboardShortcut(KeyEquivalent(Character("\(position)")), modifiers: .command)
+        } else {
+            item
+        }
+    }
+
+    /// ⌘1–⌘8 by position, and ⌘9 for the last one — but only once there are
+    /// more than eight, because below that the last tab already has a number of
+    /// its own and a second key aimed at it would just be a duplicate the menu
+    /// has no way to draw.
+    private static func shortcutPosition(at index: Int, of count: Int) -> Int? {
+        if index < 8 { return index + 1 }
+        if index == count - 1 { return 9 }
+        return nil
+    }
+
+    // MARK: - Islands
+
+    private var islandCommands: some Commands {
         CommandMenu("Islands") {
             Button("New Island") {
                 // Straight into the editor: the moment you make an island is
@@ -255,13 +376,6 @@ struct SurfApp: App {
                 .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
                 .disabled(session.islands.count < 2)
 
-            // Named for what it does. "Delete Island" reads like closing a
-            // window; this throws away every login inside it.
-            Button(session.deleteTitle(for: session.currentIsland), role: .destructive) {
-                session.requestDeleteIsland(session.currentIsland)
-            }
-            .disabled(session.currentIsland.isHome)
-
             Divider()
 
             // ⌥⌘1–⌥⌘9. ⌘1–⌘9 are spoken for by tabs, and ⌃1–⌃9 — the obvious
@@ -269,15 +383,59 @@ struct SurfApp: App {
             // which is on by default once you have more than one desktop and
             // takes the key before any app sees it. So Option-Command is the
             // island modifier throughout, arrows included.
-            ForEach(1...9, id: \.self) { index in
-                Button("Show Island \(index)") { session.selectIsland(atOneBasedIndex: index) }
-                    .keyboardShortcut(
-                        KeyEquivalent(Character("\(index)")),
-                        modifiers: [.command, .option]
-                    )
+            ForEach(Array(session.islands.enumerated()), id: \.element.id) { entry in
+                islandMenuItem(entry.element, at: entry.offset, of: session.islands.count)
             }
+
+            Divider()
+
+            // ⌘D, the key every other browser spends on bookmarking, pointed at
+            // Surf's version of the same idea. Stickers belong in this menu
+            // rather than one of their own because they are island-scoped — a
+            // top-level Bookmarks menu would misrepresent where they live.
+            Button("Add Sticker") {
+                withAnimation(StickerShelf.slap) {
+                    session.pinSticker(for: session.selectedTab)
+                }
+            }
+            .keyboardShortcut("d", modifiers: .command)
+            .disabled(session.selectedTab.mode != .browsing)
+
+            Divider()
+
+            // Named for what it does. "Delete Island" reads like closing a
+            // window; this throws away every login inside it.
+            Button(session.deleteTitle(for: session.currentIsland), role: .destructive) {
+                session.requestDeleteIsland(session.currentIsland)
+            }
+            .disabled(session.currentIsland.isHome)
+        }
+    }
+
+    @ViewBuilder
+    private func islandMenuItem(_ island: Island, at index: Int, of count: Int) -> some View {
+        let item = Toggle(
+            isOn: Binding(
+                get: { session.currentIsland === island },
+                set: { _ in session.select(island: island) }
+            )
+        ) {
+            Text(island.name)
         }
 
+        if let position = Self.shortcutPosition(at: index, of: count) {
+            item.keyboardShortcut(
+                KeyEquivalent(Character("\(position)")),
+                modifiers: [.command, .option]
+            )
+        } else {
+            item
+        }
+    }
+
+    // MARK: - Develop
+
+    private var developCommands: some Commands {
         CommandMenu("Develop") {
             Button(
                 DevToolsController.shared.isOpen(for: session.selectedTab)
@@ -316,6 +474,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // AppKit's own window tabbing puts a second "Show Previous Tab" and
+        // "Show Next Tab" in the Window menu — same names as Surf's, no
+        // shortcuts, wired to NSWindow tabs that Surf never creates — and
+        // injects them in the middle of ours, splitting the group in two. Surf
+        // draws its own tabs in the sidebar and hides the title bar, so there
+        // is nothing here to keep.
+        NSWindow.allowsAutomaticWindowTabbing = false
 
         // Here rather than in `SurfApp.init`, which runs before `NSApp`
         // exists. Everything inherits from the application object, so this one

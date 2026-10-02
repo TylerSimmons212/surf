@@ -13,7 +13,8 @@ import SwiftUI
 struct StickerShelf: View {
     let session: BrowserSession
 
-    /// Tile edge. Six per row at the sidebar's 264pt minus insets.
+    /// Tile edge. Six per row at the sidebar's width minus insets — still six
+    /// at 284pt, since a seventh would need 304.
     static let tileSize: CGFloat = 38
 
     /// The spring that presses a new sticker down. Named here because the
@@ -46,6 +47,8 @@ struct StickerShelf: View {
                     isShowing: showing.contains(sticker.id),
                     isDragged: drag.draggedID == sticker.id,
                     onOpen: { session.open(sticker) },
+                    onOpenInNewTab: { session.openInNewTab(sticker) },
+                    onOpenInSplit: { session.openInSplit(sticker) },
                     onPeel: {
                         withAnimation(Self.peel) {
                             session.removeSticker(sticker, from: island)
@@ -160,6 +163,8 @@ private struct StickerTile: View {
     /// the gap it will drop into.
     let isDragged: Bool
     let onOpen: () -> Void
+    let onOpenInNewTab: () -> Void
+    let onOpenInSplit: () -> Void
     let onPeel: () -> Void
 
     @State private var isHovering = false
@@ -256,6 +261,11 @@ private struct StickerTile: View {
         .animation(.easeOut(duration: 0.6), value: press)
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button("Open in New Tab", action: onOpenInNewTab)
+            Button("Open in Split", action: onOpenInSplit)
+
+            Divider()
+
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(sticker.url, forType: .string)

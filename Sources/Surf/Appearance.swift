@@ -40,7 +40,7 @@ extension AppearanceMode {
 enum AppearanceController {
 
     static var current: AppearanceMode {
-        AppearanceMode(stored: UserDefaults.standard.string(forKey: PreferenceKeys.appearanceMode))
+        AppearanceMode(stored: SurfDefaults.store.string(forKey: PreferenceKeys.appearanceMode))
     }
 
     static func apply(_ mode: AppearanceMode = current) {
@@ -65,7 +65,7 @@ enum AppearanceController {
     /// The key is absent entirely when the Mac is in light mode — Apple never
     /// writes `"Light"` — so a missing value is the light case, not a failure.
     static var systemIsDark: Bool {
-        UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+        SurfDefaults.store.string(forKey: "AppleInterfaceStyle") == "Dark"
     }
 
     /// The scheme pages are actually being painted in right now.
@@ -81,7 +81,7 @@ extension Notification.Name {
 /// Whether Surf should restyle sites that don't offer the requested scheme.
 enum ThemePreferences {
     static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.synthesizeTheme)
+        SurfDefaults.store.bool(forKey: PreferenceKeys.synthesizeTheme)
     }
 }
 

@@ -63,6 +63,15 @@ public enum PageProtocol {
         case youtubeUnstage = "youtube.unstage"
         case youtubeRate = "youtube.rate"
         case youtubeCaptions = "youtube.captions"
+        // The Amazon lens reads the page as drawn and presses the site's own
+        // cart button, both of which need the document itself — so this
+        // domain is page world too, and installed on demand for the same
+        // reason: a tab that never focuses Amazon never parses it.
+        case amazonPage = "amazon.page"
+        case amazonNav = "amazon.nav"
+        case amazonAddToCart = "amazon.addToCart"
+        case amazonCart = "amazon.cart"
+        case amazonCartWrite = "amazon.cartWrite"
 
         /// Which world the method has to run in. Getting this wrong is the
         /// failure that looks like the page simply not answering, so it is
@@ -79,7 +88,9 @@ public enum PageProtocol {
                  .mediaStage, .mediaUnstage,
                  .findCount, .findClearSelection,
                  .youtubePage, .youtubeStage, .youtubeUnstage,
-                 .youtubeRate, .youtubeCaptions:
+                 .youtubeRate, .youtubeCaptions,
+                 .amazonPage, .amazonNav, .amazonAddToCart,
+                 .amazonCart, .amazonCartWrite:
                 return .page
             }
         }

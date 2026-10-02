@@ -20,6 +20,12 @@ enum AIDownloadRenamer {
     static func renameIfEnabled(_ item: DownloadItem) {
         guard AIPreferences.isEnabled(.downloadRenaming) else { return }
         guard case .finished(let location) = item.state else { return }
+        // Before the CLI is even woken up. A name somebody chose on purpose is
+        // not an input to this feature — see `isAlreadyWellNamed`.
+        guard !AIDownloadNaming.isAlreadyWellNamed(location.lastPathComponent) else {
+            debugLog("download: kept \(location.lastPathComponent) — already well named")
+            return
+        }
 
         Task {
             await AICLIDetector.shared.ensureScanned()

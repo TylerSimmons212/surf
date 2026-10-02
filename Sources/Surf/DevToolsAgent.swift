@@ -1360,6 +1360,22 @@ enum DevToolsAgent {
         return ({ box: boxModel(node) });
       });
 
+      runtime.define('DOM.getOuterHTML', (params) => {
+        // The markup of a node and everything under it, for copying an
+        // element with its children.
+        const node = nodeFor(params && params.nodeId);
+        if (!node) { return ({ html: '' }); }
+        let html = '';
+        try {
+          // Element nodes carry outerHTML. Text and comment nodes do not, and
+          // for those the node's own data is the whole of it.
+          html = typeof node.outerHTML === 'string'
+            ? node.outerHTML
+            : (node.nodeValue || node.textContent || '');
+        } catch (error) { html = ''; }
+        return ({ html: html });
+      });
+
       runtime.define('DOM.scrollIntoView', (params) => {
         const node = nodeFor(params && params.nodeId);
         if (node && node.scrollIntoView) {

@@ -16,7 +16,38 @@ swift build                                   # once; launch.sh reuses the binar
 .claude/skills/verify-surf/scripts/launch.sh <run> <url> [wait-regex] [timeout]
 ```
 
-`launch.sh` starts one instance with `SURF_STATE_DIR` pointed at a scratch directory, so the run never reads or writes `~/Library/Application Support/Surf` (session, history, favicons, filter lists, voices). Overriding `HOME` does not achieve this — `FileManager` resolves Application Support from the account — which is why the override exists (`SupportDirectory` in `Sources/SurfCore/PersistedSession.swift`). It waits for the stderr pattern (default `[surf] loaded `) and prints the evidence directory `.verify/<run>/`. Exit 1 means the pattern never came; the log says why.
+`launch.sh` starts one instance with `SURF_STATE_DIR` pointed at a scratch directory, so the run never reads or writes `~/Library/Application Support/Surf` (session, history, favicons, filter lists, voices). Overriding `HOME` does not achieve this — `FileManager` resolves Application Support from the account — which is why the override exists (`SupportDirectory` in `Sources/SurfCore/PersistedSession.swift`).
+
+Two things are keyed by application domain rather than by directory, and so
+needed their own seams — a directory override alone does not reach them:
+
+- **User defaults.** `SurfDefaults.store` (`Sources/SurfCore/SurfDefaults.swift`)
+  hands a scratch run its own suite, named after the state directory. Nothing
+  in `Sources/` may say `UserDefaults.standard`; that is the whole point of
+  the seam. The suite's name is written to `<state>/defaults-suite` so
+  `stop.sh` can remove both the domain and its plist.
+
+  One deliberate exception, in `MainWindowFrame.sweepOrphanedFrames`, which
+  *deletes* from the standard domain and never reads or writes state there.
+  SwiftUI saves the main window's frame under a key of its own choosing every
+  launch, to the standard domain, where no seam can redirect it; the sweep
+  takes it back out. Removing it is the only way the promise above stays true
+  for the window's own geometry.
+- **Compiled blocking rules.** `WKContentRuleListStore.surf`
+  (`Sources/Surf/ContentBlocker.swift`) compiles into `<state>/ContentRules`
+  rather than WebKit's shared store, which sits beside the app's own data.
+  Expect ~116MB per run; `stop.sh` takes it with the state directory.
+
+- **The main window's frame.** Kept by `MainWindowFrame` under
+  `mainWindowFrame` in the suite above, rather than by AppKit's
+  `setFrameAutosaveName`, which always writes to the standard domain. See
+  [features/window-frame.md](features/window-frame.md) for how to prove both
+  the placement and the isolation.
+
+Before these existed a run shared `blockListIdentifiers`, the `blockAds`
+preference and the compiled rule sets with whatever Surf you had open — and
+`discardStaleLists` would remove the ones it did not recognise. Nothing broke,
+because both sides recompile. It was still not what this file says. It waits for the stderr pattern (default `[surf] loaded `) and prints the evidence directory `.verify/<run>/`. Exit 1 means the pattern never came; the log says why.
 
 Drivers are environment variables read at launch (`Sources/Surf/ContentView.swift`, `applyLaunchEnvironment`):
 

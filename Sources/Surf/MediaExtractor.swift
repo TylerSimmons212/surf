@@ -57,7 +57,7 @@ final class MediaExtractor {
         let name = component.executableName
         var candidates: [URL] = []
 
-        let override = UserDefaults.standard.string(forKey: "\(name)Path")
+        let override = SurfDefaults.store.string(forKey: "\(name)Path")
         if let override, !override.isEmpty {
             candidates.append(URL(fileURLWithPath: override))
         }

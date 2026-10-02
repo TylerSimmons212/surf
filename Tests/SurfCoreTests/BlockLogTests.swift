@@ -171,14 +171,6 @@ struct UserBlockRulesTests {
         #expect(filter == #"^https?://([^:/?#]*\\.)?example\\.com"#)
     }
 
-    @Test("Pausing generates an exception covering the whole site")
-    func allowlist() {
-        let rules = ContentRuleJSON.allowlistRules(for: ["example.com"])
-        #expect(rules.count == 1)
-        #expect(rules[0].contains(#""if-domain":["*example.com"]"#))
-        #expect(rules[0].contains(#""type":"ignore-previous-rules""#))
-    }
-
     @Test("Rules are generated in a stable order")
     func deterministic() {
         // The compiled list is cached under a hash of its own rules, so the
@@ -194,29 +186,6 @@ struct UserBlockRulesTests {
         // WebKit rejects an empty array rather than compiling it to a no-op.
         #expect(ContentRuleJSON.list([]) == nil)
         #expect(ContentRuleJSON.list(["{}"]) == "[{}]")
-    }
-
-    // MARK: - Appending to the shipped list
-
-    @Test("Appended rules land inside the array")
-    func appending() {
-        let base = Data(#"[{"a":1}]"#.utf8)
-        let combined = ContentRuleJSON.appending([#"{"b":2}"#], to: base)
-        #expect(String(data: combined, encoding: .utf8) == #"[{"a":1},{"b":2}]"#)
-    }
-
-    @Test("Appending nothing changes nothing")
-    func appendingNothing() {
-        let base = Data(#"[{"a":1}]"#.utf8)
-        #expect(ContentRuleJSON.appending([], to: base) == base)
-    }
-
-    @Test("A payload that isn't an array is left exactly as it is")
-    func appendingToNonArray() {
-        // Better to hand WebKit a list that fails to compile — leaving the
-        // previous one in force — than to hand it one we spliced blind.
-        let base = Data("not json".utf8)
-        #expect(ContentRuleJSON.appending([#"{"b":2}"#], to: base) == base)
     }
 }
 

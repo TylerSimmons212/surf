@@ -36,11 +36,14 @@ final class ContentBlocker {
 
     private(set) var userRules: UserBlockRules
 
-    private var isCompiling = false
-    /// Set when rules change mid-compile. Compiles are slow enough that a
-    /// second click during one is normal, and dropping it would leave the
-    /// compiled list disagreeing with what the panel shows.
-    private var needsRecompile = false
+    /// The compile in flight or last finished. Each new one is chained behind
+    /// it, so awaiting `compile()` means the rules as they stood when it was
+    /// called are in force by the time it returns — which is what lets a
+    /// caller reload a page *after* the change it just made rather than
+    /// before. Compiles are slow enough that a second click during one is
+    /// normal; chaining keeps it rather than dropping it, and a compile that
+    /// finds nothing changed is a cache hit in the store, not a second wait.
+    private var compileChain: Task<Void, Never>?
 
     private init() {
         userRules = Self.loadUserRules()
@@ -48,7 +51,7 @@ final class ContentBlocker {
     }
 
     static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.blockAds)
+        SurfDefaults.store.bool(forKey: PreferenceKeys.blockAds)
     }
 
     // MARK: - Storage
@@ -76,6 +79,27 @@ final class ContentBlocker {
     private static func rulesURL(_ source: FilterListSource) -> URL {
         directory.appendingPathComponent(
             "\(source.id).rules.v\(FilterConverter.formatVersion).json")
+    }
+
+    /// The same list without the element-hiding half.
+    private static func networkOnlyURL(_ source: FilterListSource) -> URL {
+        directory.appendingPathComponent("\(source.id).nohide.json")
+    }
+
+    /// Whether leftover ad containers are hidden as well as emptied.
+    ///
+    /// On by default. Off is for the sites that measure their own page to find
+    /// out whether they are being blocked — a player that puts an element on the
+    /// page, measures it, and stops playing when the answer is wrong. Turning
+    /// this off gives them nothing to measure while every request is still
+    /// refused.
+    static var hidesAdContainers: Bool {
+        // `SurfDefaults.store`, not `UserDefaults.standard`: the two are the
+        // same object in an ordinary run, so reading the wrong one looks
+        // correct right up until `SURF_STATE_DIR` is set — and then this reads
+        // your real preference while `registerDefaults` wrote the scratch
+        // suite, so the shipped default of `true` never applies at all.
+        SurfDefaults.store.bool(forKey: PreferenceKeys.hideAdContainers)
     }
 
     private static func domainsURL(_ source: FilterListSource) -> URL {
@@ -123,7 +147,8 @@ final class ContentBlocker {
     /// The converted rules and their domains, converting first if that hasn't
     /// happened yet. Runs off the main actor: this is the expensive call.
     private static func converted(_ source: FilterListSource) async -> (Data, Set<String>)? {
-        if let rules = try? Data(contentsOf: rulesURL(source)),
+        let wanted = hidesAdContainers ? rulesURL(source) : networkOnlyURL(source)
+        if let rules = try? Data(contentsOf: wanted),
            let domainText = try? String(contentsOf: domainsURL(source), encoding: .utf8) {
             let domains = Set(domainText.split(separator: "\n").map(String.init))
             return (rules, domains)
@@ -137,13 +162,18 @@ final class ContentBlocker {
     private static func convertAndStore(
         _ published: Data, for source: FilterListSource
     ) async -> (Data, Set<String>)? {
-        let outcome = await Task.detached(priority: .utility) { () -> (Data, Set<String>, Int, Int)? in
+        let outcome = await Task.detached(priority: .utility) {
+            () -> (Data, Data, Set<String>, Int, Int)? in
             guard let text = String(data: published, encoding: .utf8) else { return nil }
             let result = FilterConverter.convert(text)
             guard result.converted >= source.minimumRuleCount,
-                  let json = ContentRuleJSON.list(result.rules)
+                  let json = ContentRuleJSON.list(result.rules),
+                  let networkOnly = ContentRuleJSON.list(result.networkOnlyRules)
             else { return nil }
-            return (Data(json.utf8), result.blockedDomains, result.converted, result.skipped)
+            return (
+                Data(json.utf8), Data(networkOnly.utf8),
+                result.blockedDomains, result.converted, result.skipped
+            )
         }.value
 
         guard let outcome else {
@@ -151,16 +181,17 @@ final class ContentBlocker {
             return nil
         }
 
-        debugLog("\(source.name): \(outcome.2) rules converted, \(outcome.3) skipped")
+        debugLog("\(source.name): \(outcome.3) rules converted, \(outcome.4) skipped")
 
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true
         )
         try? outcome.0.write(to: rulesURL(source), options: .atomic)
-        try? Data(outcome.1.sorted().joined(separator: "\n").utf8)
+        try? outcome.1.write(to: networkOnlyURL(source), options: .atomic)
+        try? Data(outcome.2.sorted().joined(separator: "\n").utf8)
             .write(to: domainsURL(source), options: .atomic)
 
-        return (outcome.0, outcome.1)
+        return (hidesAdContainers ? outcome.0 : outcome.1, outcome.2)
     }
 
     private static func loadUserRules() -> UserBlockRules {
@@ -214,7 +245,7 @@ final class ContentBlocker {
     /// wave is the one they're in.
     private func primeFromCache() async {
         let identifiers = Self.cachedIdentifiers
-        guard !identifiers.isEmpty, let store = WKContentRuleListStore.default() else { return }
+        guard !identifiers.isEmpty, let store = WKContentRuleListStore.surf else { return }
 
         var primed: [WKContentRuleList] = []
         for identifier in identifiers {
@@ -233,37 +264,48 @@ final class ContentBlocker {
     /// What `primeFromCache` reads. Written only after a compile has actually
     /// produced these lists, so an identifier here is one the store has.
     private static var cachedIdentifiers: [String] {
-        get { UserDefaults.standard.stringArray(forKey: "blockListIdentifiers") ?? [] }
-        set { UserDefaults.standard.set(newValue, forKey: "blockListIdentifiers") }
+        get { SurfDefaults.store.stringArray(forKey: "blockListIdentifiers") ?? [] }
+        set { SurfDefaults.store.set(newValue, forKey: "blockListIdentifiers") }
     }
 
-    /// Rebuilds both compiled lists and republishes them.
+    /// Rebuilds the compiled lists and republishes them.
     ///
-    /// Two lists rather than one, and the split is about how long a compile
-    /// takes. EasyList is around forty-six thousand rules and compiling it costs
-    /// seconds; the user's own rules are a handful and compile instantly. If
-    /// they shared a list, clicking Block in the panel would mean recompiling
-    /// EasyList to add one line, and the button would feel broken.
+    /// One list per source plus one of the user's own, and the split is about
+    /// how long a compile takes. EasyList is around a hundred thousand rules
+    /// and compiling it costs seconds; the user's own rules are a handful and
+    /// compile instantly. If they shared a list, clicking Block in the panel
+    /// would mean recompiling EasyList to add one line, and the button would
+    /// feel broken.
     ///
-    /// The allowlist has to be in both, because `ignore-previous-rules` only
-    /// cancels rules earlier in its own list and cannot reach across into
-    /// another one. That is also why pausing a site is the one user action that
-    /// does pay for the slow compile.
+    /// A paused site is not in here at all. WebKit's spelling of one is an
+    /// `ignore-previous-rules` inside each list — a recompile of EasyList per
+    /// flip, and a list that un-blocks the site for as long as it carries the
+    /// rule, which made *resuming* wait on the compile too. The pause is
+    /// applied per tab instead, in `apply(to:host:)`.
     private func compile() async {
-        guard !isCompiling else { needsRecompile = true; return }
-        isCompiling = true
-        isPreparing = true
-        defer {
-            isCompiling = false
-            isPreparing = false
-            if needsRecompile {
-                needsRecompile = false
-                Task { @MainActor in await compile() }
-            }
+        let previous = compileChain
+        queuedCompiles += 1
+        let task = Task { @MainActor in
+            await previous?.value
+            queuedCompiles -= 1
+            // A compile with another queued behind it would build a rule set
+            // the next one is about to replace; the last one reads the rules
+            // as they stand and does all of them at once.
+            guard queuedCompiles == 0 else { return }
+            await compileNow()
         }
+        compileChain = task
+        await task.value
+    }
+
+    /// Compiles waiting behind the one in flight. Only the last of them runs.
+    private var queuedCompiles = 0
+
+    private func compileNow() async {
+        isPreparing = true
+        defer { isPreparing = false }
 
         let rules = userRules
-        let allowlist = ContentRuleJSON.allowlistRules(for: rules.pausedSites)
 
         var compiled: [WKContentRuleList] = []
         var identifiers: [String] = []
@@ -276,10 +318,9 @@ final class ContentBlocker {
             guard let (rules, domains) = await Self.converted(source) else { continue }
 
             let prepared = await Task.detached(priority: .utility) {
-                let combined = ContentRuleJSON.appending(allowlist, to: rules)
-                return (
-                    json: String(data: combined, encoding: .utf8),
-                    identifier: "surf-\(source.id)-" + Self.digest(combined)
+                (
+                    json: String(data: rules, encoding: .utf8),
+                    identifier: "surf-\(source.id)-" + Self.digest(rules)
                 )
             }.value
 
@@ -293,11 +334,23 @@ final class ContentBlocker {
             identifiers.append(prepared.identifier)
         }
 
+        // No source list at all — nothing on disk and nothing bundled — is
+        // the one outcome that must not be published. The lists in force may
+        // have been primed from the store a moment ago, and replacing them
+        // with nothing would also sweep that store, so the next launch pays
+        // a cold compile for a list that was never wrong. The update that
+        // follows is what fills an empty directory; until it does, what was
+        // blocking keeps blocking.
+        guard !compiled.isEmpty || lists.isEmpty else {
+            debugLog("no filter list converted — keeping the \(lists.count) in force")
+            return
+        }
+
         classifier.listedDomains = listed
         blockedDomainCount = listed.count + rules.blockedDomains.count
 
         let userRuleJSON = ContentRuleJSON.list(
-            ContentRuleJSON.blockRules(for: rules.blockedDomains) + allowlist
+            ContentRuleJSON.blockRules(for: rules.blockedDomains)
         )
         if let userRuleJSON {
             let identifier = "surf-user-" + Self.digest(Data(userRuleJSON.utf8))
@@ -327,7 +380,7 @@ final class ContentBlocker {
         // Nil only when WebKit can't open its own store — a sandbox with no
         // writable container. There is nothing to fall back to, and nothing to
         // report: blocking is simply unavailable.
-        guard let store = WKContentRuleListStore.default() else { return nil }
+        guard let store = WKContentRuleListStore.surf else { return nil }
         if let cached = try? await store.contentRuleList(forIdentifier: identifier) {
             return cached
         }
@@ -348,7 +401,7 @@ final class ContentBlocker {
     /// in WebKit's store, and without this every list update and every click on
     /// Block would leave one there forever.
     private static func discardStaleLists(keeping current: Set<String>) async {
-        guard let store = WKContentRuleListStore.default(),
+        guard let store = WKContentRuleListStore.surf,
               let existing = await store.availableIdentifiers()
         else { return }
         for identifier in existing
@@ -363,15 +416,30 @@ final class ContentBlocker {
 
     // MARK: - Applying
 
-    /// Hands the compiled rules to a web view's configuration.
+    /// Whether a page on `host` is blocked at all: the setting is on and the
+    /// site isn't paused. Nil is a view with no page yet, which is blocked —
+    /// the host is re-read the moment it navigates.
+    func isActive(for host: String?) -> Bool {
+        Self.isEnabled && !isPaused(on: host)
+    }
+
+    /// Hands the compiled rules to a web view's configuration — or takes them
+    /// away, when the page is on a paused site.
     ///
-    /// Called when a tab builds its view and again whenever the rules change, so
-    /// a tab opened before the list finished compiling isn't left unprotected
-    /// until it navigates.
-    func apply(to configuration: WKWebViewConfiguration) {
+    /// Called when a tab builds its view, whenever the rules change, and on
+    /// every main-frame navigation, so a tab opened before the list finished
+    /// compiling isn't left unprotected and a tab leaving a paused site is
+    /// blocked again from its first request on.
+    ///
+    /// The per-site pause happens here, per tab, rather than in the compiled
+    /// rules — WebKit's own spelling of a pause is an `ignore-previous-rules`
+    /// *inside* each list, which is a recompile of EasyList, and a switch that
+    /// takes a minute to act is a switch that looks broken. Stripping a tab's
+    /// lists takes effect on its next request.
+    func apply(to configuration: WKWebViewConfiguration, host: String?) {
         let controller = configuration.userContentController
         controller.removeAllContentRuleLists()
-        guard Self.isEnabled else { return }
+        guard isActive(for: host) else { return }
         for list in lists { controller.add(list) }
     }
 
@@ -398,23 +466,52 @@ final class ContentBlocker {
         return userRules.isPaused(site: host)
     }
 
+    /// In force immediately, and nothing compiles: every open tab re-reads
+    /// the paused set against its own page and strips or restores its lists
+    /// on the spot. Saved first, so it survives relaunch.
+    ///
+    /// The one thing a per-tab strip can't express: a window a page opened
+    /// shares its opener's `WKUserContentController`, so when the two sit on
+    /// different sites, one paused and one not, the pair follow whichever of
+    /// them decided last. A rule that checked the top URL itself would tell
+    /// them apart — at the price of the compile above, on every flip.
     func setPaused(_ isPaused: Bool, on host: String) {
         userRules.setPaused(isPaused, forSite: host)
         saveUserRules()
-        Task { await compile() }
+        NotificationCenter.default.post(
+            name: .surfBlockingChanged, object: nil,
+            userInfo: [Self.enabledChangedKey: true]
+        )
     }
 
     /// The setting was toggled. Nothing recompiles — the lists are still valid —
-    /// but every tab has to be told to add or drop them.
+    /// but every tab has to be told to add or drop them, and told that this
+    /// was the switch rather than a list update: a switch is what empties the
+    /// shield and reloads the page you're looking at, because a count
+    /// gathered under the old rules is a claim about a page that no longer
+    /// exists.
     func enabledDidChange() {
-        NotificationCenter.default.post(name: .surfBlockingChanged, object: nil)
+        NotificationCenter.default.post(
+            name: .surfBlockingChanged, object: nil,
+            userInfo: [Self.enabledChangedKey: true]
+        )
+    }
+
+    /// Present in `surfBlockingChanged`'s `userInfo` when the user flipped a
+    /// switch — the setting, or a site's pause — and absent when only the
+    /// rules moved underneath it. A flip is what a tab reloads for.
+    static let enabledChangedKey = "enabledChanged"
+    /// Element hiding was turned on or off. This one does recompile, because it
+    /// is a different set of rules rather than the same set applied differently.
+    func hidingDidChange() {
+        Task { await compile() }
     }
 
     // MARK: - Updating
 
     private var lastCheck: Date? {
-        get { UserDefaults.standard.object(forKey: PreferenceKeys.lastFilterListCheck) as? Date }
-        set { UserDefaults.standard.set(newValue, forKey: PreferenceKeys.lastFilterListCheck) }
+        get { SurfDefaults.store.object(forKey: PreferenceKeys.lastFilterListCheck) as? Date }
+        set { SurfDefaults.store.set(newValue, forKey: PreferenceKeys.lastFilterListCheck) }
     }
 
     /// Weekly, and immediately when there is no list at all — a first launch
@@ -477,6 +574,29 @@ final class ContentBlocker {
 }
 
 extension WKContentRuleListStore {
+
+    /// The store this process should compile into.
+    ///
+    /// The other half of the isolation `SurfDefaults` fixes. WebKit's default
+    /// rule-list store lives beside the app's own data, not inside
+    /// `SURF_STATE_DIR`, so a verification run was compiling its rule sets
+    /// into the same store as the copy of Surf you have open — and
+    /// `discardStaleLists` then removed the ones it did not recognise.
+    ///
+    /// Harmless in practice, because both would recompile. Still not what
+    /// "never touches your state" means.
+    /// Main-actor, because `WKContentRuleListStore.default()` is, and every
+    /// caller here is `ContentBlocker`, which is too.
+    @MainActor static let surf: WKContentRuleListStore? = {
+        guard SurfDefaults.isScratch else { return .default() }
+        let directory = SupportDirectory.url
+            .appendingPathComponent("ContentRules", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )
+        return WKContentRuleListStore(url: directory) ?? .default()
+    }()
+
     /// The async spelling the SDK doesn't provide for this one call.
     func availableIdentifiers() async -> [String]? {
         await withCheckedContinuation { continuation in

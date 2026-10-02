@@ -73,10 +73,10 @@ const worlds = {
   // main's lazy domain with the same arrangement.
   isolated: ['runtime-isolated.js', 'theme.js', 'page.js', 'capture.js',
              'focus.js', 'focus-extract.js'],
-  // youtube.js is not resident either — Tab evaluates it when the site
+  // youtube.js and amazon.js are not resident either — Tab evaluates them when the site
   // lens opens — but it registers the youtube.* methods against the page
   // world's agent, so it installs here like everything else.
-  page: ['runtime-page.js', 'media.js', 'find.js', 'youtube.js'],
+  page: ['runtime-page.js', 'media.js', 'find.js', 'youtube.js', 'amazon.js'],
 };
 
 const agents = {};
@@ -300,7 +300,10 @@ check_size() {
 }
 # Injected into every frame of every page.
 check_size theme.js              34000
-check_size block.js              14000
+# block.js carries the surrogates and the anti-adblock answers as well as
+# the blocking itself — a stub that satisfies an ad SDK is a script, and there
+# are a lot of ad SDKs. Raised from 14000 deliberately when that landed.
+check_size block.js              30000
 # Raised from 12000 when theater mode landed, and again to 16000 when it
 # learned to survive hostile players (14451 at the time): stylesheet-based
 # staging, ancestor neutralisation, and lights-out all have to run where the
@@ -323,6 +326,10 @@ check_size focus.js               3000
 check_size focus-extract.js      16000
 # Not resident either — evaluated only on the tab that focuses YouTube.
 check_size youtube.js            12000
+# Raised from 14000 when the cart landed (15231 bytes at the time): reading a
+# cart and driving one of its controls are two more methods, and neither is
+# resident — amazon.js is evaluated only on the tab that focuses Amazon.
+check_size amazon.js            17000
 # Only while dev tools are attached — never on ordinary pages, so this one
 # budgets feature growth rather than per-page cost. Raised from 70000 when
 # the elements-pane work landed (74683 bytes at the time).

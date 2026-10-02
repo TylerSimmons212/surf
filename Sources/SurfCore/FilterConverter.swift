@@ -36,6 +36,14 @@ public enum FilterConverter {
     public struct Result: Sendable, Equatable {
         /// Rule objects, already encoded, in the order WebKit must see them.
         public var rules: [String]
+        /// The same list with the element-hiding rules left out.
+        ///
+        /// Hiding an ad container is the one thing a blocker does that a page
+        /// can see from the inside: it puts an element on the page, measures it,
+        /// and knows. Some players do exactly that and stop playing when the
+        /// measurement comes back wrong — so this variant exists to keep
+        /// refusing the requests while giving them nothing to measure.
+        public var networkOnlyRules: [String]
         /// Domains blocked outright, for naming what the panel caught.
         public var blockedDomains: Set<String>
         public var converted: Int
@@ -152,6 +160,7 @@ public enum FilterConverter {
     ) -> Result {
         var blocks: [String] = []
         var frames: [String] = []
+        var cosmetics: [String] = []
         var exceptions: [String] = []
         var frameExceptions: [String] = []
         var domains: Set<String> = []
@@ -168,6 +177,8 @@ public enum FilterConverter {
                 if let rule { blocks.append(rule) }
                 if let frame { frames.append(frame) }
                 if let domain { domains.insert(domain) }
+            case .cosmetic(let rule):
+                cosmetics.append(rule)
             case .exception(let rule, let frame):
                 if let rule { exceptions.append(rule) }
                 if let frame { frameExceptions.append(frame) }
@@ -182,7 +193,11 @@ public enum FilterConverter {
         // together: dropping a frame block while keeping the frame exception
         // that allows it is harmless, but the reverse would leave a site
         // allowlisted for subresources and blocked for its frames.
-        let fixed = blocks.count + exceptions.count
+        // Cosmetics count against the ceiling too. They arrived on one side
+        // of this merge and the budget on the other, so nothing conflicted
+        // here — and a list that ignored them could compile itself straight
+        // past WebKit's limit and fail as a whole.
+        let fixed = blocks.count + cosmetics.count + exceptions.count
         let room = max(0, limit - fixed)
         let requested = frames.count + frameExceptions.count
         var dropped = 0
@@ -203,9 +218,15 @@ public enum FilterConverter {
         // rules in the order given, and `ignore-previous-rules` cancels only
         // what came *before* it. An exception emitted above the block it exists
         // to override does nothing at all.
-        let rules = blocks + frames + exceptions + frameExceptions
+        let rules = blocks + frames + cosmetics + exceptions + frameExceptions
+        // The same list with nothing hideable in it. A page can measure an
+        // element that was hidden and cannot measure a request that was
+        // refused, so this variant keeps refusing while giving a player
+        // nothing to detect.
+        let networkOnly = blocks + frames + exceptions + frameExceptions
         return Result(
             rules: rules,
+            networkOnlyRules: networkOnly,
             blockedDomains: domains,
             converted: rules.count,
             skipped: skipped,
@@ -220,6 +241,9 @@ public enum FilterConverter {
         /// filter that named `$subdocument` and nothing else — that rule is
         /// entirely about frames.
         case block(String?, frame: String?, domain: String?)
+        /// An element-hiding rule, kept apart because it is the half a page can
+        /// detect.
+        case cosmetic(String)
         case exception(String?, frame: String?)
         /// Deliberately not carried, and not counted against the list.
         case ignored
@@ -601,9 +625,11 @@ public enum FilterConverter {
             trigger: trigger,
             action: Action(type: "css-display-none", selector: selector)
         ) else { return .unsupported }
-        // No frame companion: element hiding already applies inside whatever
-        // document the rule matched, and a nested one gets its own pass.
-        return .block(encoded, frame: nil, domain: nil)
+        // Cosmetic rather than a block, so it can be left out entirely when
+        // element hiding is switched off. No frame companion either: element
+        // hiding already applies inside whatever document the rule matched,
+        // and a nested one gets its own pass.
+        return .cosmetic(encoded)
     }
 
     // MARK: - Encoding

@@ -82,7 +82,7 @@ struct ContentView: View {
         ZStack {
             // One glass surface behind everything, so a pinned sidebar and the
             // page read as the same material.
-            VisualEffectBackground(material: .underWindowBackground)
+            WindowGround(material: .underWindowBackground)
 
             ZStack(alignment: .leading) {
                 HStack(spacing: 0) {
@@ -291,8 +291,31 @@ struct ContentView: View {
                 return nil
             }
 
+            // Escape backs out of whatever the selected tab has armed —
+            // wherever the key lands. The page script already cancels a
+            // screenshot pick when the web view has focus; this covers the
+            // sidebar, the lights, and every other view that would otherwise
+            // keep the key for itself. Consumed only when it did something,
+            // so the palette, the find bar, and pages keep their Escape.
+            if event.keyCode == 53,  // ⎋
+               flags.intersection(.deviceIndependentFlagsMask).isEmpty,
+               Self.escapeMayDismissTabState(in: event.window) {
+                let handled = MainActor.assumeIsolated {
+                    session.selectedTab.dismissTransientState()
+                }
+                return handled ? nil : event
+            }
+
             return event
         }
+    }
+
+    /// Whether an Escape in this window is ours to spend. A text field is
+    /// closing a palette or a find bar with it; a mini window is closing
+    /// itself; neither should find the reader gone as well.
+    private static func escapeMayDismissTabState(in window: NSWindow?) -> Bool {
+        guard let window, !(window is MiniWindowPanel) else { return false }
+        return !(window.firstResponder is NSTextView)
     }
 
     private var sidebarShape: RoundedRectangle {

@@ -1,0 +1,36 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Surf</title>
+        <item>
+            <title>0.5.2</title>
+            <pubDate>Tue, 25 Aug 2026 16:54:52 -0700</pubDate>
+            <link>https://github.com/TylerSimmons212/surf</link>
+            <sparkle:version>1787701987</sparkle:version>
+            <sparkle:shortVersionString>0.5.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.5.2/Surf-0.5.2.dmg" length="9568168" type="application/octet-stream" sparkle:edSignature="BA38yvuWyvzfHcC1frnncE1haXa/Qij4QFpZbsykI4BuVUjJfEz+ayUN1/ANPkxR52feGzHJ3//W+umRR/liBQ=="/>
+        </item>
+        <item>
+            <title>0.5.1</title>
+            <pubDate>Tue, 25 Aug 2026 16:35:28 -0700</pubDate>
+            <link>https://github.com/TylerSimmons212/surf</link>
+            <sparkle:version>1787700809</sparkle:version>
+            <sparkle:shortVersionString>0.5.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.5.1/Surf-0.5.1.dmg" length="9559275" type="application/octet-stream" sparkle:edSignature="uqhK9zSws9KQ9+2D/ezhYeFyALf4ScRppXjoU5zUOZPa8pHAGrA2N0+tcDL9wwOoNVSRzdfIezOVbdNRs7/CDA=="/>
+        </item>
+        <item>
+            <title>0.5.0</title>
+            <pubDate>Tue, 25 Aug 2026 13:57:53 -0700</pubDate>
+            <link>https://github.com/TylerSimmons212/surf</link>
+            <sparkle:version>1787691340</sparkle:version>
+            <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/TylerSimmons212/surf/releases/download/v0.5.0/Surf-0.5.0.dmg" length="9389772" type="application/octet-stream" sparkle:edSignature="CkQCVwmkE1TzC+X9ojE63RIiAhbC0KThctFa4+LgsOwvlLTXNovzLGZzNQDinBgKJffAXpcPKS2Xq4tK0KB4Bw=="/>
+        </item>
+    </channel>
+</rss>

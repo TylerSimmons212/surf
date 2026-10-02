@@ -8,6 +8,7 @@ struct FilterConverterTests {
     private func rule(_ filter: String) -> String? {
         switch FilterConverter.parse(filter) {
         case .block(let rule, _, _): rule
+        case .cosmetic(let rule): rule
         case .exception(let rule, _): rule
         case .ignored, .unsupported: nil
         }
@@ -386,5 +387,145 @@ struct FilterConverterTests {
         // encoding would mean recompiling a hundred thousand rules every launch.
         let list = "||ads.example^$script,image,third-party\nnews.test,other.test##.ad"
         #expect(FilterConverter.convert(list) == FilterConverter.convert(list))
+    }
+}
+
+@Suite("Surrogates")
+struct SurrogateTests {
+
+    @Test("The ad SDK a video player waits for is matched")
+    func matchesIMA() {
+        #expect(Surrogate.matching("https://imasdk.googleapis.com/js/sdkloader/ima3.js")
+                == .googleIMA)
+        #expect(Surrogate.matching("http://imasdk.googleapis.com/js/sdkloader/ima3_debug.js")
+                == .googleIMA)
+    }
+
+    @Test("A host is not enough on its own")
+    func matchesHostAndFile() {
+        // imasdk.googleapis.com serves more than the SDK, and standing in for
+        // something we haven't written a stand-in for is worse than blocking it.
+        #expect(Surrogate.matching("https://imasdk.googleapis.com/js/other.js") == nil)
+        #expect(Surrogate.matching("https://example.com/ima3.js") == nil)
+        #expect(Surrogate.matching("https://doubleclick.net/ad.js") == nil)
+    }
+
+    @Test("The page's table is generated from these cases")
+    func tableIsGenerated() {
+        // Two lists that have to agree are two lists that eventually don't, so
+        // the page tests the patterns declared here rather than its own copy.
+        let table = Surrogate.javaScriptTable
+        #expect(table.hasPrefix("["))
+        for surrogate in Surrogate.allCases {
+            #expect(table.contains(surrogate.jsPattern))
+        }
+    }
+
+    @Test("Every stub reports no ads rather than nothing at all")
+    func stubsReportEmpty() {
+        // The distinction the whole feature rests on: a component that is
+        // absent leaves a player waiting forever, where one that says it has
+        // nothing sends it down a path it already handles.
+        #expect(Surrogate.googleIMA.script.contains("VAST_EMPTY_RESPONSE"))
+        #expect(Surrogate.googleIMA.script.contains("adError"))
+        // Asynchronously, or a handler attached after the call never sees it.
+        #expect(Surrogate.googleIMA.script.contains("setTimeout"))
+    }
+}
+
+@Suite("Anti-adblock")
+struct AntiAdblockTests {
+
+    @Test("A variable that announces itself as bait is answered")
+    func recognisesBait() {
+        // The real one, from a site that pauses its video three seconds after
+        // you press play.
+        #expect(AntiAdblock.namesBait("bait_b3j4hu231"))
+        #expect(AntiAdblock.namesBait("adbait_991"))
+        #expect(AntiAdblock.namesBait("bait2"))
+        #expect(AntiAdblock.namesBait("bait"))
+    }
+
+    @Test("A word that merely begins with one is left alone")
+    func leavesWordsAlone() {
+        // Defining a global a page expects to be missing is a real way to break
+        // a site, so the bar is a name that could only be bait.
+        #expect(!AntiAdblock.namesBait("baiting"))
+        #expect(!AntiAdblock.namesBait("baitShopAPI"))
+        #expect(!AntiAdblock.namesBait("jQuery"))
+        #expect(!AntiAdblock.namesBait("google"))
+        #expect(!AntiAdblock.namesBait(""))
+    }
+
+    @Test("The check is found whichever way round it is written")
+    func findsChecks() throws {
+        let forward = try NSRegularExpression(pattern: AntiAdblock.baitCheckPattern)
+        let reversed = try NSRegularExpression(pattern: AntiAdblock.baitCheckPatternReversed)
+
+        func captures(_ regex: NSRegularExpression, _ source: String) -> String? {
+            let range = NSRange(source.startIndex..., in: source)
+            guard let match = regex.firstMatch(in: source, range: range),
+                  let captured = Range(match.range(at: 1), in: source)
+            else { return nil }
+            return String(source[captured])
+        }
+
+        #expect(captures(forward, "if (typeof bait_b3j4hu231 === 'undefined') {")
+                == "bait_b3j4hu231")
+        #expect(captures(forward, #"if (typeof bait_x99 == "undefined")"#) == "bait_x99")
+        #expect(captures(reversed, "if ('undefined' === typeof bait_zz1) {") == "bait_zz1")
+    }
+
+    @Test("The page tests the same list this file declares")
+    func sharedLists() {
+        // Two lists that have to agree are two lists that eventually don't.
+        for prefix in AntiAdblock.baitPrefixes {
+            #expect(AntiAdblock.baitPrefixesJSArray.contains("'\(prefix)'"))
+        }
+        #expect(AntiAdblock.playerSelectorsJS.contains("video"))
+    }
+}
+
+@Suite("Element hiding, kept separable")
+struct NetworkOnlyVariantTests {
+
+    private let list = """
+    ||ads.example^
+    ##.advert
+    news.test##.sponsored
+    @@||good.example^$document
+    """
+
+    @Test("The full list carries the hiding rules")
+    func fullList() {
+        let result = FilterConverter.convert(list)
+        #expect(result.rules.filter { $0.contains("css-display-none") }.count == 2)
+        // Counted against the other list rather than against a number. This
+        // test was written before child-frame companions existed and asserted
+        // a flat four; a filter can now produce a frame rule as well as a
+        // subresource one, and the count that actually matters is the
+        // difference between the two lists.
+        #expect(result.rules.count == result.networkOnlyRules.count + 2)
+    }
+
+    @Test("The network-only variant carries none of them")
+    func networkOnly() {
+        // Hiding is the one thing a blocker does that a page can measure from
+        // the inside, so it has to be droppable on its own — without giving up
+        // a single refused request.
+        let result = FilterConverter.convert(list)
+        #expect(result.networkOnlyRules.count == result.rules.count - 2)
+        #expect(!result.networkOnlyRules.contains { $0.contains("css-display-none") })
+        #expect(result.networkOnlyRules.contains { $0.contains(#""type":"block""#) })
+        #expect(result.networkOnlyRules.contains { $0.contains("ignore-previous-rules") })
+    }
+
+    @Test("Exceptions stay last in both")
+    func orderingHolds() {
+        // ignore-previous-rules cancels only what precedes it, and dropping the
+        // middle section must not disturb that.
+        let result = FilterConverter.convert(list)
+        #expect(result.rules.last?.contains("ignore-previous-rules") == true)
+        #expect(result.networkOnlyRules.last?.contains("ignore-previous-rules") == true)
     }
 }

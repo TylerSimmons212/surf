@@ -220,7 +220,7 @@ final class Narrator {
     /// engine out from under its own playback would orphan the audio.
     private var desiredEngineKind: EngineKind {
         VoiceInstaller.shared.isReady
-            && UserDefaults.standard.bool(forKey: PreferenceKeys.focusEnhancedVoice)
+            && SurfDefaults.store.bool(forKey: PreferenceKeys.focusEnhancedVoice)
             ? .enhanced : .system
     }
 
@@ -277,7 +277,7 @@ final class Narrator {
     /// defaults read only refreshed when something *else* changed — the menu
     /// showed the old speed while the audio already spoke the new one.
     private var rateValue: Double = {
-        let stored = UserDefaults.standard.double(forKey: PreferenceKeys.focusSpeechRate)
+        let stored = SurfDefaults.store.double(forKey: PreferenceKeys.focusSpeechRate)
         return stored == 0 ? 1.0 : stored
     }()
 
@@ -285,7 +285,7 @@ final class Narrator {
         get { rateValue }
         set {
             rateValue = newValue
-            UserDefaults.standard.set(newValue, forKey: PreferenceKeys.focusSpeechRate)
+            SurfDefaults.store.set(newValue, forKey: PreferenceKeys.focusSpeechRate)
             guard state != .idle else { return }
             // A rate is a property of the voice, not of the utterance it
             // happened to land on — so it applies now, not from the next one.

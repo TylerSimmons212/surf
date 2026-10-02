@@ -15,6 +15,9 @@ enum PreferenceKeys {
     static let appearanceMode = "appearanceMode"
     static let synthesizeTheme = "synthesizeTheme"
     static let blockAds = "blockAds"
+    /// Whether a link arriving from another application opens in a mini window
+    /// rather than straight into a tab.
+    static let externalLinksInMiniWindow = "externalLinksInMiniWindow"
     /// Which CLI powers AI features: an `AICLIProvider` raw value, or empty
     /// for "the first one found". Per-feature keys (toggles, model picks) are
     /// derived on `AIFeature` — they're per feature and per provider, and a
@@ -29,6 +32,11 @@ enum PreferenceKeys {
     /// Whether narration speaks through the downloaded voice when it's
     /// installed. On by default: downloading it *is* the opt-in.
     static let focusEnhancedVoice = "focusEnhancedVoice"
+    static let hideAdContainers = "hideAdContainers"
+    /// The main window's frame, as `NSStringFromRect`. Not a setting — there is
+    /// no UI for it — but it is a key, and keys are named here. See
+    /// `MainWindowFrame` for why AppKit's own autosave could not be used.
+    static let mainWindowFrame = "mainWindowFrame"
     /// When the filter list was last checked. Not a setting either, and here
     /// for the same reason as the one below it.
     static let lastFilterListCheck = "lastFilterListCheck"
@@ -44,7 +52,7 @@ extension PrivacySettings {
     /// unset keys read as `false` and quietly invert the intent — "keep me
     /// signed in" would default to off.
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [
+        SurfDefaults.store.register(defaults: [
             PreferenceKeys.rememberHistory: PrivacySettings.default.rememberHistory,
             PreferenceKeys.keepSignedIn: PrivacySettings.default.keepSignedIn,
             PreferenceKeys.restoreTabs: PrivacySettings.default.restoreTabs,
@@ -58,17 +66,24 @@ extension PrivacySettings {
             // the user never asked to make; restyling redraws a page its
             // authors did draw. Only one of those needs asking first.
             PreferenceKeys.blockAds: true,
+            // On, because a link from another app is a question rather than a
+            // decision, and because it has no island context — a tab has to
+            // live in one, and a mini window can defer that until you keep it.
+            PreferenceKeys.externalLinksInMiniWindow: true,
             // Empty: whichever CLI is found first. A fresh machine has
             // neither, and the AI tab explains itself either way.
             PreferenceKeys.aiProvider: "",
             // Downloading the enhanced voice is the opt-in; a switch that
             // then defaulted off would make the download do nothing.
             PreferenceKeys.focusEnhancedVoice: true,
+            // On: an emptied ad container still occupies the page, and hiding
+            // it is most of what makes a blocked page look unblocked.
+            PreferenceKeys.hideAdContainers: true,
         ])
     }
 
     static var current: PrivacySettings {
-        let defaults = UserDefaults.standard
+        let defaults = SurfDefaults.store
         return PrivacySettings(
             rememberHistory: defaults.bool(forKey: PreferenceKeys.rememberHistory),
             keepSignedIn: defaults.bool(forKey: PreferenceKeys.keepSignedIn),
@@ -88,7 +103,7 @@ enum AIPreferences {
         let installed = AICLIProvider.allCases.filter {
             AICLIDetector.shared.status($0).isInstalled
         }
-        let stored = UserDefaults.standard.string(forKey: PreferenceKeys.aiProvider)
+        let stored = SurfDefaults.store.string(forKey: PreferenceKeys.aiProvider)
         if let stored, let pick = AICLIProvider(rawValue: stored), installed.contains(pick) {
             return pick
         }
@@ -98,7 +113,7 @@ enum AIPreferences {
     }
 
     static func isEnabled(_ feature: AIFeature) -> Bool {
-        UserDefaults.standard.bool(forKey: feature.enabledKey)
+        SurfDefaults.store.bool(forKey: feature.enabledKey)
     }
 
     /// What a feature should actually run right now, or nil when it can't:
@@ -110,7 +125,7 @@ enum AIPreferences {
         guard let provider = selectedProvider,
               AICLIDetector.shared.status(provider).isUsable else { return nil }
         let status = AICLIDetector.shared.status(provider)
-        let stored = UserDefaults.standard.string(forKey: feature.modelKey(for: provider))
+        let stored = SurfDefaults.store.string(forKey: feature.modelKey(for: provider))
         guard let model = provider.validatedModel(
             stored, options: status.modelOptions, descriptions: status.modelDescriptions
         ) else { return nil }
@@ -118,10 +133,18 @@ enum AIPreferences {
     }
 }
 
+enum LinkPreferences {
+    /// Whether a link handed over by another application opens in a mini
+    /// window rather than as a tab.
+    static var externalUseMiniWindow: Bool {
+        SurfDefaults.store.bool(forKey: PreferenceKeys.externalLinksInMiniWindow)
+    }
+}
+
 enum MediaPreferences {
     /// Whether leaving a tab that's playing video should pop it out.
     static var autoPopOut: Bool {
-        UserDefaults.standard.bool(forKey: PreferenceKeys.autoPopOutVideo)
+        SurfDefaults.store.bool(forKey: PreferenceKeys.autoPopOutVideo)
     }
 }
 

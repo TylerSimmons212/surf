@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Windows a page opens</title>
+<style>
+  body { margin: 0; font: 16px/1.4 system-ui; background: #101418; color: #e8eef4; }
+  a, button { position: absolute; left: 200px; width: 700px; height: 120px;
+              display: grid; place-items: center; border-radius: 12px;
+              font-size: 24px; color: #9ecbff; background: #1d3a5c;
+              border: 0; text-decoration: none; }
+  #blank { top: 60px; }
+  #slow  { top: 220px; background: #3a2a1d; }
+  #opened { top: 380px; background: #1d3a2a; color: #9effc4; }
+</style>
+<!-- A plain target=_blank link: WebKit asks for a new web view and drives the
+     load itself, so nothing in Surf calls submit. -->
+<a id="blank" href="https://example.com/blank-target" target="_blank">target="_blank" link</a>
+
+<!-- The same thing pointed at a host that answers slowly, which is what makes
+     the home screen visible rather than a flicker. -->
+<a id="slow" href="https://httpbin.org/delay/3" target="_blank">target="_blank", slow host</a>
+
+<button id="opened" onclick="window.open('https://example.com/script-opened')">window.open()</button>
