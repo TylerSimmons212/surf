@@ -1,3 +1,4 @@
+import SurfCore
 import SwiftUI
 
 /// Now-playing controls at the foot of the sidebar.
@@ -116,12 +117,25 @@ struct MediaRow: View {
     /// An embedded player reports the *embed's* hostname, or nothing at all —
     /// 'hgcloud.to' rather than the site you're on — so a blank line falls back
     /// to the page's own host, which is the thing that was actually opened.
+    /// Where it came from, and how far into it you are.
+    ///
+    /// The position used to be a two-point bar filling along the bottom of the
+    /// card, which is the same shape every loading indicator in the world has
+    /// — including Surf's own download ring and loading border — so a playing
+    /// video read as a download in progress. A time cannot be mistaken for
+    /// one.
     private func subtitle(_ media: MediaState) -> String {
-        guard media.artist.isEmpty else { return media.artist }
-        if let address = tab.currentURL, let host = URL(string: address)?.host() {
-            return host
+        let source: String = {
+            if !media.artist.isEmpty { return media.artist }
+            if let address = tab.currentURL, let host = URL(string: address)?.host() {
+                return host
+            }
+            return tab.displayTitle
+        }()
+        guard let position = MediaTime.position(media.currentTime, of: media.duration) else {
+            return source
         }
-        return tab.displayTitle
+        return "\(source) · \(position)"
     }
 
     /// Same corner as a tab row, so the player reads as part of the column
@@ -179,14 +193,10 @@ struct MediaRow: View {
                 .padding(.horizontal, 9)
                 .padding(.vertical, 9)
 
-                if isPrimary {
-                    progress(media)
-                } else {
-                    Spacer(minLength: 0)
-                }
+                Spacer(minLength: 0)
             }
-            // Clipped, not just backed: the progress bar runs to the card's
-            // bottom edge and would otherwise square off its corners.
+            // Clipped, not just backed: the hover wash below runs to the
+            // card's edge and would otherwise square off its corners.
             .background(.regularMaterial, in: cardShape)
             .clipShape(cardShape)
             .overlay {
@@ -338,20 +348,30 @@ struct MediaRow: View {
         if let item = DownloadManager.shared.activeItem(for: tab) {
             switch item.state {
             case .downloading:
-                ZStack {
-                    Circle()
-                        .trim(from: 0, to: max(0.04, item.fraction))
-                        .stroke(Color.accentColor,
-                                style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: 21, height: 21)
-                        .animation(.easeOut(duration: 0.25), value: item.fraction)
-                    Image(systemName: "square.fill")
-                        .font(.system(size: 6))
-                        .foregroundStyle(.secondary)
+                // A ring around a stop square is the universal "press this to
+                // give up" shape, and this one was not a button at all — it
+                // drew the square, took the click, and did nothing with it.
+                Button {
+                    DownloadManager.shared.cancel(item)
+                } label: {
+                    ZStack {
+                        Circle()
+                            .trim(from: 0, to: max(0.04, item.fraction))
+                            .stroke(Color.accentColor,
+                                    style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 21, height: 21)
+                            .animation(.easeOut(duration: 0.25), value: item.fraction)
+                        Image(systemName: "square.fill")
+                            .font(.system(size: 6))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 26, height: 26)
+                    .contentShape(Circle())
                 }
-                .frame(width: 26, height: 26)
-                .help("Downloading \(Int(item.fraction * 100))%")
+                .buttonStyle(.plain)
+                .help("Downloading \(Int(item.fraction * 100))% — click to stop")
+                .pointerStyle(.link)
 
             case .finished:
                 IconButton(
@@ -403,27 +423,5 @@ struct MediaRow: View {
         }
     }
 
-    /// How far through the media is, only for media with a known duration —
-    /// live streams report zero, and a bar stuck at 0% reads as broken.
-    ///
-    /// Deliberately *not* the accent colour. A saturated bar filling left to
-    /// right along the bottom of a card is the same shape the whole platform
-    /// uses for work in progress, and reading it as a stalled download is the
-    /// obvious mistake — it's the one everyone made. Neutral and thin, it reads
-    /// as a position along a track, which is what it is. The equalizer on the
-    /// artwork carries the "this is playing" signal instead, and carries it
-    /// better, because motion means running in a way that colour never did.
-    @ViewBuilder
-    private func progress(_ media: MediaState) -> some View {
-        if media.duration > 0 {
-            GeometryReader { geometry in
-                Rectangle()
-                    .fill(Color.primary.opacity(0.28))
-                    .frame(width: geometry.size.width * media.progress)
-                    .animation(.linear(duration: 0.9), value: media.progress)
-            }
-            .frame(height: 2)
-        }
-    }
 }
 
