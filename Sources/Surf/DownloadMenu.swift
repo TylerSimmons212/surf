@@ -99,14 +99,17 @@ struct DownloadMenuButton: View {
         let sound = DownloadOptions.audio(from: options)
         let menu = NSMenu()
 
-        // What a plain press used to do, named so it says what it will take
-        // rather than leaving someone to find out from the finished file.
-        let top = videos.first
-        add(
-            top.map { "Download Video — \($0.title) · \($0.detail(duration: duration))" }
-                ?? "Download Video",
-            to: menu
-        ) { DownloadManager.shared.downloadMedia(from: tab) }
+        // Four words, and no account of what it is about to take.
+        //
+        // It read "Download Video — 2160p · AV1 · 712.4 MB" first, on the
+        // reasoning that a button should say what it will do. The reasoning was
+        // wrong about who is reading: picking the best available is the default
+        // because it is the right answer, so stating the resolution, the codec
+        // and the size is three facts offered to someone who has already
+        // decided not to care. Anyone who does care is one row further down.
+        add("Download Video", to: menu) {
+            DownloadManager.shared.downloadMedia(from: tab)
+        }
 
         // Only when there is something to choose between. One rendition and a
         // submenu offering to choose is a submenu that wastes a hover to tell
@@ -115,7 +118,11 @@ struct DownloadMenuButton: View {
             let choose = NSMenuItem(title: "Choose Quality", action: nil, keyEquivalent: "")
             let ladder = NSMenu()
             for option in videos {
-                add("\(option.title) — \(option.detail(duration: duration))", to: ladder) {
+                // The height and the size, which are the two halves of the
+                // decision. Not the codec: it is the engine's problem, it has
+                // already guaranteed the result will play, and `avc1.64002a`
+                // was never a sentence anyone wanted to read.
+                add(option.rowTitle(duration: duration), to: ladder) {
                     DownloadManager.shared.downloadMedia(from: tab, choosing: option)
                 }
             }
@@ -125,7 +132,11 @@ struct DownloadMenuButton: View {
 
         if let sound {
             menu.addItem(.separator())
-            add("Audio Only — \(sound.detail(duration: duration))", to: menu) {
+            // Bare, like the first row. There is only ever one soundtrack
+            // offered — the best one, because sound is a fraction of a video's
+            // size and there is nothing to save by taking less — so its size is
+            // not a number anybody is comparing against anything.
+            add("Audio Only", to: menu) {
                 DownloadManager.shared.downloadMedia(from: tab, choosing: sound)
             }
         }

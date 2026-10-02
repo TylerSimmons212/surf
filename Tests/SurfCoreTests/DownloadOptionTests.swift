@@ -90,6 +90,42 @@ struct DownloadOptionTests {
         #expect(option.estimatedBytes(duration: duration) == nil)
     }
 
+    @Test("A row says the height and the size, and nothing else")
+    func rowTitle() {
+        // What the menu shows. The codec is deliberately absent: the decision
+        // in front of someone is how big the file is, and the engine has
+        // already guaranteed whatever it hands back will play.
+        let option = DownloadOption(
+            id: "401", height: 2160, bitrate: 6_800_000,
+            codecs: "av01.0.13M.08", exactBytes: 712_445_280
+        )
+        #expect(option.rowTitle(duration: 634.6) == "2160p · 712.4 MB")
+        #expect(!option.rowTitle(duration: 634.6).contains("AV1"))
+    }
+
+    @Test("A row with no size to show is just its name")
+    func rowTitleWithoutSize() {
+        // Rather than "2160p · " with nothing after it.
+        #expect(video("401", 2160, "av01").rowTitle(duration: nil) == "2160p")
+    }
+
+    @Test("An exact size is stated and an estimate is marked")
+    func sizeConfidence() {
+        // The tilde is the difference between a figure and a promise. It earns
+        // its place: the bitrate estimate ran more than double the real file,
+        // 550MB against 214MB, so the two numbers cannot look alike.
+        let exact = DownloadOption(id: "a", height: 1080, exactBytes: 257_600_000)
+        #expect(exact.sizeText(duration: 634.6) == "257.6 MB")
+        let guessed = DownloadOption(id: "b", height: 1080, bitrate: 1_000_000)
+        #expect(guessed.sizeText(duration: 100)?.hasPrefix("~") == true)
+    }
+
+    @Test("No size at all is nil rather than an empty string")
+    func sizeAbsent() {
+        // So a caller appends nothing instead of a stray separator.
+        #expect(DownloadOption(id: "x").sizeText(duration: nil) == nil)
+    }
+
     @Test("The detail line carries whichever halves are known")
     func detailLine() {
         #expect(video("401", 2160, "av01.0.13M.08", 6_800_000).detail(duration: 634.6)

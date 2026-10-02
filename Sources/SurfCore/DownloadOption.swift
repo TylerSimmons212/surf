@@ -50,26 +50,50 @@ public struct DownloadOption: Equatable, Sendable, Identifiable {
         return "\(height)p"
     }
 
+    /// `712.4 MB`, or nil when nothing says.
+    ///
+    /// Takes the duration because neither a format list nor a manifest always
+    /// carries a length: where there is only a bitrate, a size has to be worked
+    /// out, and a size is the thing someone actually wants to compare. The two
+    /// numbers deserve different confidence, so an estimate is written with a
+    /// `~` and an exact figure without one.
+    ///
+    /// This is what a menu shows. The codec is not: `avc1.64002a` means nothing
+    /// to anyone choosing, and even "AV1" is answering a question nobody asked
+    /// — the decision in front of someone is how big the file is, and the
+    /// engine has already made sure whatever it hands back will play.
+    public func sizeText(duration: Double?) -> String? {
+        guard let size = exactBytes ?? estimatedBytes(duration: duration) else {
+            return nil
+        }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        formatter.allowedUnits = [.useMB, .useGB]
+        let text = formatter.string(fromByteCount: Int64(size))
+        // The tilde is the difference between a figure and a promise, so it is
+        // only there when the figure is one.
+        return exactBytes == nil ? "~" + text : text
+    }
+
     /// `AV1 · 543 MB`, with whichever halves are known.
     ///
-    /// Takes the duration because neither a format list nor a manifest carries a
-    /// size: both give a bitrate, and a size is the thing someone actually wants
-    /// to compare. An estimate rather than a promise, which is why it is written
-    /// with a `~`.
+    /// For a log rather than a menu. The codec is the half that does not belong
+    /// in front of someone choosing and is exactly what a verification run
+    /// wants: a 2160p row weighing 2.1GB and a 2160p row weighing 543MB are the
+    /// same line without it, and which codec they were is what made the
+    /// difference legible.
     public func detail(duration: Double?) -> String {
         var parts: [String] = []
         let name = DownloadOption.codecName(codecs)
         if !name.isEmpty { parts.append(name) }
-        if let size = exactBytes ?? estimatedBytes(duration: duration) {
-            let formatter = ByteCountFormatter()
-            formatter.countStyle = .file
-            formatter.allowedUnits = [.useMB, .useGB]
-            let text = formatter.string(fromByteCount: Int64(size))
-            // The tilde is the difference between a figure and a promise, so it
-            // is only there when the figure is one.
-            parts.append(exactBytes == nil ? "~" + text : text)
-        }
+        if let size = sizeText(duration: duration) { parts.append(size) }
         return parts.joined(separator: " · ")
+    }
+
+    /// What a menu row says: `2160p · 712.4 MB`, or just `2160p`.
+    public func rowTitle(duration: Double?) -> String {
+        guard let size = sizeText(duration: duration) else { return title }
+        return title + " · " + size
     }
 
     /// Nil when there is nothing to estimate from, so a caller shows no size
