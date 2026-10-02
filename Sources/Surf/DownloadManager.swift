@@ -63,6 +63,16 @@ final class DownloadItem: Identifiable {
     /// anything of and must never be probed as though it did.
     @ObservationIgnored var expectation: SavedMedia.Expectation?
 
+    /// The tab this came from, weakly, because a download outliving its tab is
+    /// ordinary and must not keep a web view alive.
+    ///
+    /// `itemsByTab` already maps the other direction. This one exists because
+    /// starting a download and discovering what it actually is happen in
+    /// different places: by the time a response says "this is a playlist", the
+    /// only thing in hand is the `WKDownload`, and the right cookie store is
+    /// the one belonging to the tab that asked.
+    @ObservationIgnored weak var tab: Tab?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
@@ -249,6 +259,11 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.sourceURL = url
         item.host = tab.webView.url?.host ?? url.host
         item.pageURL = tab.webView.url
+        item.tab = tab
+        item.expectation = SavedMedia.Expectation(
+            wantsVideo: media.hasVideo,
+            declaredDuration: media.duration > 0 ? media.duration : nil
+        )
         items.insert(item, at: 0)
         itemsByTab[tab.id] = item
 
@@ -282,6 +297,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.pageURL = pageURL
         item.isExtracted = true
         item.expectation = expectation
+        item.tab = tab
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
 
@@ -347,6 +363,27 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 self.releaseExtraction(for: item)
             }
         }
+    }
+
+    /// Replaces a direct download that turned out to be a manifest with an
+    /// extraction of the page it came from.
+    ///
+    /// The old row is removed rather than reused. Reusing it would mean a row
+    /// that is half one engine and half the other, with a byte count from the
+    /// playlist it was never going to save, and `isExtracted` is the flag the
+    /// retry button reads to know what to retry — it has to be true from the
+    /// start or a retry goes back to the direct path and fails the same way.
+    private func reroute(_ item: DownloadItem) {
+        guard let pageURL = item.pageURL else {
+            item.state = .failed("That link is a playlist, not a video")
+            releaseTabBinding(for: item, after: .seconds(6))
+            return
+        }
+        let tab = item.tab
+        let expectation = item.expectation
+        let title = (item.filename as NSString).deletingPathExtension
+        remove(item)
+        startExtraction(from: pageURL, title: title, tab: tab, expecting: expectation)
     }
 
     private func releaseExtraction(for item: DownloadItem) {
@@ -439,6 +476,25 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             ?? FileManager.default.homeDirectoryForCurrentUser
 
         let item = item(for: download)
+
+        // The last chance to notice this is not a video.
+        //
+        // `MediaSource.kind(of:)` had only the URL to go on, and a signed
+        // manifest URL carries no extension — so a playlist classified as a
+        // plain file, and WebKit is now waiting to be told where to save a few
+        // kilobytes of text under an `.mp4` name. The response says what the URL
+        // couldn't, and returning nil cancels the download.
+        //
+        // Only for a media download: an adopted link download has no expectation
+        // and no page to extract from, and a `.m3u8` someone deliberately
+        // clicked is a file they asked for.
+        if let item, item.expectation != nil, !item.isExtracted,
+           MediaSource.isManifest(contentType: response.mimeType ?? "") {
+            debugLog("download: \(response.mimeType ?? "?") is a manifest, extracting instead")
+            reroute(item)
+            return nil
+        }
+
         // A media download names itself from the page title; an adopted one has
         // no name of its own and defers to Content-Disposition entirely.
         var name = (item?.filename).flatMap { $0.isEmpty ? nil : $0 } ?? suggestedFilename
