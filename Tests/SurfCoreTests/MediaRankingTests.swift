@@ -195,3 +195,70 @@ struct MediaAudibilityTests {
         #expect(signals(muted: true, bytes: nil).isAudible == false)
     }
 }
+
+@Suite("Media staging")
+struct MediaStagingTests {
+
+    /// The main video, unmuted, and — the case that matters — paused or not
+    /// started yet, while the advert beside it plays on.
+    private let feature = MediaSignals(
+        isPlaying: false, isMuted: false,
+        width: 640, height: 360, duration: 1800, startedAt: 100
+    )
+
+    private let advert = MediaSignals(
+        isPlaying: true, isMuted: true, loops: true,
+        width: 300, height: 170, duration: 15, startedAt: 9000
+    )
+
+    @Test("Nothing to stage on a page with nothing")
+    func empty() {
+        #expect(MediaRanking.stageIndex(among: []) == nil)
+    }
+
+    /// The bug this exists for. The ranking hands a playing advert the win
+    /// over a paused feature — rightly, for a now-playing strip — and the
+    /// theater used to stage whatever the ranking chose.
+    @Test("A paused feature is staged over a playing muted advert")
+    func pausedFeatureBeatsPlayingAdvert() {
+        let candidates = [(advert, true), (feature, true)]
+        #expect(MediaRanking.primaryIndex(among: candidates.map(\.0)) == 0)
+        #expect(MediaRanking.stageIndex(among: candidates) == 1)
+    }
+
+    /// No theater for an article whose only video is an ad.
+    @Test("A page whose only video is a muted advert has nothing to stage")
+    func advertAloneIsNotStaged() {
+        #expect(MediaRanking.stageIndex(among: [(advert, true)]) == nil)
+    }
+
+    @Test("Audio without a picture has nothing to stage")
+    func audioOnly() {
+        #expect(MediaRanking.stageIndex(among: [(feature, false)]) == nil)
+    }
+
+    @Test("Among videos with sound the ranking still decides")
+    func rankingDecidesAmongTheEligible() {
+        var playing = feature
+        playing.isPlaying = true
+        #expect(MediaRanking.stageIndex(among: [(feature, true), (playing, true)]) == 1)
+    }
+}
+
+@Suite("Media sound")
+struct MediaSoundTests {
+
+    @Test("Sound doesn't depend on playing; audible does")
+    func soundOutlivesPause() {
+        let paused = MediaSignals(isPlaying: false, isMuted: false, audioBytes: 9_000)
+        #expect(paused.hasSound)
+        #expect(paused.isAudible == false)
+    }
+
+    @Test("Muted, or decoded and silent, has no sound")
+    func silence() {
+        #expect(MediaSignals(isMuted: true).hasSound == false)
+        #expect(MediaSignals(isMuted: false, audioBytes: 0).hasSound == false)
+        #expect(MediaSignals(isMuted: false, audioBytes: nil).hasSound)
+    }
+}

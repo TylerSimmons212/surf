@@ -20,6 +20,11 @@ public struct MediaSignals: Equatable, Sendable {
     public var duration: Double
     /// The element's frame set `navigator.mediaSession.metadata`. Real players
     /// do this so the OS can show now-playing information; ad tags don't.
+    ///
+    /// Only that. It used to be true for anything in the top frame as well,
+    /// because the bridge borrowed the flag that decides whether a title is
+    /// worth showing — which handed every advert player injected into the top
+    /// document the bonus meant for players that say what they are playing.
     public var hasMetadata: Bool
     /// Monotonic milliseconds since its frame loaded, for tie-breaking only.
     public var startedAt: Double
@@ -78,9 +83,16 @@ public struct MediaSignals: Equatable, Sendable {
     /// Unknown bytes fall back to the muted test rather than to silence. If a
     /// WebKit release stops reporting them, the worst case is the old
     /// behaviour for a few odd videos, not a media section that never appears.
-    public var isAudible: Bool {
-        isPlaying && !isMuted && (audioBytes.map { $0 > 0 } ?? true)
-    }
+    public var isAudible: Bool { isPlaying && hasSound }
+
+    /// Whether this would make a noise if it played — `isAudible` without the
+    /// requirement that it is playing right now.
+    ///
+    /// The difference is a paused video. A video you started and then paused
+    /// is still the one you came for, and the theater must still be offered
+    /// for it; the muted advert looping beside it never had any sound to
+    /// pause.
+    public var hasSound: Bool { !isMuted && (audioBytes.map { $0 > 0 } ?? true) }
 
     public var area: Double { max(0, width) * max(0, height) }
 }
@@ -162,5 +174,32 @@ public enum MediaRanking {
             if a.area != b.area { return a.area < b.area }
             return a.startedAt < b.startedAt
         }
+    }
+
+    /// The index of the element the theater should put on stage, or nil when
+    /// nothing on the page is worth staging.
+    ///
+    /// Not `primaryIndex`, though it is the same ranking underneath. The
+    /// primary pick answers "what is playing here", and a playing advert is a
+    /// fair answer to that — it outranks a paused feature on purpose, because
+    /// a now-playing strip describes what is playing. The theater asks a
+    /// different question: what did you come here to watch. The theater used
+    /// to stage the primary pick, which put the advert on stage whenever the
+    /// real video was paused or not yet started, and offered a theater on
+    /// articles whose only video was an advert.
+    ///
+    /// So only elements with a picture and with sound are eligible, and the
+    /// ranking chooses among those. The cost is a feature someone muted
+    /// before entering: it isn't offered. Muting first and staging second is
+    /// rare; a muted autoplay advert on an article is on half the web.
+    public static func stageIndex(
+        among candidates: [(signals: MediaSignals, hasPicture: Bool)]
+    ) -> Int? {
+        let eligible = candidates.indices.filter {
+            candidates[$0].hasPicture && candidates[$0].signals.hasSound
+        }
+        guard let pick = primaryIndex(among: eligible.map { candidates[$0].signals })
+        else { return nil }
+        return eligible[pick]
     }
 }

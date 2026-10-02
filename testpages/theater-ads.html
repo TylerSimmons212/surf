@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8"><title>Theater with an advert</title>
+<!-- Which video the theater picks when an advert is on the page.
+       ?ad      only a muted autoplay advert: no theater at all
+       ?main    the feature playing with sound, the advert looping beside it
+       ?paused  the feature started then paused, the advert still playing -->
+<style>body{font:16px -apple-system;background:#111;color:#eee;padding:20px}</style>
+<h1>Theater with an advert</h1>
+<video id="advert" muted playsinline autoplay loop width="300" height="170"
+       style="position:fixed;right:16px;bottom:16px;background:#600"
+       src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+<video id="feature" playsinline controls width="640" height="360" style="background:#000"
+       src="https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4"></video>
+<script>
+const which = location.search.slice(1) || 'main';
+const feature = document.getElementById('feature');
+if (which === 'ad') {
+  feature.remove();
+} else {
+  feature.volume = 0.01;   // audible to every check, quiet in the room
+  feature.muted = false;
+  feature.play().then(() => {
+    if (which === 'paused') { setTimeout(() => feature.pause(), 800); }
+  }).catch(e => document.title = 'blocked: ' + e.name);
+}
+</script>
