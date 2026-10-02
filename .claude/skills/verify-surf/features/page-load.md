@@ -45,7 +45,6 @@ check; it should already read `browsing`.
 - `border: shown`: the load outlived `LoadProgress.grace` (120 ms) and the arc was drawn.
 - `border: load took N ms, ending <ending>`: one of `unseen` (finished before anything was drawn), `closeLap(after:)` or `fade`.
 - `border: washed out` after a successful lap, or `border: faded out` after a failure.
-- `ripple: page snapshot W×H` when the page itself ripples. It's absent while media plays, in Focus, under viewport emulation or Reduce Motion, where the border draws its `Canvas` rings instead. `metal:` lines mean the shaders failed to compile and both effects fell back.
 
 The fixtures load too fast to make the border visible. Use a local server that holds one subresource for a few seconds, and an endpoint that sleeps and then drops the connection to get a slow failure. A drop makes WebKit log `failed — The network connection was lost.`, and the ending should read `fade`. A fast page often reads `unseen` even above 120 ms on a cold launch, because the main thread is busy enough that the reveal hasn't run yet.
 

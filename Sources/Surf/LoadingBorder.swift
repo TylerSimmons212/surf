@@ -12,11 +12,11 @@ import SwiftUI
 /// six. Mirrored rather than one crest lapping the window, because each only
 /// has half the distance to cover, both top corners move as soon as anything
 /// does, and the finish has a place: the point where they meet, which is where
-/// the ripple starts.
+/// the closing wash happens.
 ///
 /// How a load *ends* decides most of how this feels, and the rules for it are
 /// `LoadProgress.ending(shownFor:failed:)`: a load inside the grace period
-/// draws nothing, a successful one closes the lap, washes out in foam and ripples into the page, and
+/// draws nothing, a successful one closes the lap and washes out in foam, and
 /// a failed one fades where it stopped. What to draw along the way is
 /// `LoadProgress`; this only draws it.
 struct LoadingBorder: View {
@@ -36,10 +36,6 @@ struct LoadingBorder: View {
     /// 0 while loading, 1 once the lap has closed and the line has turned to
     /// foam.
     @State private var wash: CGFloat = 0
-    /// When the last finished load set off its ripple. Kept apart from the
-    /// rest of the state on purpose: the ripple outlives the border, and a new
-    /// load starting mid-ripple resets the border without cutting it short.
-    @State private var rippleStart: Date?
     @State private var trickle: Task<Void, Never>?
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -76,16 +72,9 @@ struct LoadingBorder: View {
     private var reach: CGFloat { CGFloat(progress.value) / 2 }
 
     var body: some View {
-        ZStack {
-            border
-                .opacity(isShown ? 1 : 0)
-            // Outside the border's fade: the rings carry on into the page after
-            // the line has gone, like the water settling after the wave.
-            if let rippleStart {
-                MeetingRipple(start: rippleStart, cornerRadius: windowRadius - inset)
-            }
-        }
+        border
         .padding(inset)
+        .opacity(isShown ? 1 : 0)
         .allowsHitTesting(false)
         .ignoresSafeArea()
         .onAppear { sync(isLoading: tab.isLoading) }
@@ -271,22 +260,13 @@ struct LoadingBorder: View {
         }
     }
 
-    /// The finish: the line brightens to foam, the crests dissolve, rings
-    /// spread from where they met, and the line fades while the rings carry on.
+    /// The finish: the line brightens to foam, the crests dissolve, and the
+    /// whole thing fades.
     private func washOut() {
         phase = .ending
         let generation = generation
         debugLog("border: washed out")
         withAnimation(.easeOut(duration: 0.12)) { wash = 1 }
-        if !reduceMotion {
-            // The page itself ripples when it can; the rings are what's drawn
-            // when it can't — no Metal, or a page that's moving underneath.
-            if PageRipple.canRipple(tab) {
-                NotificationCenter.default.post(name: .surfLoadDidWash, object: tab.id)
-            } else {
-                ripple()
-            }
-        }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(120))
             guard self.generation == generation else { return }
@@ -313,18 +293,6 @@ struct LoadingBorder: View {
         }
     }
 
-    /// Sets the rings going, and takes the ripple down once its last ring has
-    /// spread out, so its timeline stops asking for frames.
-    private func ripple() {
-        let start = Date.now
-        rippleStart = start
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(MeetingRipple.duration))
-            // A later load may have set off its own ripple meanwhile.
-            if rippleStart == start { rippleStart = nil }
-        }
-    }
-
     /// Back to nothing, at once. Invalidates every pending step.
     private func reset() {
         generation += 1
@@ -340,121 +308,6 @@ struct LoadingBorder: View {
             wash = 0
             progress.clear()
         }
-    }
-}
-
-// MARK: - The ripple
-
-/// Rings spreading into the page from six o'clock, where the two crests meet.
-///
-/// A `Canvas` on a `TimelineView`, rather than a view per ring: each frame is
-/// three arcs and a splash drawn into one layer, with no views to insert,
-/// diff or remove. The timeline only exists while the ripple does — the border
-/// takes it down when the last ring is done — so nothing ticks between loads.
-///
-/// Drawn the way water does it. Each ring decelerates as it spreads, because a
-/// real ripple loses speed as its energy spreads over a longer front; thins and
-/// fades as it goes for the same reason; and trails the one before it, smaller
-/// and dimmer, because the first ring carries most of the energy. The first is
-/// foam and the rest are shallow water. The centre flashes once at the moment
-/// of impact — the splash — and is gone before the first ring has gone far.
-private struct MeetingRipple: View {
-    let start: Date
-    let cornerRadius: CGFloat
-
-    /// From impact to the last ring fading out, in seconds.
-    static let duration: Double = ringLife + Double(ringCount - 1) * ringGap
-
-    private static let ringCount = 3
-    /// The delay between one ring and the next.
-    private static let ringGap: Double = 0.09
-    /// How long one ring takes to spread and fade.
-    private static let ringLife: Double = 0.75
-    private static let splashLife: Double = 0.28
-
-    var body: some View {
-        TimelineView(.animation) { timeline in
-            Canvas { context, size in
-                let elapsed = timeline.date.timeIntervalSince(start)
-                // The point on the bottom edge where the crests met. Rings
-                // centred on it are half below the window and clipped away, so
-                // what's seen are arcs spreading up into the page.
-                let centre = CGPoint(x: size.width / 2, y: size.height)
-                let reach = min(size.width, size.height) * 0.42
-
-                context.clip(
-                    to: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .path(in: CGRect(origin: .zero, size: size))
-                )
-
-                drawSplash(in: &context, at: centre, elapsed: elapsed)
-                for ring in 0..<Self.ringCount {
-                    drawRing(ring, in: &context, at: centre, reach: reach, elapsed: elapsed)
-                }
-            }
-        }
-    }
-
-    private func drawSplash(in context: inout GraphicsContext, at centre: CGPoint, elapsed: Double) {
-        let life = elapsed / Self.splashLife
-        guard life < 1 else { return }
-        let radius = 10 + 22 * easeOut(life)
-        let disc = Path(ellipseIn: CGRect(
-            x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2
-        ))
-        context.fill(
-            disc,
-            with: .radialGradient(
-                Gradient(colors: [
-                    OceanTide.foam.opacity(0.9 * (1 - life)),
-                    OceanTide.shallow.opacity(0),
-                ]),
-                center: centre,
-                startRadius: 0,
-                endRadius: radius
-            )
-        )
-    }
-
-    private func drawRing(
-        _ ring: Int,
-        in context: inout GraphicsContext,
-        at centre: CGPoint,
-        reach: CGFloat,
-        elapsed: Double
-    ) {
-        let life = (elapsed - Double(ring) * Self.ringGap) / Self.ringLife
-        guard life > 0, life < 1 else { return }
-
-        // Each ring a little shorter-reaching and dimmer than the one ahead.
-        let falloff = 1 - CGFloat(ring) * 0.14
-        let radius = 6 + easeOut(life) * reach * falloff
-        let fade = (1 - life) * (ring == 0 ? 0.95 : 0.6)
-        let width = 0.6 + 2.2 * (1 - life)
-        let circle = Path(ellipseIn: CGRect(
-            x: centre.x - radius, y: centre.y - radius, width: radius * 2, height: radius * 2
-        ))
-
-        // The glow first, underneath: a wide, soft band of the same ring, so
-        // the line reads as lit water rather than a drawn stroke.
-        context.drawLayer { glow in
-            glow.addFilter(.blur(radius: 6))
-            glow.stroke(
-                circle,
-                with: .color(OceanTide.shallow.opacity(fade * 0.55)),
-                lineWidth: width * 4
-            )
-        }
-        context.stroke(
-            circle,
-            with: .color((ring == 0 ? OceanTide.foam : OceanTide.shallow).opacity(fade)),
-            lineWidth: width
-        )
-    }
-
-    /// Cubic ease-out: quick off the mark, settling as it spreads.
-    private func easeOut(_ t: Double) -> CGFloat {
-        CGFloat(1 - pow(1 - min(max(t, 0), 1), 3))
     }
 }
 

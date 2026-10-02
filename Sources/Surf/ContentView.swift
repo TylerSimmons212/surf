@@ -168,10 +168,6 @@ struct ContentView: View {
         // Hidden titlebar with full-size content, so the page runs to every
         // window edge — nothing is reserved above it any more.
         .ignoresSafeArea()
-        // So a view deep inside a pane can find the window's own edges: the
-        // page's ripple starts where the border's crests meet, which is the
-        // window's bottom centre, not the pane's.
-        .coordinateSpace(.named(PageRipple.windowSpace))
         // The title lives on a leaf view so that only it observes
         // `displayTitle` — a page animating its title ("(3) Inbox…") would
         // otherwise re-evaluate this entire chrome body every tick.
@@ -788,9 +784,6 @@ private struct TabContent: View {
                             isInert: isInert,
                             viewportOverride: tab.emulatedViewport
                         )
-                        // On the web view itself, so the snapshot it ripples
-                        // lines up with the page pixel for pixel.
-                        .overlay { PageRipple(tab: tab) }
                     }
                     if let error = tab.lastError {
                         ErrorOverlay(message: error) { tab.reload() }
