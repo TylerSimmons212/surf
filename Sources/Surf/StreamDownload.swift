@@ -22,7 +22,9 @@ final class StreamDownload {
     /// would cap it at four however fast the link turned out to be.
     static let parallelism = Parallelism.ceiling
 
-    private let workingDirectory: URL
+    /// Where this run's partial output lives. Readable so a failed attempt can
+    /// hand it to the next one.
+    let workingDirectory: URL
     private var isCancelled = false
 
     /// What the user is told while this runs, in place of a byte count that means
@@ -30,11 +32,21 @@ final class StreamDownload {
     private let onDetail: @MainActor (String?) -> Void
     private let onProgress: @MainActor (Double, Int) -> Void
 
+    /// `resuming` is a previous attempt's directory, which makes this one carry
+    /// on from what is already in it.
+    ///
+    /// Passed in rather than derived from the manifest URL, which was the other
+    /// option. Deriving it would let a brand-new download resume an abandoned
+    /// one, which sounds better than it is: the downloads list is in memory only
+    /// and empty on relaunch, so resuming is a within-session idea, and a key
+    /// derived from a URL brings collisions and two concurrent downloads fighting
+    /// over one file for a capability nothing asked for.
     init(
+        resuming: URL? = nil,
         onDetail: @escaping @MainActor (String?) -> Void,
         onProgress: @escaping @MainActor (Double, Int) -> Void
     ) {
-        self.workingDirectory = FileManager.default.temporaryDirectory
+        self.workingDirectory = resuming ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("surf-stream-\(UUID().uuidString)", isDirectory: true)
         self.onDetail = onDetail
         self.onProgress = onProgress
@@ -288,28 +300,70 @@ final class StreamDownload {
         onStep: @escaping @MainActor (Double, Int) -> Void
     ) async -> Result<Void, StreamRefusal> {
         let started = ContinuousClock.now
+        let segments = rendition.segments
+        let journal = output.appendingPathExtension("progress")
+
+        // What a previous attempt left, if it described this same work. A
+        // mismatch — a different rendition, or a manifest whose segment count has
+        // moved — starts over rather than splicing bytes that no longer line up.
+        let resumed = Self.resumable(
+            journal: journal, output: output,
+            renditionID: rendition.id, segmentCount: segments.count
+        )
+        if let resumed {
+            debugLog("stream: \(label) resuming at segment \(resumed.done) "
+                + "of \(resumed.segmentCount), \(resumed.bytes) bytes")
+        }
+
         guard let handle = try? StreamAssembler.open(output) else {
             debugLog("stream: \(label) couldn't open \(output.path)")
             return .failure(.unreadable)
         }
         defer { try? handle.close() }
 
+        if let resumed {
+            // Cut back to the last accounted-for byte. The file may be longer: a
+            // write interrupted partway leaves a tail no segment claimed, and
+            // appending after it would splice a fragment into the middle of the
+            // video.
+            guard (try? handle.truncate(atOffset: UInt64(resumed.bytes))) != nil,
+                  (try? handle.seekToEnd()) != nil
+            else {
+                debugLog("stream: \(label) couldn't truncate; starting over")
+                return .failure(.unreadable)
+            }
+        } else {
+            // Nothing to resume, so whatever is there is from work that no longer
+            // applies.
+            try? handle.truncate(atOffset: 0)
+            try? FileManager.default.removeItem(at: journal)
+        }
+
         // The header first, and on its own: without it the segments are not a
-        // file, and there is nothing to parallelise about one request.
-        if let initSegment = rendition.initSegment {
+        // file, and there is nothing to parallelise about one request. Skipped on
+        // a resume, where it is already the first thing in the file.
+        var written = resumed?.bytes ?? 0
+        if resumed == nil, let initSegment = rendition.initSegment {
             guard case .success(let data) = await fetcher.fetch(initSegment) else {
                 debugLog("stream: \(label) init segment refused")
                 return .failure(.unreadable)
             }
             try? handle.write(contentsOf: data)
+            // Counted, which it was not at first. The record is a truncation
+            // point into this file, and the header is part of the file: leaving
+            // it out made the recorded offset short by exactly the header's
+            // length, so resuming would have cut that many bytes off the end of
+            // the last good segment. Caught by noticing the file was 706 bytes
+            // longer than the record claimed, and that 706 was the header.
+            written += data.count
         }
-
-        let segments = rendition.segments
         // The window is the ceiling, so the buffer is bounded once and the
         // connection count moves inside it.
         var schedule = SegmentSchedule(
-            durations: segments.map(\.duration), window: Parallelism.ceiling
+            durations: segments.map(\.duration), window: Parallelism.ceiling,
+            completed: Set(0..<(resumed?.done ?? 0))
         )
+
         var parallelism = Parallelism()
         var pending: [Int: Data] = [:]
         var peak = parallelism.allowed
@@ -362,12 +416,28 @@ final class StreamDownload {
                     }
                 }
 
+                var flushed = false
                 for writable in schedule.takeWritable() {
                     if let data = pending.removeValue(forKey: writable) {
                         try? handle.write(contentsOf: data)
+                        written += data.count
+                        flushed = true
                     }
                 }
-                onStep(schedule.fraction, schedule.bytesWritten)
+                if flushed {
+                    // After the write, never before: a record claiming bytes that
+                    // are not in the file yet is the one way this makes things
+                    // worse rather than better.
+                    try? handle.synchronize()
+                    Self.record(
+                        StreamProgress(
+                            renditionID: rendition.id, segmentCount: segments.count,
+                            done: schedule.cursor, bytes: written
+                        ),
+                        to: journal
+                    )
+                }
+                onStep(schedule.fraction, schedule.bytesWritten + (resumed?.bytes ?? 0))
             }
             group.cancelAll()
         }
@@ -387,8 +457,14 @@ final class StreamDownload {
             + "(peak \(peak)), drained=\(schedule.isDrained)")
         guard schedule.isDrained else {
             debugLog("stream: \(label) stalled at segment \(schedule.failedSegment ?? -1)")
-            return .failure(.unreadable)
+            // Not `.unreadable`: that falls back to the subprocess, which would
+            // discard everything transferred so far. The bytes on disk are worth
+            // more than another engine's fresh start.
+            return .failure(.interrupted)
         }
+        // A whole file has nothing left to resume, and a stale record beside it
+        // would be read by the next attempt at the same name.
+        try? FileManager.default.removeItem(at: journal)
         return .success(())
     }
 
@@ -399,5 +475,50 @@ final class StreamDownload {
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "video" : String(cleaned.prefix(180))
+    }
+}
+
+// MARK: - The resume record
+
+extension StreamDownload {
+
+    /// A previous attempt's progress, when it describes this work and the file it
+    /// refers to is still long enough to contain it.
+    ///
+    /// Both checks are needed. The record can describe different work, and the
+    /// file can have been truncated or removed since — on disk they are two
+    /// things, and believing one about the other is how a resume starts writing
+    /// into a file that is shorter than the offset it was told to continue from.
+    static func resumable(
+        journal: URL, output: URL, renditionID: String, segmentCount: Int
+    ) -> StreamProgress? {
+        guard let text = try? String(contentsOf: journal, encoding: .utf8),
+              let progress = StreamProgress.parse(text),
+              progress.describes(renditionID: renditionID, segmentCount: segmentCount),
+              !progress.isEmpty
+        else { return nil }
+
+        let length = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size])
+            .flatMap { $0 as? Int } ?? 0
+        guard length >= progress.bytes else { return nil }
+        return progress
+    }
+
+    static func record(_ progress: StreamProgress, to journal: URL) {
+        try? progress.text.write(to: journal, atomically: true, encoding: .utf8)
+    }
+
+    /// Whether there is partial output here worth keeping for a retry.
+    ///
+    /// Asked on failure, because keeping every failed run's directory would leave
+    /// most of a download on disk for every plan that was never going to work —
+    /// a protected stream, a container we cannot mux — while keeping none of them
+    /// makes resuming unreachable. Progress on disk is the thing that
+    /// distinguishes the two.
+    var hasPartialOutput: Bool {
+        guard let entries = try? FileManager.default.contentsOfDirectory(
+            at: workingDirectory, includingPropertiesForKeys: nil
+        ) else { return false }
+        return entries.contains { $0.pathExtension == "progress" }
     }
 }

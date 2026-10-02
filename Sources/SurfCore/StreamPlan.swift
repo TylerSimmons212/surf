@@ -314,6 +314,22 @@ public enum StreamRefusal: Error, Equatable, Sendable {
     /// More hosts than a plan may send cookies to.
     case tooManyHosts(Int)
 
+    /// The transfer began and then stopped — a segment the server would not
+    /// serve, a connection that dropped.
+    ///
+    /// The one refusal that does not fall back, and the reason is the invariant
+    /// the engine is built on: refuse before the first segment byte, or own the
+    /// download to completion. Handing a half-transferred download to the
+    /// subprocess throws away everything already fetched and starts again from
+    /// nothing, which on a large file is minutes of someone's time traded for a
+    /// worse outcome than saying so and keeping the bytes.
+    ///
+    /// Found by testing resume: a stalled download fell back, the fallback
+    /// removed the row, and removing the row deleted the partial output the retry
+    /// was supposed to continue from. Resume was unreachable by construction and
+    /// the invariant was being broken in the same breath.
+    case interrupted
+
     /// Whether handing this to the subprocess is worth trying.
     ///
     /// The distinction that matters most in this type. Everything we cannot do
@@ -322,7 +338,7 @@ public enum StreamRefusal: Error, Equatable, Sendable {
     /// worse message, so refusing immediately in a sentence someone wrote is the
     /// better outcome.
     public var allowsFallback: Bool {
-        self != .protected
+        self != .protected && self != .interrupted
     }
 
     /// Shown only when there is no fallback left. Everything else is invisible,
@@ -333,6 +349,10 @@ public enum StreamRefusal: Error, Equatable, Sendable {
             "This video is protected and can't be saved"
         case .live:
             "This is a live stream, so there's no file to save yet"
+        case .interrupted:
+            // Says what to do, because unlike the others this one is worth
+            // doing: the partial file is kept and a retry carries on from it.
+            "The download stopped partway — retry to carry on from here"
         default:
             "Couldn't save this video"
         }

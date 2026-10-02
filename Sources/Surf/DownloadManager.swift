@@ -86,6 +86,19 @@ final class DownloadItem: Identifiable {
     /// `extraction` for the same reason those two are with each other.
     @ObservationIgnored var stream: StreamDownload?
 
+    /// The manifests a stream download was started from, kept so a retry can go
+    /// back through the same engine.
+    ///
+    /// Without this a failed stream item fell through to the WebKit branch of
+    /// `retry` with the manifest URL as its source, and saved the playlist as a
+    /// video — the exact bug the content-type reroute exists to prevent, arriving
+    /// by a route that bypasses it.
+    @ObservationIgnored var manifests: [URL] = []
+
+    /// A failed attempt's scratch directory, when it left partial output behind.
+    /// A retry continues in it instead of starting the transfer again.
+    @ObservationIgnored var resumeDirectory: URL?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
@@ -172,6 +185,14 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
     func remove(_ item: DownloadItem) {
         if item.isActive { cancel(item) }
+        // A partial transfer the user has dismissed is garbage, and /var/folders
+        // is only swept by the system eventually. `retry` clears this first,
+        // precisely so the directory it is about to resume from survives being
+        // removed from the list.
+        if let resuming = item.resumeDirectory {
+            try? FileManager.default.removeItem(at: resuming)
+            item.resumeDirectory = nil
+        }
         items.removeAll { $0 === item }
         itemsByTab = itemsByTab.filter { $0.value !== item }
     }
@@ -182,6 +203,30 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     func retry(_ item: DownloadItem, in tab: Tab?) {
+        // A stream download goes back through the stream engine, and continues in
+        // the directory the last attempt left if it left one. Checked before the
+        // extraction branch because a stream item that fell through to the WebKit
+        // branch below would be handed its manifest URL as a plain file and save
+        // the playlist.
+        if !item.manifests.isEmpty {
+            let manifests = item.manifests
+            let pageURL = item.pageURL
+            let expectation = item.expectation
+            let resuming = item.resumeDirectory
+            let title = (item.filename as NSString).deletingPathExtension
+            // Cleared before `remove`, which deletes it otherwise — the whole
+            // point of this branch is to keep the directory the next attempt
+            // continues in. Written the other way round first, and the comment in
+            // `remove` claiming it had been handled is what caught it.
+            item.resumeDirectory = nil
+            remove(item)
+            startStreamDownload(
+                from: manifests, page: pageURL, title: title, tab: tab,
+                expecting: expectation, resuming: resuming
+            )
+            return
+        }
+
         // An extracted download's input was the page, and re-running yt-dlp
         // against it needs none of the web view's help.
         if item.isExtracted, let pageURL = item.pageURL {
@@ -430,7 +475,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         page pageURL: URL?,
         title: String,
         tab: Tab?,
-        expecting expectation: SavedMedia.Expectation?
+        expecting expectation: SavedMedia.Expectation?,
+        resuming: URL? = nil
     ) {
         guard let first = manifests.first else { return }
         let placeholder = sanitize(title.isEmpty ? (first.host ?? "video") : title)
@@ -440,10 +486,13 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.pageURL = pageURL
         item.tab = tab
         item.expectation = expectation
+        item.manifests = manifests
+        item.resumeDirectory = resuming
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
 
         let download = StreamDownload(
+            resuming: resuming,
             onDetail: { [weak item] detail in
                 guard let item, item.isActive else { return }
                 item.detail = detail
@@ -481,9 +530,21 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 // plan in the log and no file and no error anywhere.
                 await self.accept(item, produced: produced.url, expecting: produced.expectation)
                 download.cleanUp()
+                item.resumeDirectory = nil
 
             case .failure(let refusal):
-                download.cleanUp()
+                // Kept only when there is partial output to come back to.
+                // Keeping every failure's directory would leave most of a
+                // download on disk for every plan that was never going to work;
+                // keeping none makes resuming unreachable.
+                if download.hasPartialOutput, refusal == .interrupted {
+                    item.resumeDirectory = download.workingDirectory
+                    debugLog("stream: keeping \(download.workingDirectory.lastPathComponent)"
+                        + " for a retry")
+                } else {
+                    download.cleanUp()
+                    item.resumeDirectory = nil
+                }
                 debugLog("stream: refused — \(refusal) fallback=\(refusal.allowsFallback)")
                 guard refusal.allowsFallback, let pageURL else {
                     item.state = .failed(refusal.message)
