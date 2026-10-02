@@ -74,7 +74,8 @@ public enum HLSPlaylist {
                     role: role,
                     manifestURL: url,
                     codecs: attrs["CODECS"],
-                    audioGroup: attrs["GROUP-ID"]
+                    audioGroup: attrs["GROUP-ID"],
+                    isDefault: attrs["DEFAULT"]?.uppercased() == "YES"
                 ))
                 continue
             }

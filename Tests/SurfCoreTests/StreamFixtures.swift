@@ -71,6 +71,26 @@ enum StreamFixtures {
     #EXT-X-ENDLIST
     """
 
+    /// The soundtrack for a video-only variant. Same duration, different segment
+    /// count, which is normal: audio and video segment on their own boundaries.
+    static let audioMedia = """
+    #EXTM3U
+    #EXT-X-VERSION:7
+    #EXT-X-TARGETDURATION:7
+    #EXT-X-MEDIA-SEQUENCE:1
+    #EXT-X-PLAYLIST-TYPE:VOD
+    #EXT-X-MAP:URI="a-init.mp4"
+    #EXTINF:7.000,
+    a-1.m4a
+    #EXTINF:7.000,
+    a-2.m4a
+    #EXTINF:7.000,
+    a-3.m4a
+    #EXTINF:7.000,
+    a-4.m4a
+    #EXT-X-ENDLIST
+    """
+
     /// A key anyone may fetch. Not DRM, and the distinction a naive reading gets
     /// wrong.
     static let aes128Media = """

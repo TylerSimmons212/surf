@@ -82,6 +82,11 @@ public struct StreamRendition: Equatable, Sendable, Identifiable {
     /// one.
     public var audioGroup: String?
 
+    /// `DEFAULT=YES`. Which soundtrack to take when a group offers several, and
+    /// the only thing in the manifest that expresses the publisher's preference
+    /// between an original language and a dub.
+    public var isDefault: Bool
+
     /// The header that makes the segments mean anything. Concatenating it with
     /// them produces a file AVFoundation reads directly, which is why fMP4
     /// assembly is not a remux.
@@ -99,6 +104,7 @@ public struct StreamRendition: Equatable, Sendable, Identifiable {
         bandwidth: Int? = nil,
         codecs: String? = nil,
         audioGroup: String? = nil,
+        isDefault: Bool = false,
         initSegment: StreamSegment? = nil,
         segments: [StreamSegment] = []
     ) {
@@ -111,6 +117,7 @@ public struct StreamRendition: Equatable, Sendable, Identifiable {
         self.bandwidth = bandwidth
         self.codecs = codecs
         self.audioGroup = audioGroup
+        self.isDefault = isDefault
         self.initSegment = initSegment
         self.segments = segments
     }

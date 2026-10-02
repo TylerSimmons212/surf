@@ -37,15 +37,15 @@ public struct StreamPlan: Equatable, Sendable {
 
     // MARK: - Choosing
 
-    /// Which rendition to take, or why we will not.
+    /// Which rendition or pair of renditions to take, or why we will not.
     ///
     /// Called against a master playlist, before its variants have been expanded,
-    /// because you cannot sensibly fetch every variant's segment list in order to
-    /// decide which one you wanted.
+    /// because fetching every variant's segment list in order to decide which one
+    /// you wanted is not a reasonable way to answer the question.
     public static func pick(
         from index: StreamIndex,
         preferring preference: StreamPreference = .init()
-    ) -> Result<StreamRendition, StreamRefusal> {
+    ) -> Result<StreamPick, StreamRefusal> {
         // Order matters. Protection and liveness are facts about the whole stream
         // and make every rendition in it moot, so they are answered before
         // anything is compared.
@@ -53,19 +53,28 @@ public struct StreamPlan: Equatable, Sendable {
         if index.protection == .fetchableKey { return .failure(.encryptedWithFetchableKey) }
         if index.isLive { return .failure(.live) }
 
+        // Muxed and video-only renditions compete on equal terms, and the tallest
+        // wins whichever it is. Preferring one packaging over the other would
+        // mean handing back 720p from a muxed variant while a 1080p video stream
+        // sat next to it, for no reason the user would recognise.
         let playable = index.renditions.filter { $0.role == .muxed || $0.role == .video }
         guard !playable.isEmpty else { return .failure(.noRenditions) }
-
-        // Only streams that carry their own sound, for now. A video rendition
-        // with its audio in another playlist needs a muxer, and until there is
-        // one, saying so and falling back beats producing a silent file.
-        let muxed = playable.filter { $0.role == .muxed }
-        guard !muxed.isEmpty else { return .failure(.separateTracks) }
-
-        guard let best = best(of: muxed, under: preference.maxHeight) else {
+        guard let video = best(of: playable, under: preference.maxHeight) else {
             return .failure(.noRenditions)
         }
-        return .success(best)
+
+        guard video.role == .video else {
+            return .success(StreamPick(video: video, audio: nil))
+        }
+
+        // A video-only stream needs its soundtrack, and the manifest says which
+        // group it belongs to. No group, or a group with nothing in it, means the
+        // manifest is describing something we cannot assemble.
+        guard let group = video.audioGroup,
+              let audio = soundtrack(forGroup: group, in: index.renditions)
+        else { return .failure(.separateTracks) }
+
+        return .success(StreamPick(video: video, audio: audio))
     }
 
     /// Tallest first, then fastest.
@@ -77,18 +86,18 @@ public struct StreamPlan: Equatable, Sendable {
     /// Bandwidth breaks ties because two renditions at one height are the same
     /// picture at two qualities. Renditions with no declared height sort last
     /// rather than being dropped: a stream that declares nothing is still a
-    /// stream, and it is the only candidate on plenty of single-variant sites.
+    /// stream, and on plenty of single-variant sites it is the only candidate.
     private static func best(
         of renditions: [StreamRendition], under cap: Int?
     ) -> StreamRendition? {
-        let eligible = cap.map { cap in
-            renditions.filter { ($0.height ?? 0) <= cap }
-        } ?? renditions
-
         func taller(_ a: StreamRendition, _ b: StreamRendition) -> Bool {
             if (a.height ?? 0) != (b.height ?? 0) { return (a.height ?? 0) < (b.height ?? 0) }
             return (a.bandwidth ?? 0) < (b.bandwidth ?? 0)
         }
+
+        let eligible = cap.map { cap in
+            renditions.filter { ($0.height ?? 0) <= cap }
+        } ?? renditions
 
         // A cap below every rendition would otherwise refuse the stream outright.
         // The smallest on offer is the more useful reading of "no bigger than
@@ -98,47 +107,78 @@ public struct StreamPlan: Equatable, Sendable {
         return eligible.max(by: taller)
     }
 
+    /// `DEFAULT=YES` first, then whatever came first in the manifest.
+    ///
+    /// A group routinely holds several languages and a described-video track, and
+    /// `DEFAULT` is the only thing in the format that states the publisher's
+    /// preference between them. Manifest order is the tiebreak because it is the
+    /// order the publisher chose to list them in.
+    private static func soundtrack(
+        forGroup group: String, in renditions: [StreamRendition]
+    ) -> StreamRendition? {
+        let candidates = renditions.filter { $0.role == .audio && $0.audioGroup == group }
+        return candidates.first { $0.isDefault } ?? candidates.first
+    }
+
     // MARK: - Building
 
-    /// The plan, once the picked rendition's own playlist has been read.
+    /// The plan, once the picked renditions' own playlists have been read.
     ///
-    /// `index` is that second playlist and carries the segments. `chosen` is what
-    /// the master said about it and carries the resolution, bandwidth and codecs,
-    /// which a media playlist does not restate. Neither has the whole picture,
-    /// which is why both are arguments.
+    /// `videoIndex` and `audioIndex` are those playlists and carry the segments.
+    /// `pick` is what the master said about them and carries the resolution,
+    /// bandwidth and codecs, which a media playlist does not restate. Neither
+    /// side has the whole picture, which is why both are arguments.
     public static func make(
-        from index: StreamIndex,
-        labelledBy chosen: StreamRendition,
+        video videoIndex: StreamIndex,
+        audio audioIndex: StreamIndex? = nil,
+        labelledBy pick: StreamPick,
         preferring preference: StreamPreference = .init()
     ) -> Result<StreamPlan, StreamRefusal> {
-        if index.protection == .protected { return .failure(.protected) }
-        if index.protection == .fetchableKey { return .failure(.encryptedWithFetchableKey) }
-        if index.isLive { return .failure(.live) }
-
-        guard let expanded = index.renditions.first(where: { !$0.segments.isEmpty }) else {
-            return .failure(.noSegments)
+        // Re-checked rather than trusted from `pick`. Most streams declare their
+        // protection in the media playlist, not the master, so checking only at
+        // pick time would miss nearly all of them.
+        for index in [videoIndex, audioIndex].compactMap({ $0 }) {
+            if index.protection == .protected { return .failure(.protected) }
+            if index.protection == .fetchableKey {
+                return .failure(.encryptedWithFetchableKey)
+            }
+            if index.isLive { return .failure(.live) }
         }
 
-        // fMP4 concatenates into a file AVFoundation reads. Nothing else does,
-        // and attempting one produces something that looks like a video and is
-        // not.
-        guard expanded.container == .fragmentedMP4 else {
-            return .failure(.unsupportedContainer(expanded.container))
+        guard var video = expanded(videoIndex) else { return .failure(.noSegments) }
+
+        // fMP4 concatenates into a file AVFoundation reads, and separate fMP4
+        // tracks mux into one with no re-encode. Nothing else does either, and
+        // attempting it produces something that looks like a video and is not.
+        guard video.container == .fragmentedMP4 else {
+            return .failure(.unsupportedContainer(video.container))
         }
 
-        var video = expanded
         // Carry the master's description across. The media playlist knows the
         // segments; only the master knew what they are.
-        video.id = chosen.id
-        video.width = chosen.width ?? video.width
-        video.height = chosen.height ?? video.height
-        video.bandwidth = chosen.bandwidth ?? video.bandwidth
-        video.codecs = chosen.codecs ?? video.codecs
+        video.id = pick.video.id
+        video.width = pick.video.width ?? video.width
+        video.height = pick.video.height ?? video.height
+        video.bandwidth = pick.video.bandwidth ?? video.bandwidth
+        video.codecs = pick.video.codecs ?? video.codecs
 
-        let hosts = Set(
-            ([video.initSegment].compactMap { $0 } + video.segments)
-                .compactMap { $0.url.host }
-        )
+        var audio: StreamRendition?
+        if let chosenAudio = pick.audio {
+            guard let audioIndex, var track = expanded(audioIndex) else {
+                return .failure(.noSegments)
+            }
+            guard track.container == .fragmentedMP4 else {
+                return .failure(.unsupportedContainer(track.container))
+            }
+            track.id = chosenAudio.id
+            track.role = .audio
+            track.codecs = chosenAudio.codecs ?? track.codecs
+            audio = track
+        }
+
+        let segments = ([video.initSegment] + [audio?.initSegment]).compactMap { $0 }
+            + video.segments + (audio?.segments ?? [])
+        let hosts = Set(segments.compactMap { $0.url.host })
         // The manifest names the hosts we are about to send cookies to, which
         // makes a manifest reaching across a dozen of them worth refusing. Real
         // CDNs use one or two; a long list is not a pattern worth serving.
@@ -148,19 +188,40 @@ public struct StreamPlan: Equatable, Sendable {
 
         return .success(StreamPlan(
             video: video,
-            audio: nil,
-            container: expanded.container,
+            audio: audio,
+            container: .fragmentedMP4,
             expectation: SavedMedia.Expectation(
                 wantsVideo: true,
-                // Only when the manifest positively said so. A variant with no
-                // CODECS attribute is not a promise of sound, and failing a
-                // silent stream for lacking what nothing claimed it had would be
-                // the guard inventing a bug.
-                wantsAudio: StreamCodecs.declaresAudio(video.codecs),
-                declaredDuration: index.declaredDuration
+                // A separate audio track is the manifest stating outright that
+                // this has sound. Otherwise only a CODECS attribute naming an
+                // audio format counts: a variant that declared nothing is not a
+                // promise, and failing a silent stream for lacking what nothing
+                // claimed it had would be the guard inventing a bug.
+                wantsAudio: audio != nil || StreamCodecs.declaresAudio(video.codecs),
+                declaredDuration: videoIndex.declaredDuration
             ),
             hosts: hosts
         ))
+    }
+
+    private static func expanded(_ index: StreamIndex) -> StreamRendition? {
+        index.renditions.first { !$0.segments.isEmpty }
+    }
+}
+
+/// The renditions chosen, before their playlists have been fetched.
+///
+/// Two fields rather than a pair of overloads, because "one stream with sound in
+/// it" and "a video stream and its soundtrack" are the same decision with
+/// different packaging, and every caller downstream has to handle both anyway.
+public struct StreamPick: Equatable, Sendable {
+    public var video: StreamRendition
+    /// Nil when `video` carries its own sound.
+    public var audio: StreamRendition?
+
+    public init(video: StreamRendition, audio: StreamRendition? = nil) {
+        self.video = video
+        self.audio = audio
     }
 }
 
