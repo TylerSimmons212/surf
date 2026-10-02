@@ -37,6 +37,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
     /// from one the user has sized themselves.
     @ObservationIgnored private var presentedSize: CGSize?
     @ObservationIgnored private var trackingTask: Task<Void, Never>?
+    /// Fires once the panel has stopped moving. See `scheduleSettle`.
+    @ObservationIgnored private var settleTask: Task<Void, Never>?
 
     private override init() { super.init() }
 
@@ -219,6 +221,8 @@ final class PopOutController: NSObject, NSWindowDelegate {
 
         trackingTask?.cancel()
         trackingTask = nil
+        settleTask?.cancel()
+        settleTask = nil
 
         // Detach before the panel goes away, or closing it would take the web
         // view down with it and the tab would come back blank.
@@ -243,9 +247,57 @@ final class PopOutController: NSObject, NSWindowDelegate {
     ///
     /// They fire for the placement we do ourselves as well, which is harmless:
     /// re-recording the position it was just given writes back the same frame.
-    func windowDidMove(_ notification: Notification) { rememberFrame() }
+    func windowDidMove(_ notification: Notification) {
+        rememberFrame()
+        scheduleSettle()
+    }
+
+    /// Waits for the moving to stop, then lets the panel settle.
+    ///
+    /// There is no `windowDidEndMove` to pair with the resize notification,
+    /// and the obvious hook — the drag handle's own `performDrag`, which
+    /// blocks until the mouse comes up — turned out not to be the only way
+    /// this panel moves: AppKit drags a borderless window by its background
+    /// too, and that path reports nothing. Measured, by watching a drag move
+    /// the panel while the handle's `mouseDown` never ran at all.
+    ///
+    /// So the signal is the moving stopping. Short enough to feel like part of
+    /// letting go, long enough that it never fires mid-drag.
+    private func scheduleSettle() {
+        settleTask?.cancel()
+        settleTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            self?.settleIntoCorner()
+        }
+    }
 
     func windowDidEndLiveResize(_ notification: Notification) { rememberFrame() }
+
+    /// Lets go of the panel into the nearest corner, when it was dropped near
+    /// one.
+    ///
+    /// Short and flat rather than springy: this runs under the pointer the
+    /// instant it is released, and a bouncy curve reads as the window being
+    /// dropped rather than placed.
+    private func settleIntoCorner() {
+        guard let panel, panel.isVisible,
+              let screen = panel.screen ?? NSScreen.main,
+              let target = PopOutSizing.snapped(panel.frame, onVisible: screen.visibleFrame)
+        else {
+            rememberFrame()
+            return
+        }
+        guard target != panel.frame else { return }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(target, display: true)
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated { self?.rememberFrame() }
+        }
+    }
 
     private func rememberFrame() {
         guard let panel, panel.isVisible else { return }

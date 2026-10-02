@@ -167,3 +167,60 @@ struct PopOutPlacementTests {
         #expect(f.minY == visible.minY)
     }
 }
+
+@Suite("Pop-out corner snapping")
+struct PopOutSnapTests {
+
+    private let visible = CGRect(x: 0, y: 0, width: 1512, height: 949)
+    private let size = CGSize(width: 480, height: 270)
+
+    private func frame(at origin: CGPoint) -> CGRect { CGRect(origin: origin, size: size) }
+
+    @Test("Let go near the bottom trailing corner, it settles there")
+    func bottomTrailing() {
+        let target = CGPoint(x: visible.maxX - size.width - PopOutSizing.margin,
+                             y: visible.minY + PopOutSizing.margin)
+        let dropped = frame(at: CGPoint(x: target.x - 40, y: target.y + 30))
+        #expect(PopOutSizing.snapped(dropped, onVisible: visible)?.origin == target)
+    }
+
+    @Test("And the top leading one")
+    func topLeading() {
+        let target = CGPoint(x: visible.minX + PopOutSizing.margin,
+                             y: visible.maxY - size.height - PopOutSizing.margin)
+        let dropped = frame(at: CGPoint(x: target.x + 50, y: target.y - 50))
+        #expect(PopOutSizing.snapped(dropped, onVisible: visible)?.origin == target)
+    }
+
+    @Test("Let go in the middle of the screen, it stays there")
+    func middle() {
+        // The whole reason this returns an optional: a panel parked beside what
+        // you are reading is a thing somebody chose, not a mistake to correct.
+        let centre = CGPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2)
+        #expect(PopOutSizing.snapped(frame(at: centre), onVisible: visible) == nil)
+    }
+
+    @Test("Just outside reach is left alone, just inside is taken")
+    func theEdgeOfTheMagnet() {
+        let target = CGPoint(x: visible.minX + PopOutSizing.margin,
+                             y: visible.minY + PopOutSizing.margin)
+        let inside = frame(at: CGPoint(x: target.x + PopOutSizing.snapReach - 1, y: target.y))
+        let outside = frame(at: CGPoint(x: target.x + PopOutSizing.snapReach + 1, y: target.y))
+        #expect(PopOutSizing.snapped(inside, onVisible: visible)?.origin == target)
+        #expect(PopOutSizing.snapped(outside, onVisible: visible) == nil)
+    }
+
+    @Test("Already in a corner, snapping changes nothing")
+    func idempotent() {
+        let target = CGPoint(x: visible.maxX - size.width - PopOutSizing.margin,
+                             y: visible.minY + PopOutSizing.margin)
+        let settled = frame(at: target)
+        #expect(PopOutSizing.snapped(settled, onVisible: visible) == settled)
+    }
+
+    @Test("The size is never changed by snapping, only the corner")
+    func sizeUntouched() {
+        let odd = CGRect(x: 30, y: 30, width: 333, height: 777)
+        #expect(PopOutSizing.snapped(odd, onVisible: visible)?.size == odd.size)
+    }
+}

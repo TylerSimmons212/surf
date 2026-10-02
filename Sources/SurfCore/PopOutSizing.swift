@@ -101,6 +101,47 @@ public enum PopOutSizing {
         return CGRect(origin: clamped(remembered.origin, size: size, in: visible), size: size)
     }
 
+    /// How near a corner the panel has to be let go for it to settle there.
+    ///
+    /// Generous, because a corner is nearly always where somebody flinging a
+    /// small window is aiming, and a magnet you have to be accurate for is a
+    /// magnet that reads as broken.
+    public static let snapReach: CGFloat = 140
+
+    /// The corner this panel should settle into, or nil when it was let go too
+    /// far from any of them.
+    ///
+    /// Nil is the interesting half. The system's own Picture-in-Picture always
+    /// goes to a corner, which works because it has nothing to say and no
+    /// controls to reach — this panel is resizable, carries a scrubber, and is
+    /// a reasonable thing to park beside the thing you are reading. So the
+    /// corners pull, and the middle of the screen is still somewhere you are
+    /// allowed to leave it.
+    public static func snapped(
+        _ frame: CGRect, onVisible visible: CGRect, within reach: CGFloat = snapReach
+    ) -> CGRect? {
+        guard visible.width > 0, visible.height > 0 else { return nil }
+
+        let left = visible.minX + margin
+        let right = visible.maxX - frame.width - margin
+        let bottom = visible.minY + margin
+        let top = visible.maxY - frame.height - margin
+
+        let corners = [
+            CGPoint(x: left, y: bottom), CGPoint(x: right, y: bottom),
+            CGPoint(x: left, y: top), CGPoint(x: right, y: top),
+        ]
+        let nearest = corners.min {
+            distance($0, frame.origin) < distance($1, frame.origin)
+        }
+        guard let nearest, distance(nearest, frame.origin) <= reach else { return nil }
+        return CGRect(origin: nearest, size: frame.size)
+    }
+
+    private static func distance(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        ((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)).squareRoot()
+    }
+
     /// An origin that keeps the whole panel on screen.
     private static func clamped(_ origin: CGPoint, size: CGSize, in visible: CGRect) -> CGPoint {
         CGPoint(

@@ -271,6 +271,11 @@ private final class DragView: NSView {
     override func mouseDown(with event: NSEvent) {
         // performDrag hands the whole gesture to the window server, so the drag
         // keeps up with the pointer instead of being chased frame by frame.
+        //
+        // It also runs its own event loop and does not return until the mouse
+        // comes up, which is the one honest "the drag is over" signal AppKit
+        // offers — there is no `windowDidEndMove` to pair with the resize one,
+        // and watching `windowDidMove` go quiet means guessing at a timeout.
         window?.performDrag(with: event)
     }
 }
