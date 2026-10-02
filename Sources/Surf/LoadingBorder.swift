@@ -278,7 +278,15 @@ struct LoadingBorder: View {
         let generation = generation
         debugLog("border: washed out")
         withAnimation(.easeOut(duration: 0.12)) { wash = 1 }
-        if !reduceMotion { ripple() }
+        if !reduceMotion {
+            // The page itself ripples when it can; the rings are what's drawn
+            // when it can't — no Metal, or a page that's moving underneath.
+            if PageRipple.canRipple(tab) {
+                NotificationCenter.default.post(name: .surfLoadDidWash, object: tab.id)
+            } else {
+                ripple()
+            }
+        }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(120))
             guard self.generation == generation else { return }

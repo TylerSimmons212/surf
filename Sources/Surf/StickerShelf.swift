@@ -498,6 +498,11 @@ private struct PeelingSticker<Face: View>: View, Animatable {
     var body: some View {
         if progress <= 0 {
             face.frame(width: size, height: size)
+        } else if MetalEffects.isAvailable {
+            // A real sheet, bent round the curl in perspective. Same canvas
+            // arrangement as below, for the same reason.
+            PeelMetalView(face: AnyView(face), size: size, progress: progress)
+                .frame(width: size, height: size)
         } else {
             // Three tiles across, the sticker in the middle: past halfway the
             // folded part overhangs the tile's top-leading edge, and a canvas
