@@ -100,7 +100,9 @@ public struct SegmentSchedule: Equatable, Sendable {
     /// A stuck schedule rather than a finished one. Without this a download whose
     /// last segment gave up would wait on a completion that is never coming.
     public var isStalled: Bool {
-        !isComplete && inFlight.isEmpty && peekNext() == nil
+        // Deliberately unlimited: the question is whether any work remains, not
+        // whether we are currently allowed to start it.
+        !isComplete && inFlight.isEmpty && peekNext(upTo: nil) == nil
     }
 
     /// Duration-weighted and monotone.
@@ -120,16 +122,24 @@ public struct SegmentSchedule: Equatable, Sendable {
 
     // MARK: - Handing out work
 
-    /// The next segment to fetch, or nil when the window is full, the work is
-    /// done, or everything left is already running.
-    public mutating func next() -> Int? {
-        guard let index = peekNext() else { return nil }
+    /// The next segment to fetch, or nil when there is no room, no work, or
+    /// everything left is already running.
+    ///
+    /// `limit` is how many requests may be in flight, which is not the same
+    /// question as `window` and is why both exist. The window bounds how many
+    /// finished segments can be waiting their turn to be written, and so bounds
+    /// memory; the limit bounds how many connections are open, and so is what a
+    /// server's opinion of us changes. Conflating them would mean backing off
+    /// after a 429 also shrinking the write buffer, which has nothing to do with
+    /// it.
+    public mutating func next(upTo limit: Int? = nil) -> Int? {
+        guard let index = peekNext(upTo: limit) else { return nil }
         inFlight.insert(index)
         return index
     }
 
-    private func peekNext() -> Int? {
-        guard inFlight.count < window else { return nil }
+    private func peekNext(upTo limit: Int? = nil) -> Int? {
+        guard inFlight.count < min(window, limit ?? window) else { return nil }
         // Only within a window of the cursor. This is the bound on how many
         // finished segments can be waiting for their turn, and it is also the
         // backpressure: a caller that stops writing stops fetching.

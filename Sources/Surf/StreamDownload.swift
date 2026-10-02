@@ -15,10 +15,12 @@ import SurfCore
 @MainActor
 final class StreamDownload {
 
-    /// Four at once, probed from the research rather than picked: CDNs read many
-    /// parallel connections from one address as something to throttle, and the
-    /// measured gain flattens well before the point where they start.
-    static let parallelism = 4
+    /// How many connections the session is allowed to hold open.
+    ///
+    /// The ceiling rather than the starting count: `Parallelism` moves the number
+    /// actually in use up and down inside this, and a session configured for four
+    /// would cap it at four however fast the link turned out to be.
+    static let parallelism = Parallelism.ceiling
 
     private let workingDirectory: URL
     private var isCancelled = false
@@ -221,29 +223,61 @@ final class StreamDownload {
         }
 
         let segments = rendition.segments
+        // The window is the ceiling, so the buffer is bounded once and the
+        // connection count moves inside it.
         var schedule = SegmentSchedule(
-            durations: segments.map(\.duration), window: Self.parallelism
+            durations: segments.map(\.duration), window: Parallelism.ceiling
         )
+        var parallelism = Parallelism()
         var pending: [Int: Data] = [:]
+        var peak = parallelism.allowed
 
-        await withTaskGroup(of: (Int, Result<Data, SegmentFetcher.Failure>).self) { group in
+        await withTaskGroup(
+            of: (Int, Result<Data, SegmentFetcher.Failure>, Double).self
+        ) { group in
             fetching: while !schedule.isDrained, !isCancelled {
-                while let index = schedule.next() {
+                while let index = schedule.next(upTo: parallelism.allowed) {
                     let segment = segments[index]
-                    group.addTask { (index, await fetcher.fetch(segment)) }
+                    group.addTask {
+                        // Timed in here rather than around the loop, because
+                        // segments overlap: what matters for deciding whether
+                        // another connection helped is the rate *per* connection,
+                        // and only the task itself knows when its own began.
+                        let began = ContinuousClock.now
+                        let result = await fetcher.fetch(segment)
+                        return (index, result, (ContinuousClock.now - began).seconds)
+                    }
                 }
-                guard let (index, result) = await group.next() else { break }
+                guard let (index, result, elapsed) = await group.next() else { break }
 
                 switch result {
                 case .success(let data):
                     pending[index] = data
                     schedule.complete(index, bytes: data.count)
+                    peak = max(peak, parallelism.completed(bytes: data.count, seconds: elapsed))
+
                 case .failure(let failure):
                     debugLog("stream: \(label) segment \(index) — \(failure)")
-                    // Labelled, because a bare `break` here leaves the `switch`
-                    // and not the loop. It would still have stopped, by way of
-                    // the stall check below, but only by accident.
-                    if schedule.fail(index) == .giveUp { break fetching }
+                    if case .status(let status) = failure,
+                       Parallelism.isThrottling(status: status) {
+                        // The server said there are too many of us, which is not
+                        // the same as this segment being broken. Fewer
+                        // connections, and ask for it again.
+                        let reduced = parallelism.throttled()
+                        debugLog("stream: \(label) throttled, down to \(reduced)")
+                    }
+                    switch schedule.fail(index) {
+                    case .giveUp:
+                        // Labelled, because a bare `break` here leaves the
+                        // `switch` and not the loop.
+                        break fetching
+                    case .retry(let attempt):
+                        // Backing off between attempts, rather than asking three
+                        // times in a row as fast as the connection allows — which
+                        // is the one retry policy guaranteed to make a struggling
+                        // server worse.
+                        try? await Task.sleep(for: .milliseconds(250 * (1 << (attempt - 1))))
+                    }
                 }
 
                 for writable in schedule.takeWritable() {
@@ -267,8 +301,8 @@ final class StreamDownload {
             : "instant"
         debugLog("stream: \(label) \(schedule.bytesWritten) bytes in "
             + "\(String(format: "%.1f", seconds))s — \(rate), "
-            + "\(segments.count) segments \(Self.parallelism) at a time, "
-            + "drained=\(schedule.isDrained)")
+            + "\(segments.count) segments, \(parallelism.allowed) at a time "
+            + "(peak \(peak)), drained=\(schedule.isDrained)")
         guard schedule.isDrained else {
             debugLog("stream: \(label) stalled at segment \(schedule.failedSegment ?? -1)")
             return .failure(.unreadable)
