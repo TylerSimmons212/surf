@@ -265,7 +265,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             // of the stream rather than a site to be reverse engineered.
             guard let manifestURL = URL(string: media.sourceURL) else { return }
             startStreamDownload(
-                from: manifestURL, page: tab.webView.url,
+                from: [manifestURL], page: tab.webView.url,
                 title: media.title, tab: tab,
                 expecting: SavedMedia.Expectation(
                     wantsVideo: media.hasVideo,
@@ -275,20 +275,54 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         case .streamed:
             // A `blob:` source is Media Source Extensions: the page assembled the
-            // stream in its own buffer and there is no URL to read. Finding the
-            // manifest behind one needs the page watched rather than asked, which
-            // is a later stage; until then this is yt-dlp's.
+            // stream in its own buffer, so the element has no URL to give. What
+            // the page *fetched* to fill that buffer is a different question, and
+            // the tap has been recording the answer since document start.
             guard let pageURL = tab.webView.url else { return }
-            startExtraction(
-                from: pageURL, title: media.title, tab: tab,
-                // Taken from the page while the video is still playing in it.
-                // This is the only description of what we are saving that does
-                // not come from the thing doing the saving.
-                expecting: SavedMedia.Expectation(
-                    wantsVideo: media.hasVideo,
-                    declaredDuration: media.duration > 0 ? media.duration : nil
-                )
+            let expectation = SavedMedia.Expectation(
+                wantsVideo: media.hasVideo,
+                declaredDuration: media.duration > 0 ? media.duration : nil
             )
+            Task { @MainActor in
+                let seen = await tab.streamTap()
+
+                // Refused before anything is fetched, and refused here rather
+                // than handed on: the subprocess will also fail, slower and with
+                // a worse message, and the page has already told us why.
+                if seen?.isProtected == true {
+                    debugLog("download: a key system was requested; refusing")
+                    let item = DownloadItem(filename: self.sanitize(media.title) + ".mp4")
+                    item.host = pageURL.host
+                    item.pageURL = pageURL
+                    item.tab = tab
+                    item.state = .failed(StreamRefusal.protected.message)
+                    self.items.insert(item, at: 0)
+                    self.itemsByTab[tab.id] = item
+                    self.releaseTabBinding(for: item, after: .seconds(6))
+                    return
+                }
+
+                let candidates = (seen?.manifests ?? []).compactMap { URL(string: $0) }
+                if !candidates.isEmpty {
+                    debugLog("download: tap found \(candidates.count) manifest(s)"
+                        + (seen?.codecs.isEmpty == false
+                            ? ", codecs \(seen?.codecs.joined(separator: " ") ?? "")" : ""))
+                    self.startStreamDownload(
+                        from: candidates, page: pageURL,
+                        title: media.title, tab: tab, expecting: expectation
+                    )
+                    return
+                }
+
+                // The page assembled this from something we never saw it fetch —
+                // a custom protocol, a worker, or a request made before the tap
+                // was armed. yt-dlp knows sites; we only know what we watched.
+                debugLog("download: nothing in the tap; handing over")
+                self.startExtraction(
+                    from: pageURL, title: media.title, tab: tab, expecting: expectation
+                )
+            }
+
         case .none, .unsupported:
             return
         }
@@ -392,16 +426,17 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// was half one engine and half the other would have two progress models and
     /// no honest way to describe itself in a row ten points tall.
     func startStreamDownload(
-        from manifestURL: URL,
+        from manifests: [URL],
         page pageURL: URL?,
         title: String,
         tab: Tab?,
         expecting expectation: SavedMedia.Expectation?
     ) {
-        let placeholder = sanitize(title.isEmpty ? (manifestURL.host ?? "video") : title)
+        guard let first = manifests.first else { return }
+        let placeholder = sanitize(title.isEmpty ? (first.host ?? "video") : title)
         let item = DownloadItem(filename: placeholder + ".mp4")
-        item.sourceURL = manifestURL
-        item.host = pageURL?.host ?? manifestURL.host
+        item.sourceURL = first
+        item.host = pageURL?.host ?? first.host
         item.pageURL = pageURL
         item.tab = tab
         item.expectation = expectation
@@ -427,7 +462,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         Task { @MainActor in
             let result = await download.start(
-                manifestURL: manifestURL, pageURL: pageURL, title: title, tab: tab
+                manifests: manifests, pageURL: pageURL, title: title, tab: tab
             )
             item.stream = nil
             item.detail = nil

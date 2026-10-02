@@ -51,9 +51,9 @@ final class StreamDownload {
     // MARK: - The sequence
 
     func start(
-        manifestURL: URL, pageURL: URL?, title: String, tab: Tab?
+        manifests: [URL], pageURL: URL?, title: String, tab: Tab?
     ) async -> Result<Produced, StreamRefusal> {
-        debugLog("stream: begin \(manifestURL.absoluteString)")
+        debugLog("stream: \(manifests.count) candidate(s), first \(manifests.first?.absoluteString ?? "-")")
         let credentials = await SegmentFetcher.credentials(for: tab, page: pageURL)
         let fetcher = SegmentFetcher(credentials: credentials, parallelism: Self.parallelism)
 
@@ -66,18 +66,33 @@ final class StreamDownload {
         }
 
         onDetail("Reading the stream")
-        guard let masterText = await fetcher.text(at: manifestURL),
-              let master = StreamManifest.parse(masterText, baseURL: manifestURL)
-        else { return .failure(.unreadable) }
 
-        // Two passes, because a master playlist names its variants and only the
-        // chosen one's own playlist lists segments. Which is why the pick happens
-        // against a manifest with no segments in it at all.
-        let pick: StreamPick
-        switch StreamPlan.pick(from: master) {
-        case .success(let chosen): pick = chosen
-        case .failure(let refusal): return .failure(refusal)
+        // Candidates, tried in order, because what a page fetched is not
+        // necessarily one manifest. A page with an advert in it fetched two, and
+        // the first is whichever loaded first rather than whichever is the video.
+        // Ruling one out costs a single small request.
+        //
+        // A protected candidate stops the search instead of being skipped. DRM is
+        // a refusal, and carrying on to find something downloadable would mean
+        // saving the advert instead of the film.
+        var found: (index: StreamIndex, pick: StreamPick)?
+        var lastRefusal = StreamRefusal.unreadable
+        for candidate in manifests {
+            guard !isCancelled else { return .failure(.unreadable) }
+            guard let text = await fetcher.text(at: candidate),
+                  let parsed = StreamManifest.parse(text, baseURL: candidate)
+            else { continue }
+            switch StreamPlan.pick(from: parsed) {
+            case .success(let pick):
+                found = (parsed, pick)
+            case .failure(let refusal):
+                lastRefusal = refusal
+                guard refusal.allowsFallback else { return .failure(refusal) }
+                continue
+            }
+            break
         }
+        guard let (master, pick) = found else { return .failure(lastRefusal) }
 
         let videoIndex: StreamIndex
         if let next = pick.video.manifestURL, master.needsSecondPass {

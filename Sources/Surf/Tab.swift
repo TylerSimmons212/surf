@@ -811,6 +811,23 @@ final class Tab: NSObject, Identifiable {
         return await pageAgent.value(method, params, as: type)
     }
 
+    /// What this page fetched to play what it is playing.
+    ///
+    /// Asked of the frame the player is in first, because a manifest for this
+    /// video was fetched by the document showing it — and an embedded player is a
+    /// separate document whose requests the top frame cannot see. Falls back to
+    /// the main frame, which is right for a page whose player is not in an iframe
+    /// and is the only option once a frame has gone.
+    func streamTap() async -> StreamTap.Report? {
+        if let mediaFrame,
+           let report = await pageAgent.value(
+               .streamTap, as: StreamTap.Report.self, in: mediaFrame
+           ) {
+            return report
+        }
+        return await pageAgent.value(.streamTap, as: StreamTap.Report.self)
+    }
+
     /// Takes one frame's report and works out what the player should show.
     ///
     /// The old rule was that the newest `play` event won. That is right until a

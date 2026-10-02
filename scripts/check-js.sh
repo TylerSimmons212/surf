@@ -76,7 +76,8 @@ const worlds = {
   // youtube.js and amazon.js are not resident either — Tab evaluates them when the site
   // lens opens — but it registers the youtube.* methods against the page
   // world's agent, so it installs here like everything else.
-  page: ['runtime-page.js', 'media.js', 'find.js', 'youtube.js', 'amazon.js'],
+  page: ['runtime-page.js', 'media.js', 'stream.js', 'find.js', 'youtube.js',
+         'amazon.js'],
 };
 
 const agents = {};
@@ -309,6 +310,11 @@ check_size block.js              30000
 # staging, ancestor neutralisation, and lights-out all have to run where the
 # element lives, which is here.
 check_size media.js              16000
+# Every frame of every page, at document start, which is why it is this small.
+# It installs one PerformanceObserver and two one-line wrappers, records URLs,
+# and reads no bodies. Growth here is paid on every page load including ad
+# iframes, so a rise wants a reason.
+check_size stream.js              4000
 check_size runtime-isolated.js    3000
 check_size runtime-page.js        3000
 check_size page.js                3000

@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Protected video</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px -apple-system}video{width:100%;max-width:900px;display:block;margin:0 auto}p{text-align:center;padding:8px;font-size:12px}</style>
+<!--
+  Proves the refusal, which is the one thing about protected video that has to
+  be right: it must be refused *before* anything is fetched, and refused rather
+  than handed to the subprocess.
+
+  The page plays an ordinary unprotected stream and separately asks for a key
+  system. That combination is deliberate: it means the download has something
+  real and downloadable in front of it, so a refusal can only have come from the
+  key-system request being noticed. A page that merely failed to play would
+  refuse for the wrong reason and prove nothing.
+
+  Driven with SURF_DOWNLOAD=1 the log should read:
+    download: a key system was requested; refusing
+  and no `stream:` line at all — no manifest fetched, no scratch directory, no
+  segments.
+-->
+<video controls autoplay muted playsinline></video>
+<p id="status">starting…</p>
+<script>
+const MPD = 'https://dash.akamaized.net/akamai/bbb_30fps/bbb_30fps.mpd';
+const BASE = 'https://dash.akamaized.net/akamai/bbb_30fps/';
+const REP = 'bbb_30fps_640x360_800k';
+const say = (m) => { document.getElementById('status').textContent = m; };
+
+(async () => {
+  // The request the tap wraps. Widevine is not available in WebKit, so this
+  // rejects — and that is fine and is the point: the tap records that a key
+  // system was *asked for*, which is evidence independent of whether one was
+  // granted, and independent of any manifest we might fail to parse.
+  try {
+    await navigator.requestMediaKeySystemAccess('com.widevine.alpha', [{
+      initDataTypes: ['cenc'],
+      videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.64001e"' }]
+    }]);
+    say('a key system was granted');
+  } catch (error) {
+    say('key system refused by the browser, which still counts as asked');
+  }
+
+  try {
+    const mpd = await (await fetch(MPD)).text();
+    const source = new MediaSource();
+    const video = document.querySelector('video');
+    video.src = URL.createObjectURL(source);
+    await new Promise((r) => source.addEventListener('sourceopen', r, { once: true }));
+    const buffer = source.addSourceBuffer('video/mp4; codecs="avc1.64001e"');
+    const append = async (url) => {
+      const bytes = await (await fetch(url)).arrayBuffer();
+      buffer.appendBuffer(bytes);
+      await new Promise((r) => buffer.addEventListener('updateend', r, { once: true }));
+    };
+    await append(BASE + REP + '/' + REP + '_0.m4v');
+    await append(BASE + REP + '/' + REP + '_1.m4v');
+    say('playing, and a key system was asked for — ' + mpd.length + ' byte manifest');
+  } catch (error) {
+    say('playback failed: ' + error);
+  }
+})();
+</script>

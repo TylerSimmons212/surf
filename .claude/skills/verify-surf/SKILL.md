@@ -78,6 +78,13 @@ Healthy: process alive, first lines are `[surf] rules …` then `[surf] loaded <
 
 Everything reachable by environment is driven at launch; there is no IPC into a running instance. A feature that needs a click (pop-out, split panes, capture) is driven by a human: hand them the exact sequence from the feature file and the log line that proves it, using `diagnosing-bugs`' HITL loop if it's a bug hunt.
 
+A page that fetches cross-origin needs serving over HTTP, not `file://`. A
+`file://` page has a null origin, so the fetches an MSE fixture makes are refused
+and nothing plays — which surfaces as `download: nothing playing to save` and
+looks like a bug in the tap rather than in the fixture.
+`python3 -m http.server 8787` inside `testpages/` and a `http://127.0.0.1:8787/`
+URL is enough.
+
 Downloads used to be in that list. `SURF_DOWNLOAD=1` takes them out of it: it waits for a media report and then calls `downloadMedia(from:)`, the same method the button calls, so the routing it exercises is the real one. It is there because the stream engine — manifest, plan, several hundred parallel requests, a muxer — is not something a human can verify by describing what they saw. Two things to know when using it: the file lands in the real `~/Downloads`, because `SURF_STATE_DIR` does not redirect that, so a 4K fixture leaves 300MB behind per run. And `WKWebsiteDataStore` keeps cookies outside Application Support, so a run reports the account's cookies rather than an empty jar.
 
 `scripts/window.sh <run> [shot]` records the main window's id, size, and (with permission) title to `windows.txt` and tries a screenshot. Both the title and the screenshot need Screen Recording permission for the terminal or host app running the script; when refused, the window record is still evidence and the script says so.
