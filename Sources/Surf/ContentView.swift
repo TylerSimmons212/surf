@@ -474,7 +474,9 @@ struct ContentView: View {
     /// playing on that page, once it is playing. `SURF_DOWNLOAD=2` also presses
     /// retry once if it fails, which is the only way to reach the resume path
     /// without a human clicking — resuming only exists within a session, so a
-    /// fresh launch has nothing to come back to.
+    /// fresh launch has nothing to come back to. `SURF_DOWNLOAD_PICK=<height>`
+    /// or `=audio` takes a row from the quality menu instead of letting the
+    /// engine decide.
     ///
     /// Downloads were the one feature with no way in from the command line, which
     /// made the whole stream engine — manifest, plan, segments, mux, check —
@@ -512,7 +514,27 @@ struct ContentView: View {
             }
 
             debugLog("download: saving \(media.kind) \(media.sourceURL)")
-            DownloadManager.shared.downloadMedia(from: tab)
+            // `SURF_DOWNLOAD_PICK=720` takes that row, and `=audio` the sound.
+            // The menu is the one part of this feature that needs a click, so
+            // without this the choice reached the engine only in unit tests and
+            // the plumbing between them was unproven — which is how a chosen
+            // quality came to be honoured on YouTube and silently ignored
+            // everywhere else.
+            let asked = ProcessInfo.processInfo.environment["SURF_DOWNLOAD_PICK"]
+            var chosen: DownloadOption?
+            if let asked {
+                chosen = asked == "audio"
+                    ? DownloadOptions.audio(from: offered.options)
+                    : rows.first { $0.height == Int(asked) }
+                if let chosen {
+                    debugLog("download: chose \(chosen.title) (\(chosen.id))")
+                } else {
+                    // Said rather than passed over, so a run cannot look like it
+                    // proved a choice when it fell back to the default pick.
+                    debugLog("download: no row for \(asked); taking the engine's pick")
+                }
+            }
+            DownloadManager.shared.downloadMedia(from: tab, choosing: chosen)
             guard want == "2" else { return }
 
             // The row is created synchronously by the start, so it is already

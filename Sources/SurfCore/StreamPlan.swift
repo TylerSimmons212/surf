@@ -59,7 +59,17 @@ public struct StreamPlan: Equatable, Sendable {
         // sat next to it, for no reason the user would recognise.
         let playable = index.renditions.filter { $0.role == .muxed || $0.role == .video }
         guard !playable.isEmpty else { return .failure(.noRenditions) }
-        guard let video = best(of: playable, under: preference.maxHeight) else {
+
+        // An asked-for rendition wins outright, and when it is not there the
+        // ordinary rule still answers. Falling through rather than failing
+        // because the menu's list and this parse are two separate fetches: a
+        // live-edited master, an A/B test, or simply a different advert in front
+        // of the film can change the ids in between, and refusing a download
+        // because a row went stale would be worse than giving the best on offer.
+        let asked = preference.renditionID.flatMap { id in
+            playable.first { $0.id == id }
+        }
+        guard let video = asked ?? best(of: playable, under: preference.maxHeight) else {
             return .failure(.noRenditions)
         }
 
@@ -267,6 +277,17 @@ public struct StreamPreference: Equatable, Sendable {
     /// A ceiling in pixels, or nil for the best on offer.
     public var maxHeight: Int?
 
+    /// One rendition, by the id the manifest gave it.
+    ///
+    /// Separate from `maxHeight` because the two mean opposite things. A height
+    /// is a ceiling that rounds down — asking 720 of a stream offering 480 and
+    /// 1080 gets the 480, deliberately, so nobody is handed a bigger file than
+    /// they asked for. A choice from a menu is not a ceiling: the menu listed
+    /// that exact rendition, so 720 has to mean the 720, and matching by id
+    /// rather than by height also keeps the codec and bitrate the row was
+    /// describing when the user read it.
+    public var renditionID: String?
+
     /// How many distinct hosts one download may touch.
     ///
     /// Four, because a manifest naming its own CDN plus a backup is ordinary and
@@ -275,8 +296,11 @@ public struct StreamPreference: Equatable, Sendable {
     /// tab's cookies.
     public var hostLimit: Int
 
-    public init(maxHeight: Int? = nil, hostLimit: Int = 4) {
+    public init(
+        maxHeight: Int? = nil, renditionID: String? = nil, hostLimit: Int = 4
+    ) {
         self.maxHeight = maxHeight
+        self.renditionID = renditionID
         self.hostLimit = hostLimit
     }
 }

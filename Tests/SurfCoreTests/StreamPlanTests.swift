@@ -66,6 +66,66 @@ struct StreamPlanTests {
         #expect(try pick(StreamFixtures.fmp4Master, .init(maxHeight: 100)).get().video.height == 360)
     }
 
+    // MARK: - An asked-for rendition
+
+    @Test("A chosen rendition is taken exactly, not treated as a ceiling")
+    func chosenRendition() throws {
+        // The difference from `maxHeight`, which is the reason this is its own
+        // field. A cap rounds down on purpose; a menu row does not, because the
+        // menu listed that rendition and the user read its size.
+        let chosen = try pick(
+            StreamFixtures.fmp4Master, .init(renditionID: "720/stream.m3u8")
+        ).get()
+        #expect(chosen.video.id == "720/stream.m3u8")
+        #expect(chosen.video.height == 720)
+    }
+
+    @Test("Choosing beats the tallest-wins rule")
+    func chosenOverridesBest() throws {
+        // 1080 is on offer and is what the engine takes unasked. Asking for 360
+        // has to get 360 rather than the best available.
+        #expect(try pick(StreamFixtures.fmp4Master).get().video.height == 1080)
+        #expect(try pick(
+            StreamFixtures.fmp4Master, .init(renditionID: "360/stream.m3u8")
+        ).get().video.height == 360)
+    }
+
+    @Test("Choosing and a cap together: the choice wins")
+    func chosenBeatsCap() throws {
+        // Nothing sets both today, and if anything ever does, the explicit
+        // request is the one a person made.
+        let chosen = try pick(
+            StreamFixtures.fmp4Master,
+            .init(maxHeight: 360, renditionID: "1080/stream.m3u8")
+        ).get()
+        #expect(chosen.video.height == 1080)
+    }
+
+    @Test("An id that is no longer there falls back instead of failing")
+    func staleChoice() throws {
+        // The menu's list and this parse are two separate fetches, so a
+        // live-edited master or a different advert in front of the film can
+        // change the ids in between. Refusing the download because a row went
+        // stale would be worse than giving the best on offer.
+        let chosen = try pick(
+            StreamFixtures.fmp4Master, .init(renditionID: "2160/stream.m3u8")
+        ).get()
+        #expect(chosen.video.height == 1080)
+    }
+
+    @Test("An audio rendition cannot be chosen as the picture")
+    func audioIDIgnored() throws {
+        // `pick` only ever considers video and muxed renditions, so an audio id
+        // matches nothing and the ordinary rule answers. The menu does not offer
+        // one on this path for exactly that reason; this is the guard under it.
+        let chosen = try pick(
+            StreamFixtures.separateAudioMaster,
+            .init(renditionID: "audio/en/128k.m3u8")
+        ).get()
+        #expect(chosen.video.role == .video)
+        #expect(chosen.audio != nil)
+    }
+
     @Test("Bandwidth breaks a tie between equal heights")
     func bandwidthBreaksTies() throws {
         let text = """

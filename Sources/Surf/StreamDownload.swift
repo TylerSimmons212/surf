@@ -82,8 +82,16 @@ final class StreamDownload {
     // MARK: - The sequence
 
     func start(
-        manifests: [URL], pageURL: URL?, title: String, tab: Tab?
+        manifests: [URL], pageURL: URL?, title: String, tab: Tab?,
+        choosing: DownloadOption? = nil
     ) async -> Result<Produced, StreamRefusal> {
+        // A row from the menu, carried as the one thing `pick` needs from it.
+        // Nil means the engine decides, which is what it did before the menu
+        // existed and still does when the button is pressed rather than held.
+        let preference = StreamPreference(renditionID: choosing?.id)
+        if let choosing {
+            debugLog("stream: asked for \(choosing.title) (\(choosing.id))")
+        }
         debugLog("stream: \(manifests.count) candidate(s), first \(manifests.first?.absoluteString ?? "-")")
         let credentials = await SegmentFetcher.credentials(for: tab, page: pageURL)
         let fetcher = SegmentFetcher(credentials: credentials, parallelism: Self.parallelism)
@@ -113,7 +121,7 @@ final class StreamDownload {
             guard let text = await fetcher.text(at: candidate),
                   let parsed = StreamManifest.parse(text, baseURL: candidate)
             else { continue }
-            switch StreamPlan.pick(from: parsed) {
+            switch StreamPlan.pick(from: parsed, preferring: preference) {
             case .success(let pick):
                 found = (parsed, pick)
             case .failure(let refusal):
@@ -144,7 +152,10 @@ final class StreamDownload {
         }
 
         let plan: StreamPlan
-        switch StreamPlan.make(video: videoIndex, audio: audioIndex, labelledBy: pick) {
+        switch StreamPlan.make(
+            video: videoIndex, audio: audioIndex, labelledBy: pick,
+            preferring: preference
+        ) {
         case .success(let made): plan = made
         case .failure(let refusal): return .failure(refusal)
         }

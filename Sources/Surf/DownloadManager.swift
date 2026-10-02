@@ -99,6 +99,14 @@ final class DownloadItem: Identifiable {
     /// A retry continues in it instead of starting the transfer again.
     @ObservationIgnored var resumeDirectory: URL?
 
+    /// The rendition the user asked for, kept so a retry asks for the same one.
+    ///
+    /// Without it a resumed download would pick the engine's own answer, which
+    /// both ignores the choice and invalidates the partial output: the sidecar
+    /// records which rendition the segments on disk belong to, so a different
+    /// pick means starting the transfer over.
+    @ObservationIgnored var chosenRenditionID: String?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
@@ -226,6 +234,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             let pageURL = item.pageURL
             let expectation = item.expectation
             let resuming = item.resumeDirectory
+            let chosen = item.chosenRenditionID.map { DownloadOption(id: $0) }
             let title = (item.filename as NSString).deletingPathExtension
             // Cleared before `remove`, which deletes it otherwise — the whole
             // point of this branch is to keep the directory the next attempt
@@ -235,7 +244,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             remove(item)
             startStreamDownload(
                 from: manifests, page: pageURL, title: title, tab: tab,
-                expecting: expectation, resuming: resuming
+                expecting: expectation, resuming: resuming, choosing: chosen
             )
             return
         }
@@ -360,6 +369,16 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         guard let text = await fetcher.text(at: url),
               let index = StreamManifest.parse(text, baseURL: url)
         else { return [] }
+        // Picture only, from a manifest.
+        //
+        // Not an oversight. `StreamPick` and `StreamPlan` both hold `video`
+        // non-optionally, so there is no way through this engine that saves a
+        // soundtrack on its own from a manifest, and `pick` only ever considers
+        // video and muxed renditions. An audio row here would therefore set a
+        // choice that `pick` cannot match, fall through to the ordinary rule,
+        // and hand back the whole film to someone who asked for the music —
+        // which is worse than not offering it. YouTube's own format list is a
+        // different path and does offer sound alone.
         return index.renditions.compactMap { rendition in
             switch rendition.role {
             case .video, .muxed:
@@ -367,12 +386,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                     id: rendition.id, height: rendition.height,
                     bitrate: rendition.bandwidth, codecs: rendition.codecs ?? ""
                 )
-            case .audio:
-                return DownloadOption(
-                    id: rendition.id, bitrate: rendition.bandwidth,
-                    codecs: rendition.codecs ?? "", isAudioOnly: true
-                )
-            case .other:
+            case .audio, .other:
                 return nil
             }
         }
@@ -402,7 +416,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                 expecting: SavedMedia.Expectation(
                     wantsVideo: media.hasVideo,
                     declaredDuration: media.duration > 0 ? media.duration : nil
-                )
+                ),
+                choosing: takeChoice()
             )
 
         case .streamed:
@@ -458,7 +473,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
                             ? ", codecs \(seen?.codecs.joined(separator: " ") ?? "")" : ""))
                     self.startStreamDownload(
                         from: candidates, page: pageURL,
-                        title: media.title, tab: tab, expecting: expectation
+                        title: media.title, tab: tab, expecting: expectation,
+                        choosing: self.takeChoice()
                     )
                     return
                 }
@@ -580,7 +596,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         title: String,
         tab: Tab?,
         expecting expectation: SavedMedia.Expectation?,
-        resuming: URL? = nil
+        resuming: URL? = nil,
+        choosing: DownloadOption? = nil
     ) {
         guard let first = manifests.first else { return }
         let placeholder = sanitize(title.isEmpty ? (first.host ?? "video") : title)
@@ -592,6 +609,7 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         item.expectation = expectation
         item.manifests = manifests
         item.resumeDirectory = resuming
+        item.chosenRenditionID = choosing?.id
         items.insert(item, at: 0)
         if let tab { itemsByTab[tab.id] = item }
 
@@ -615,7 +633,8 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
 
         Task { @MainActor in
             let result = await download.start(
-                manifests: manifests, pageURL: pageURL, title: title, tab: tab
+                manifests: manifests, pageURL: pageURL, title: title, tab: tab,
+                choosing: choosing
             )
             item.stream = nil
             item.detail = nil
