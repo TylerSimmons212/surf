@@ -73,6 +73,19 @@ final class DownloadItem: Identifiable {
     /// the one belonging to the tab that asked.
     @ObservationIgnored weak var tab: Tab?
 
+    /// What is happening right now, when a byte count would not say it.
+    ///
+    /// A stream download spends real time reading manifests and combining tracks,
+    /// and "0 bytes of 0 bytes" describes neither. A sibling property rather than
+    /// a fourth `State`: the three flat states are read at nine places across
+    /// three files and none of them cares which phase this is in, so growing the
+    /// enum would make every switch learn about stages it then ignores.
+    var detail: String?
+
+    /// The native stream download. Mutually exclusive with `download` and
+    /// `extraction` for the same reason those two are with each other.
+    @ObservationIgnored var stream: StreamDownload?
+
     /// Empty means "no name of our own" — take whatever the server suggests.
     init(filename: String) {
         self.filename = filename
@@ -132,6 +145,17 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             extraction.cancel()
             extraction.cleanUp()
             item.extraction = nil
+            return
+        }
+
+        if let stream = item.stream {
+            // Same arrangement, and the directory goes even though a retry could
+            // otherwise have resumed from it: someone who cancelled a download
+            // did not ask us to keep most of it.
+            stream.cancel()
+            stream.cleanUp()
+            item.stream = nil
+            item.detail = nil
             return
         }
 
@@ -235,7 +259,25 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
         switch media.kind {
         case .file:
             startDirectDownload(from: tab, media: media)
-        case .manifest, .streamed:
+        case .manifest:
+            // A manifest is the case the native engine exists for: the page
+            // already fetched this URL to play the video, so it is a description
+            // of the stream rather than a site to be reverse engineered.
+            guard let manifestURL = URL(string: media.sourceURL) else { return }
+            startStreamDownload(
+                from: manifestURL, page: tab.webView.url,
+                title: media.title, tab: tab,
+                expecting: SavedMedia.Expectation(
+                    wantsVideo: media.hasVideo,
+                    declaredDuration: media.duration > 0 ? media.duration : nil
+                )
+            )
+
+        case .streamed:
+            // A `blob:` source is Media Source Extensions: the page assembled the
+            // stream in its own buffer and there is no URL to read. Finding the
+            // manifest behind one needs the page watched rather than asked, which
+            // is a later stage; until then this is yt-dlp's.
             guard let pageURL = tab.webView.url else { return }
             startExtraction(
                 from: pageURL, title: media.title, tab: tab,
@@ -279,6 +321,88 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     }
 
     // MARK: - Extraction
+
+    /// Downloads a stream ourselves, falling back to the subprocess if we can't.
+    ///
+    /// The invariant that keeps this safe to add: the native engine either
+    /// refuses before its first segment byte, or it owns the download through to
+    /// a finished file. There is no handing over halfway, because a transfer that
+    /// was half one engine and half the other would have two progress models and
+    /// no honest way to describe itself in a row ten points tall.
+    func startStreamDownload(
+        from manifestURL: URL,
+        page pageURL: URL?,
+        title: String,
+        tab: Tab?,
+        expecting expectation: SavedMedia.Expectation?
+    ) {
+        let placeholder = sanitize(title.isEmpty ? (manifestURL.host ?? "video") : title)
+        let item = DownloadItem(filename: placeholder + ".mp4")
+        item.sourceURL = manifestURL
+        item.host = pageURL?.host ?? manifestURL.host
+        item.pageURL = pageURL
+        item.tab = tab
+        item.expectation = expectation
+        items.insert(item, at: 0)
+        if let tab { itemsByTab[tab.id] = item }
+
+        let download = StreamDownload(
+            onDetail: { [weak item] detail in
+                guard let item, item.isActive else { return }
+                item.detail = detail
+            },
+            onProgress: { [weak item] fraction, bytes in
+                guard let item, item.isActive else { return }
+                // Already monotone: the schedule weights by durations the manifest
+                // stated, so it cannot revise downward the way a byte estimate
+                // does. Clamped anyway, because two tracks report independently.
+                item.fraction = max(item.fraction, min(fraction, 0.95))
+                item.bytesWritten = Int64(bytes)
+                item.detail = nil
+            }
+        )
+        item.stream = download
+
+        Task { @MainActor in
+            let result = await download.start(
+                manifestURL: manifestURL, pageURL: pageURL, title: title, tab: tab
+            )
+            item.stream = nil
+            item.detail = nil
+
+            guard item.isActive else {
+                download.cleanUp()
+                return
+            }
+
+            switch result {
+            case .success(let produced):
+                // After, not before. `accept` moves the file out of the working
+                // directory, and cleaning up first deletes the thing being moved
+                // — which then fails its move, fails its fallback copy, and sets
+                // a state nothing logs. The download simply stopped, with the
+                // plan in the log and no file and no error anywhere.
+                await self.accept(item, produced: produced.url, expecting: produced.expectation)
+                download.cleanUp()
+
+            case .failure(let refusal):
+                download.cleanUp()
+                debugLog("stream: refused — \(refusal) fallback=\(refusal.allowsFallback)")
+                guard refusal.allowsFallback, let pageURL else {
+                    item.state = .failed(refusal.message)
+                    self.releaseTabBinding(for: item, after: .seconds(6))
+                    return
+                }
+                // Quietly. A download that succeeds by another route is not an
+                // error, and the row is removed so the retry button knows which
+                // engine it is retrying.
+                self.remove(item)
+                self.startExtraction(
+                    from: pageURL, title: title, tab: tab, expecting: expectation
+                )
+            }
+        }
+    }
 
     /// Hands a page to yt-dlp and wires its output into the same `DownloadItem`
     /// the direct path uses, so the UI needs no idea which engine is running.
@@ -397,10 +521,15 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
     /// owns and is about to delete, so a file that failed the check is discarded
     /// rather than reported — there is nothing left in ~/Downloads for someone to
     /// double-click, be confused by, and have to delete by hand.
-    private func accept(_ item: DownloadItem, produced: URL) async {
+    private func accept(
+        _ item: DownloadItem, produced: URL,
+        expecting override: SavedMedia.Expectation? = nil
+    ) async {
         guard item.isActive else { return }
 
-        if let expectation = item.expectation,
+        // The manifest's expectation beats the page's where there is one: only
+        // the manifest knew there was a separate audio track to be missing.
+        if let expectation = override ?? item.expectation,
            let inventory = await MediaInspector.inventory(of: produced),
            let flaw = SavedMedia.flaw(in: inventory, expecting: expectation) {
             // A cancel may have landed while AVFoundation was reading.
@@ -426,12 +555,17 @@ final class DownloadManager: NSObject, WKDownloadDelegate {
             // volume as the home directory.
             guard (try? FileManager.default.copyItem(at: produced, to: destination)) != nil
             else {
+                // Logged, because the silence here is what made an ordering bug
+                // in the stream path take a sampled process to find: the plan was
+                // in the log, no file appeared, and nothing said why.
+                debugLog("download: couldn't move \(produced.path) to \(destination.path)")
                 item.state = .failed("Couldn't save to Downloads")
                 releaseTabBinding(for: item, after: .seconds(6))
                 return
             }
         }
 
+        debugLog("download: saved \(destination.lastPathComponent)")
         NSSound(named: "Surf")?.play()
         item.filename = destination.lastPathComponent
         item.destinationURL = destination

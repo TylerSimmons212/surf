@@ -380,6 +380,7 @@ struct ContentView: View {
         session.select(primary)
         openDevToolsIfAsked(on: primary)
         enterFocusIfAsked(on: primary)
+        downloadMediaIfAsked(on: primary)
     }
 
     /// Dev affordance: `SURF_FOCUS=1` alongside `SURF_URL` enters Focus on
@@ -406,6 +407,36 @@ struct ContentView: View {
             }
             guard let article = tab.focusArticle else { return }
             tab.narrator.toggle(reading: article)
+        }
+    }
+
+    /// Dev affordance: `SURF_DOWNLOAD=1` alongside `SURF_URL` saves whatever is
+    /// playing on that page, once it is playing.
+    ///
+    /// Downloads were the one feature with no way in from the command line, which
+    /// made the whole stream engine — manifest, plan, segments, mux, check —
+    /// provable only by a human clicking a button and describing what happened.
+    /// That is not a reasonable way to verify several hundred parallel requests
+    /// and a muxer.
+    ///
+    /// It goes through `downloadMedia(from:)`, the same method the button calls,
+    /// so what it exercises is the real routing rather than a path of its own.
+    private func downloadMediaIfAsked(on tab: Tab) {
+        guard ProcessInfo.processInfo.environment["SURF_DOWNLOAD"] == "1" else { return }
+        Task { @MainActor in
+            // Waits for a media report rather than for the load, because the
+            // routing reads `tab.media` and a page that has loaded has not
+            // necessarily started playing.
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if tab.media != nil { break }
+            }
+            guard let media = tab.media else {
+                debugLog("download: nothing playing to save")
+                return
+            }
+            debugLog("download: saving \(media.kind) \(media.sourceURL)")
+            DownloadManager.shared.downloadMedia(from: tab)
         }
     }
 
