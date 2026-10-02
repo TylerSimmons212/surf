@@ -33,6 +33,9 @@ public enum DevToolsMethod: String, Sendable, CaseIterable {
     case domSetText = "DOM.setText"
     /// Which fonts the element's text actually renders in.
     case cssFontsForNode = "CSS.fontsForNode"
+    /// The element's text colour and its effective background — the pair
+    /// contrast is judged on.
+    case cssColorPair = "CSS.colorPair"
     /// Simulates :hover and friends on one element, by selector rewriting —
     /// WebKit exposes no engine hook for forcing element state.
     case cssForceState = "CSS.forceState"
@@ -115,7 +118,7 @@ extension DevToolsMethod {
              .domSetAttribute, .domSetText, .domGetOuterHTML,
              .cssGetMatchedStyles, .cssGetComputed, .cssSetRuleText, .cssRevert,
              .cssAddRecoveredSheet, .cssFindRules, .cssPropertyNames, .cssAddRule,
-             .cssForceState, .cssFontsForNode,
+             .cssForceState, .cssFontsForNode, .cssColorPair,
              .storageRead, .storageWrite, .storageRemove,
              .storageListCaches, .storageListDatabases, .storageEstimate,
              .performanceRead, .performanceWatchLayout,

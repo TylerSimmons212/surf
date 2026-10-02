@@ -276,9 +276,29 @@ final class DevToolsSession: Identifiable {
         loadStyles()
         await refreshBox()
         await refreshFonts()
+        await refreshContrast()
+    }
+
+    private func refreshContrast() async {
+        guard let selectedNode else { elementContrast = nil; return }
+        let issued = generation
+        guard let reply = try? await bridge.call(.cssColorPair, ["nodeId": selectedNode]),
+              issued == generation,
+              reply["error"] == nil,
+              let fg = reply["fg"] as? [Double], fg.count == 3,
+              let bg = reply["bg"] as? [Double], bg.count == 3
+        else { elementContrast = nil; return }
+
+        elementContrast = ContrastVerdict(
+            foreground: SRGB(r: fg[0] / 255, g: fg[1] / 255, b: fg[2] / 255),
+            background: SRGB(r: bg[0] / 255, g: bg[1] / 255, b: bg[2] / 255),
+            fontSizePx: reply["fontSize"] as? Double ?? 16,
+            isBold: ContrastVerdict.isBoldWeight(reply["fontWeight"] as? String ?? "400")
+        )
     }
 
     private(set) var elementFonts: FontReport?
+    private(set) var elementContrast: ContrastVerdict?
 
     private func refreshFonts() async {
         guard let selectedNode else { elementFonts = nil; return }
@@ -2030,6 +2050,7 @@ final class DevToolsSession: Identifiable {
         selectedNode = nil
         selectedBox = nil
         elementFonts = nil
+        elementContrast = nil
         hoveredNode = nil
         hoveredBox = nil
         styleTask?.cancel()
