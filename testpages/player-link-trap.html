@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>A named link over an embedded player</title>
+<!-- The trap from a real streaming embed: inside the player's frame, a link
+     with an id covers the video and opens a window to an affiliate domain.
+     It fires on mousedown, before any click exists, and it is named, so the
+     anonymous-sheet rule passes it by. srcdoc keeps it one file.
+
+     Drive: SURF_URL=file://$PWD/testpages/player-link-trap.html swift run,
+     then click the player twice. Pass: no "[surf] loaded https://example.com/"
+     line, no new tab, and the second click reaches the video's own controls.
+     Before the fix, the first click opened a tab; with the mousedown fix alone,
+     every click was refused and none of them played. -->
+<style>
+  html, body { margin: 0; height: 100%; background: #111; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+</style>
+<iframe srcdoc="
+  <style>html,body{margin:0;height:100%;background:#000}
+  video{width:100%;height:100%;display:block}
+  #lke8l{position:absolute;inset:0;z-index:5}</style>
+  <video controls></video>
+  <a id='lke8l' href='https://example.com/player-link-trap' target='_blank'></a>
+  <script>
+    let fired = false;
+    document.getElementById('lke8l').addEventListener('mousedown', function () {
+      if (fired) return; fired = true;
+      window.open(this.href, '_blank');
+    });
+    document.getElementById('lke8l').addEventListener('click', function (e) { e.preventDefault(); });
+  </script>"></iframe>

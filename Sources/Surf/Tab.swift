@@ -115,6 +115,9 @@ final class Tab: NSObject, Identifiable {
     @ObservationIgnored private var hasCommittedDocument = false
 
     @ObservationIgnored private var emptyPopupWatchdog: Task<Void, Never>?
+    /// Watches for a page opening itself in a new tab and then sending this
+    /// one elsewhere. See `TabSwap`.
+    @ObservationIgnored private var tabSwap = TabSwap()
 
     /// The colour at the top of the page, used to tint the title strip so the
     /// window chrome belongs to the site rather than sitting apart from it.
@@ -1575,6 +1578,7 @@ final class Tab: NSObject, Identifiable {
     func submit(_ input: String, diving: Bool = false) {
         guard let url = URLResolver.resolve(input) else { return }
         hasNavigatedExplicitly = true
+        tabSwap.readerNavigated()
         pendingRestore = nil
         lastError = nil
         if diving && mode == .home {
@@ -1793,6 +1797,7 @@ final class Tab: NSObject, Identifiable {
     /// A navigation the lens made itself. Distinct from `submit` because it
     /// carries no address-bar intent and must not disturb the dive.
     func loadInSiteLens(_ url: URL) {
+        tabSwap.readerNavigated()
         hasNavigatedExplicitly = true
         lastError = nil
         webView.load(URLRequest(url: url))
@@ -2566,6 +2571,16 @@ extension Tab: WKNavigationDelegate {
         preferences: WKWebpagePreferences
     ) async -> (WKNavigationActionPolicy, WKWebpagePreferences) {
         if navigationAction.targetFrame?.isMainFrame == true,
+           navigationAction.navigationType == .other,
+           let host = navigationAction.request.url?.host,
+           let pageHost = webView.url?.host,
+           ContentBlocker.isEnabled,
+           !ContentBlocker.shared.isPaused(on: pageHost),
+           tabSwap.refuses(to: host, from: pageHost, at: Date()) {
+            debugLog("refused a tab swap from \(pageHost) to \(host)")
+            return (.cancel, preferences)
+        }
+        if navigationAction.targetFrame?.isMainFrame == true,
            let host = navigationAction.request.url?.host {
             blockingHost = host
             if ContentBlocker.shared.isActive(for: host) != isBlocking {
@@ -2688,6 +2703,9 @@ extension Tab: WKUIDelegate {
         if let url = navigationAction.request.url, isAdWindow(url) {
             debugLog("refused a window to \(url.host ?? url.absoluteString)")
             return nil
+        }
+        if let host = navigationAction.request.url?.host, let pageHost = webView.url?.host {
+            tabSwap.pageOpenedWindow(to: host, from: pageHost, at: Date())
         }
 
         // Must be built with WebKit's configuration, not a fresh one, or the
