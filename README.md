@@ -122,6 +122,13 @@ immediately and said so, rather than handed to a subprocess that will fail
 slower and more obscurely. A page asking for a key system at all is enough —
 noticed, not defeated — and that is checked before a manifest is even fetched.
 
+A download that stops partway keeps what it got. Retrying carries on from the
+segment it reached rather than starting again, and a file resumed that way is
+byte-for-byte one fetched in a single pass. This is the one failure Surf does not
+hand to yt-dlp: the subprocess would begin from nothing, and the bytes already on
+disk are worth more than another engine's fresh start. It lasts for the session,
+like the downloads list itself.
+
 A finished file is checked against what the page said it was before it is
 allowed into `~/Downloads`. A video download that came back with only audio, or
 only a third of its length, is discarded while it is still in a temp directory —
@@ -1116,6 +1123,8 @@ makes it unit-testable — the UI targets can't be.
   climbing slowly and giving ground fast
 - `Sources/SurfCore/ByteRanges.swift` — where to cut a plain file so it can be
   fetched like a segmented one
+- `Sources/SurfCore/StreamProgress.swift` — how far a download got, and whether
+  that describes the work in front of it
 - `Sources/SurfCore/SavedMedia.swift` — whether the finished file is the file that
   was asked for
 - `Sources/Surf/SegmentFetcher.swift` — the tab's own session behind each request
@@ -1197,12 +1206,6 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 
 ## Next
 
-- Resuming a stream download that failed partway. The scratch directory is
-  deleted on failure, so a retry starts over — which on a 900MB file is most of a
-  minute thrown away. The segments on disk cannot be the record of what is done,
-  because the output is a single appended file and a directory listing cannot say
-  how many segments are inside it; it wants a sidecar holding a count and a byte
-  offset, and the file truncated back to that offset on resume.
 - Saving a stream playing inside a cross-origin iframe. The tap is injected into
   every frame and records what each one fetched, so the facts exist — but the
   download is started from `tab.media`, which is chosen across frames by
