@@ -18,7 +18,7 @@ swift build                                   # once; launch.sh reuses the binar
 
 `launch.sh` starts one instance with `SURF_STATE_DIR` pointed at a scratch directory, so the run never reads or writes `~/Library/Application Support/Surf` (session, history, favicons, filter lists, voices). Overriding `HOME` does not achieve this — `FileManager` resolves Application Support from the account — which is why the override exists (`SupportDirectory` in `Sources/SurfCore/PersistedSession.swift`).
 
-Two things are keyed by application domain rather than by directory, and so
+Three things are keyed by application domain rather than by directory, and so
 needed their own seams — a directory override alone does not reach them:
 
 - **User defaults.** `SurfDefaults.store` (`Sources/SurfCore/SurfDefaults.swift`)
@@ -37,6 +37,33 @@ needed their own seams — a directory override alone does not reach them:
   (`Sources/Surf/ContentBlocker.swift`) compiles into `<state>/ContentRules`
   rather than WebKit's shared store, which sits beside the app's own data.
   Expect ~116MB per run; `stop.sh` takes it with the state directory.
+- **The home island's cookie jar**, which was the worst of the three and the
+  last to be found. The home island names WebKit's *default* data store on
+  purpose — it holds every cookie from before islands existed, and there is no
+  supported way to move cookies out of it — and that store lives in WebKit's
+  container, keyed by the application. So a scratch run's home island **was the
+  user's own jar**: it read their cookies, and an island feature offering to
+  delete any would have deleted theirs.
+
+  `SurfDefaults.scratchDataStoreID` now names an identified store instead,
+  derived from the state directory, and `IslandStores.store(forIdentifier:)`
+  resolves home to it whenever `SURF_STATE_DIR` is set. Nothing persisted
+  changes: `PersistedIsland.dataStoreID` stays nil for home, as it must.
+
+  `IslandStores.allStores()` needed the same treatment for a second reason.
+  It enumerates `fetchAllDataStoreIdentifiers`, which reports WebKit's whole
+  container — including the stores of the user's *real* islands. Clearing
+  traces at quit is on by default, so any run reaching
+  `applicationShouldTerminate` would have wiped the caches, local storage and
+  service workers of every site they have. `mayErase` now restricts a scratch
+  run to stores it instantiated itself. (`stop.sh` sends SIGTERM, which does
+  not run AppKit's termination sequence, so this mostly stayed latent — but
+  quitting a run by hand with ⌘Q reaches it.)
+
+  **Check this when driving an island feature.** `SURF_ISLAND_MENU=1` prints
+  the jar's contents; a run that reports sites the test never visited is
+  reading the user's jar, and nothing destructive should be driven until that
+  is fixed.
 
 - **The main window's frame.** Kept by `MainWindowFrame` under
   `mainWindowFrame` in the suite above, rather than by AppKit's
@@ -108,7 +135,7 @@ a handshake instead: refuse until a file appears, and create the file once the
 failure shows up in the log. And three refusals is the schedule's attempt limit,
 so that is what it takes to fail a download rather than merely delay it.
 
-Downloads used to be in that list. `SURF_DOWNLOAD=1` takes them out of it: it waits for a media report and then calls `downloadMedia(from:)`, the same method the button calls, so the routing it exercises is the real one. It is there because the stream engine — manifest, plan, several hundred parallel requests, a muxer — is not something a human can verify by describing what they saw. Two things to know when using it: the file lands in the real `~/Downloads`, because `SURF_STATE_DIR` does not redirect that, so a 4K fixture leaves 300MB behind per run. And `WKWebsiteDataStore` keeps cookies outside Application Support, so a run reports the account's cookies rather than an empty jar.
+Downloads used to be in that list. `SURF_DOWNLOAD=1` takes them out of it: it waits for a media report and then calls `downloadMedia(from:)`, the same method the button calls, so the routing it exercises is the real one. It is there because the stream engine — manifest, plan, several hundred parallel requests, a muxer — is not something a human can verify by describing what they saw. Two things to know when using it: the file lands in the real `~/Downloads`, because `SURF_STATE_DIR` does not redirect that, so a 4K fixture leaves 300MB behind per run. Cookies used to be the other catch — `WKWebsiteDataStore` keeps them outside Application Support, so a run read the account's jar rather than an empty one. That is fixed rather than tolerated now; see the home island's cookie jar above.
 
 `scripts/window.sh <run> [shot]` records the main window's id, size, and (with permission) title to `windows.txt` and tries a screenshot. Both the title and the screenshot need Screen Recording permission for the terminal or host app running the script; when refused, the window record is still evidence and the script says so.
 

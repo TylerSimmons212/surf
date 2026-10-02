@@ -39,8 +39,20 @@ final class IslandStores {
     /// rather than migrating it to an identifier is what lets Islands ship
     /// without signing the user out of everything: there is no supported way to
     /// move cookies between stores.
+    ///
+    /// Except in a scratch run, where `nil` names a store of the run's own
+    /// instead. `SURF_STATE_DIR` redirects every file Surf writes, but it
+    /// cannot redirect this one: WebKit's default store lives in WebKit's
+    /// container, keyed by the application rather than by any directory we
+    /// hand it. So a verification run's home island *was* the user's own jar —
+    /// it read their cookies, and the island menu's sign-out would have erased
+    /// their logins. `verify-surf` promises a run never touches your state,
+    /// and this is the last place that was nearly true rather than true.
+    /// See `SurfDefaults.scratchDataStoreID`.
     func store(forIdentifier identifier: UUID?) -> WKWebsiteDataStore {
-        guard let identifier else { return .default() }
+        guard let identifier = identifier ?? SurfDefaults.scratchDataStoreID else {
+            return .default()
+        }
         if let existing = stores[identifier] { return existing }
 
         // An all-zeros identifier raises an Objective-C exception rather than
@@ -201,11 +213,38 @@ final class IslandStores {
     /// Instantiating a store in order to erase it is not wasteful here. It's
     /// the only way to ask WebKit to remove data from one.
     func allStores() async -> [WKWebsiteDataStore] {
-        var stores: [WKWebsiteDataStore] = [.default()]
-        for identifier in await Self.identifiersOnDisk() {
-            stores.append(store(forIdentifier: identifier))
+        // Through `store(forIdentifier:)` rather than `.default()` directly, so
+        // a scratch run clears its own home jar instead of the user's.
+        var all: [WKWebsiteDataStore] = [store(forIdentifier: nil)]
+        var seen: Set<UUID> = []
+        if let scratch = SurfDefaults.scratchDataStoreID { seen.insert(scratch) }
+
+        for identifier in await Self.identifiersOnDisk()
+        where !seen.contains(identifier) && mayErase(identifier) {
+            seen.insert(identifier)
+            all.append(store(forIdentifier: identifier))
         }
-        return stores
+        return all
+    }
+
+    /// Whether this process is allowed to erase the store with this identifier.
+    ///
+    /// Outside a scratch run, everything on disk is the user's and all of it is
+    /// in scope — that is exactly what "clear everything, in every island"
+    /// means, and why this enumerates from disk in the first place.
+    ///
+    /// Inside one, `fetchAllDataStoreIdentifiers` is answering the wrong
+    /// question. It enumerates WebKit's container, which is shared with the
+    /// copy of Surf the user has open, so the list includes the stores of
+    /// *their* islands. Clearing traces at quit is on by default, which made
+    /// every verification run that reached `applicationShouldTerminate` wipe
+    /// the caches, local storage and service workers of every site they have.
+    /// A scratch run may only erase what it made itself: its own home jar, or a
+    /// store it has instantiated this run — which, in a scratch run, is only
+    /// ever an island the run created or restored from its own session file.
+    private func mayErase(_ identifier: UUID) -> Bool {
+        guard SurfDefaults.isScratch else { return true }
+        return stores[identifier] != nil
     }
 
     /// Every identifier WebKit is holding storage for.
