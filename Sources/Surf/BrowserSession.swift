@@ -744,7 +744,13 @@ final class BrowserSession {
         deleteIsland(island)
     }
 
-    /// Signs one island out of everywhere, after asking.
+    /// Empties one island's cookie jar, after asking.
+    ///
+    /// Named for what it does rather than for what it costs you. "Sign out of
+    /// everything" described the consequence accurately and made a routine
+    /// tidy-up sound like a decision about your identity; the consequence
+    /// belongs in the warning, where there is room to be exact about it, and
+    /// the row that opens it should say plainly what it clears.
     ///
     /// The counts come from the summary the menu already built, rather than
     /// being recounted here, so the number in the warning is the number the
@@ -752,10 +758,9 @@ final class BrowserSession {
     /// have deleted a site's cookies from the same menu in between.
     ///
     /// Says so when the jar is shared, because then this is not only about this
-    /// island — and the island menu's header is the only other place that fact
-    /// appears. Somebody who made a second island to keep one login is exactly
+    /// island. Somebody who made a second island to keep one login is exactly
     /// the person who needs telling.
-    func requestSignOut(of island: Island, cookies: Int, sites: Int) async {
+    func requestClearCookies(of island: Island, cookies: Int, sites: Int) async {
         guard cookies > 0 else { return }
         let sharing = islandsSharingStore(with: island).map(\.name)
         let scope = sharing.isEmpty
@@ -766,7 +771,7 @@ final class BrowserSession {
             """
 
         let confirmed = Confirm.destructive(
-            "Sign out of everything in “\(island.name)”?",
+            "Clear cookies in “\(island.name)”?",
             """
             \(cookies) \(cookies == 1 ? "cookie" : "cookies") across \
             \(sites) \(sites == 1 ? "site" : "sites") will be erased. \(scope) \
@@ -774,7 +779,7 @@ final class BrowserSession {
 
             Caches and site settings are left alone.
             """,
-            action: "Sign Out"
+            action: "Clear Cookies"
         )
         guard confirmed else { return }
         await CookieStore.deleteAllCookies(in: island.dataStore)

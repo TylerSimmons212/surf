@@ -921,15 +921,38 @@ island picker eight points away would be two answers to one question. This one
 answers a different question — what is this island, and what is it holding —
 and most of that answer is lists, which is what a menu is for.
 
-It states what the island shares directly under its name. That sentence had
-nowhere to live before except a tooltip, which is a strange place to keep the
-answer to "am I signed in as me or as work right now?".
+The header is the island itself — its flag in its own colour, the way the
+sidebar draws it — and hovering it opens the editor. That is where Rename went:
+renaming is one of the three things that sheet does, and offering one of them
+flat while the other two were only reachable through it was a worse map than
+making the island the way in. The editor is also where an island says what it
+shares, which is the answer to "am I signed in as me or as work right now?" and
+had nowhere to live before except a tooltip.
+
+It opens *upward*. The button is the last thing at the foot of the sidebar, so a
+menu dropping from it runs out of room, at which point AppKit rescues it by
+throwing it out to one side — and a menu that belongs to a button ends up
+floating beside it.
+
+Rows carry the site's own favicon where there is one, from the cache only:
+`cachedIcon` never reaches the network, so a submenu of forty rows costs forty
+dictionary lookups rather than forty requests. The cost is that a site nobody
+has visited this run falls back to a globe, which is why the cookie list is
+mostly real icons for the sites you use and globes for the ad domains you
+didn't choose.
+
+Hovering a row shows, on its trailing edge, what clicking it will do: a trash
+can, an arrow, a return arrow. That is the one thing a standard menu item
+cannot be made to do — it has a single image slot and it is on the leading
+edge — so those rows draw themselves, and pay for it by owning their own
+highlight and accessibility. Only the rows inside the submenus are drawn this
+way; everything else is AppKit's own furniture.
 
 Cookies group by site rather than listing one per cookie, and stop at a dozen
 rows. The complete, searchable list already exists in the dev tools storage
 pane, so this is the fast path to the handful of sites you actually have an
 account with — which is why the order is most-cookies-first rather than
-alphabetical. Clicking a site signs this island out of it and leaves every
+alphabetical. Clicking a site clears its cookies in this island and leaves every
 other island alone.
 
 A site's row is not confirmed; signing out of everything is. The row states its
@@ -948,7 +971,16 @@ signs you half out.
 The tabs submenu is the one part that overlaps something else on screen, and it
 is there for the tabs that overlap nothing: a sticker's tab has no row anywhere
 in the sidebar, and the shelf is otherwise its only handle. So it leads with
-Pinned.
+Pinned, which is now the only thing marking those rows — there is one image slot
+per row and the favicon earns it.
+
+One trap worth knowing before adding an icon anywhere else: macOS 27 hides menu
+item *symbol* images by default. macOS 26 put an icon on every menu item and was
+disliked for it, so 27 reversed it and gave apps `preferredImageVisibility` to
+opt back in. It binds on the SDK rather than the running system, every symptom
+points at the image rather than at the policy, and ordinary images — favicons
+included — are unaffected. `MenuSupport.symbol` sets it, so every call site
+already has it.
 
 ### Privacy
 
