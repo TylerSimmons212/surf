@@ -140,7 +140,9 @@ struct URLPalette: View {
             // Critically damped enough not to wobble: a list of rows that
             // overshoots its height on every keystroke reads as loose.
             withAnimation(.snappy(duration: 0.22)) {
-                completions.update(for: value, isFocused: true)
+                completions.update(
+                    for: value, isFocused: true, in: session.currentIsland.id
+                )
             }
         }
     }

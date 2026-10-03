@@ -160,4 +160,55 @@ struct SurfDefaultsTests {
         })
         #expect(names.count == 200)
     }
+
+    // MARK: - The cookie jar
+
+    /// The same seam, for the hole that mattered more. A scratch run's home
+    /// island used to be WebKit's default store, which is the user's own jar —
+    /// `SURF_STATE_DIR` cannot redirect it, because it is WebKit's container
+    /// rather than one of our files.
+    @Test("Different directories name different cookie jars")
+    func separatesJars() {
+        let a = SurfDefaults.dataStoreID(forStateDirectory: "/tmp/surf-verify-state.aaa")
+        let b = SurfDefaults.dataStoreID(forStateDirectory: "/tmp/surf-verify-state.bbb")
+        #expect(a != b)
+    }
+
+    /// A run that restarts against the same directory has to find the jar it
+    /// left behind, or nothing can sign in and then check it stayed signed in.
+    @Test("The same directory always names the same jar")
+    func jarIsStable() {
+        #expect(
+            SurfDefaults.dataStoreID(forStateDirectory: "/tmp/one")
+                == SurfDefaults.dataStoreID(forStateDirectory: "/tmp/one")
+        )
+    }
+
+    /// Two ways the derivation could fail quietly, both pinned here.
+    ///
+    /// Falling through to the sentinel would make every scratch directory share
+    /// one jar. And an all-zero identifier makes `WKWebsiteDataStore` raise
+    /// rather than return nil, so it is refused upstream and the run degrades
+    /// to a non-persistent store — still isolated, but forgetting every cookie
+    /// at quit, which is a confusing way to discover a hash bug.
+    @Test("A jar is derived from the path, whatever the path looks like")
+    func jarIsAlwaysDerived() {
+        let awkward = [
+            "/tmp/a", "", "/", "/Users/x/.verify/run",
+            String(repeating: "z", count: 300), "/tmp/ünïcode/path",
+        ]
+        for path in awkward {
+            let id = SurfDefaults.dataStoreID(forStateDirectory: path)
+            #expect(id != SurfDefaults.zeroStoreID)
+            #expect(id != SurfDefaults.fallbackStoreID)
+        }
+    }
+
+    @Test("Similar paths do not collide on a jar either")
+    func jarsSpread() {
+        let ids = Set((0..<200).map {
+            SurfDefaults.dataStoreID(forStateDirectory: "/tmp/surf-verify-state.\($0)")
+        })
+        #expect(ids.count == 200)
+    }
 }

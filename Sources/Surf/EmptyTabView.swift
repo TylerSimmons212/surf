@@ -112,7 +112,9 @@ struct EmptyTabView: View {
             .frame(height: 26)
             .onChange(of: text) { _, value in
                 withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
-                    completions.update(for: value, isFocused: true)
+                    completions.update(
+                        for: value, isFocused: true, in: tab.islandID
+                    )
                 }
             }
             .onChange(of: session.focusAddressToken) { _, new in

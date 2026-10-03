@@ -876,6 +876,112 @@ The one shape this can't express is a window a page opened, which shares its
 opener's content controller: if the two sit on different sites and one is
 paused, whichever decided last decides for both.
 
+### Islands
+
+An island is a browsing profile: an identity, a cookie jar, and the things
+filed under it. Two islands are two `WKWebsiteDataStore`s, so a login in one is
+invisible to the other — which is what lets a work account and a personal
+account exist in the same browser at the same time.
+
+What belongs to an island, and what does not, is the whole of the model:
+
+| Per island | Shared by all of them |
+|---|---|
+| Tabs, groups, the pinned-sites shelf | Downloaded files, which all land in `~/Downloads` |
+| The closed-tab buffer behind `⌘⇧T` | Favicons, thumbnails, blocking rules |
+| Cookies, local storage, IndexedDB, caches | Every switch in Settings |
+| Browsing history, and so autocomplete | Passwords and passkeys |
+| The downloads list and its progress ring | |
+
+Passwords are the one real hole in the "two different people" story, and it is
+macOS's rather than ours: the keychain belongs to the system, so every island
+can reach it. Sign in on two islands and the site sees two strangers, but your
+keychain will autofill the same credentials into both. The island editor says
+so in small grey text, because someone who assumed otherwise would find out by
+being recognised somewhere they expected to be anonymous.
+
+History and downloads key on `Island.id` rather than on the data store, and
+that distinction only shows up in the case that made it necessary. Two islands
+may deliberately name the same jar — that is what "stay signed in" does when
+you create one — and they are still two islands: the jar is the one thing
+sharing is *about*, while what you did in an island is the island's own. A
+store identifier could not serve as the key anyway, since two islands can hold
+the same one.
+
+Each island's history is capped on its own rather than out of a shared budget.
+A shared one would let a busy island evict a quiet island's entries, which
+makes an island's address bar depend on browsing done somewhere it cannot see
+— the leak islands exist to prevent, arriving by the back door.
+
+#### The button at the foot of the sidebar
+
+A menu, not a card, and not a switcher. The dots beside it already switch
+islands and live inside the sidebar's own window; a second, different-looking
+island picker eight points away would be two answers to one question. This one
+answers a different question — what is this island, and what is it holding —
+and most of that answer is lists, which is what a menu is for.
+
+The header is the island itself — its flag in its own colour, the way the
+sidebar draws it — and hovering it opens the editor. That is where Rename went:
+renaming is one of the three things that sheet does, and offering one of them
+flat while the other two were only reachable through it was a worse map than
+making the island the way in. The editor is also where an island says what it
+shares, which is the answer to "am I signed in as me or as work right now?" and
+had nowhere to live before except a tooltip.
+
+It opens *upward*. The button is the last thing at the foot of the sidebar, so a
+menu dropping from it runs out of room, at which point AppKit rescues it by
+throwing it out to one side — and a menu that belongs to a button ends up
+floating beside it.
+
+Rows carry the site's own favicon where there is one, from the cache only:
+`cachedIcon` never reaches the network, so a submenu of forty rows costs forty
+dictionary lookups rather than forty requests. The cost is that a site nobody
+has visited this run falls back to a globe, which is why the cookie list is
+mostly real icons for the sites you use and globes for the ad domains you
+didn't choose.
+
+Hovering a row shows, on its trailing edge, what clicking it will do: a trash
+can, an arrow, a return arrow. That is the one thing a standard menu item
+cannot be made to do — it has a single image slot and it is on the leading
+edge — so those rows draw themselves, and pay for it by owning their own
+highlight and accessibility. Only the rows inside the submenus are drawn this
+way; everything else is AppKit's own furniture.
+
+Cookies group by site rather than listing one per cookie, and stop at a dozen
+rows. The complete, searchable list already exists in the dev tools storage
+pane, so this is the fast path to the handful of sites you actually have an
+account with — which is why the order is most-cookies-first rather than
+alphabetical. Clicking a site clears its cookies in this island and leaves every
+other island alone.
+
+A site's row is not confirmed; signing out of everything is. The row states its
+own scope and size before it is clicked, and the cost of being wrong is signing
+into one place again — while a confirmation on every row would make the menu
+useless for the one job it exists to do. What a row deletes is the exact set of
+cookies it counted, carried rather than re-derived, so it cannot widen.
+
+Reducing a cookie's domain to a site goes through `DomainName.registrable`, the
+same function the blocking shield displays, with one thing added: the leading
+dot comes off first. A cookie scoped to a domain is written `.github.com` and
+one scoped to a host `github.com`, so a real jar holds both — and without the
+strip the commonest shape in any jar is two rows for one site, each of which
+signs you half out.
+
+The tabs submenu is the one part that overlaps something else on screen, and it
+is there for the tabs that overlap nothing: a sticker's tab has no row anywhere
+in the sidebar, and the shelf is otherwise its only handle. So it leads with
+Pinned, which is now the only thing marking those rows — there is one image slot
+per row and the favicon earns it.
+
+One trap worth knowing before adding an icon anywhere else: macOS 27 hides menu
+item *symbol* images by default. macOS 26 put an icon on every menu item and was
+disliked for it, so 27 reversed it and gave apps `preferredImageVisibility` to
+opt back in. It binds on the SDK rather than the running system, every symptom
+points at the image rather than at the policy, and ordinary images — favicons
+included — are unaffected. `MenuSupport.symbol` sets it, so every call site
+already has it.
+
 ### Privacy
 
 Surf is private by default and keeps no browsing history. Settings (`⌘,`) has a
@@ -891,6 +997,14 @@ Privacy pane, with four switches at the heart of it:
 The guarantee is that caches and cookies are independent: clearing where you
 went never signs you out. `PrivacyPolicy` encodes that rule and the tests
 enforce it.
+
+These four are app-wide, and deliberately: a promise kept only for the island
+you happened to be standing in is not a promise, so clearing walks every
+island's store. The island menu adds the other direction — signing one island
+out, or one site in one island — and takes its scope from the same rule read
+backwards. It clears cookies and nothing else, because cookies are the sign-in
+half; widening it to local storage would smuggle "and throw away this island's
+site settings" into a click that says it is about logins.
 
 Each switch still explains itself, but behind an ⓘ rather than in a paragraph
 underneath. Printed under every row at once — which is how this started — the
@@ -1085,7 +1199,7 @@ sticker belongs to an island rather than to the app.
 |---|---|
 | `⌘T` | New tab |
 | `⌘W` | Close tab (the last one is replaced by a fresh tab) |
-| `⌘⇧T` | Reopen closed tab |
+| `⌘⇧T` | Reopen closed tab — the newest; the island menu lists the rest |
 | `⌘⇧]` / `⌘⇧[` | Next / previous tab |
 | `⌘1`–`⌘8` | Select tab by position |
 | `⌘9` | Select the last tab, once there are more than eight of them |
@@ -1298,7 +1412,7 @@ makes it unit-testable — the UI targets can't be.
 - `Sources/Surf/FaviconStore.swift` — favicon fetch, memory + disk cache
 - `Sources/Surf/URLPalette.swift` — the floating address bar
 - `Sources/Surf/SuggestionList.swift` — autocomplete dropdown and keyboard state
-- `Sources/Surf/HistoryStore.swift` — in-memory visit history
+- `Sources/Surf/HistoryStore.swift` — visit history, one bucket per island
 - `Sources/Surf/SettingsView.swift` — the Settings window
 - `Sources/Surf/Preferences.swift` — defaults keys and WebKit data clearing
 - `Sources/Surf/Appearance.swift` — maps the setting onto `NSAppearance`
@@ -1353,7 +1467,17 @@ makes it unit-testable — the UI targets can't be.
   differs from a working request in exactly one way
 - `Sources/SurfCore/DownloadOption.swift` — what a menu row says, from a format
   list or a manifest, so it reads the same either way
-- `Sources/Surf/DownloadMenu.swift` — the two pages behind the download button
+- `Sources/Surf/DownloadMenu.swift` — the download button, and the menu behind it
+- `Sources/Surf/MenuSupport.swift` — the view an `NSMenu` hangs from, and the
+  hold that stops the sidebar sliding out from under it
+- `Sources/Surf/IslandMenu.swift` — the island's face, and what it will say
+  about itself
+- `Sources/Surf/Confirm.swift` — one destructive alert, with Return bound to
+  Cancel so the dangerous button has to be aimed at
+- `Sources/SurfCore/CookieDomains.swift` — a jar collapsed to one row per site,
+  which is what somebody means by "sign out of GitHub"
+- `Sources/SurfCore/PersistedHistory.swift` — history on disk, per island, and
+  the migration from the flat file that predates them
 - `Sources/Surf/UpdateManager.swift` — weekly check, checksum + signature
   verification, atomic install
 - `Sources/SurfCore/BlockDomains.swift` — registrable domains, third-party, and
@@ -1436,7 +1560,13 @@ checker, so the path exercised is the one `DevToolsBridge` uses.
 - A back/forward menu on long-press
 - Search engine preference (DuckDuckGo is the default; Google is implemented)
 - Moving a tab between islands, which nothing can do yet — it is what "Move to
-  Island" and "Open Link in New Island" are both waiting on
+  Island" and "Open Link in New Island" are both waiting on. Note that `Tab`
+  now carries its island as a `let`, which is safe because a tab is never
+  re-filed today and promoting a mini window puts it back in the island it
+  opened in. Whoever builds this should follow what the cross-island mini
+  window already does — load the page again as the island you picked, rather
+  than carrying a live view across — which means a new tab rather than a
+  mutable field
 - Cross-origin iframes, which are a separate document nothing in the page can
   reach into — theming one means running the whole pass inside it
 - The tab list on `reorderable` / `reorderContainer`, as the sticker shelf

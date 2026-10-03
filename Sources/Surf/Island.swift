@@ -196,7 +196,7 @@ final class Island: Identifiable {
     /// structurally is that there's no way to make one without an island to
     /// make it in.
     func makeTab(configuration: WKWebViewConfiguration? = nil) -> Tab {
-        Tab(dataStore: dataStore, configuration: configuration)
+        Tab(dataStore: dataStore, islandID: id, configuration: configuration)
     }
 
     func insert(_ tab: Tab, at index: Int) {

@@ -159,6 +159,15 @@ final class BrowserSession {
         let claimed = Set(built.compactMap(\.dataStoreID))
         Task { @MainActor in await IslandStores.shared.collectTombstones(sparing: claimed) }
 
+        // History is keyed by island, and the file may predate that — in which
+        // case its entries belong to home, the only island that existed when
+        // it was written. Loaded here rather than lazily on first use because
+        // this is the first moment anybody knows which island is home and
+        // which ones still exist.
+        HistoryStore.shared.load(
+            home: homeIsland.id, live: Set(built.map(\.id))
+        )
+
         startReclaimTimer()
 
         // Quitting doesn't give the debounced save time to fire, so flush.
@@ -702,12 +711,13 @@ final class BrowserSession {
 
     /// Asks first, because this cannot be undone.
     ///
-    /// A confirmation on a destructive menu item is ordinary caution; here it
-    /// is also load-bearing. SwiftUI rebuilds this menu whenever the island
-    /// list changes, and a click arriving during that rebuild can be dispatched
-    /// to a neighbouring item — observed, not theorised, while testing this
-    /// very menu. Every other item in it is harmless to trigger by accident.
-    /// This one throws away every login in an island.
+    /// Irreversibility is the whole reason. It used to also be defensive about
+    /// a SwiftUI hazard — the menu was rebuilt whenever the island list
+    /// changed, and a click arriving mid-rebuild could be dispatched to a
+    /// neighbouring item, observed rather than theorised. That reason is gone:
+    /// the island menu is a real `NSMenu`, built once per press from a snapshot
+    /// and tracking modally, so nothing can move a row under a click. What
+    /// survives is that this throws away every login in an island.
     func requestDeleteIsland(_ island: Island) {
         guard !island.isHome, islands.count > 1 else { return }
 
@@ -716,27 +726,63 @@ final class BrowserSession {
         // is the easiest island to want to throw away, and a sentence promising
         // to erase that login is what stops people doing it.
         let sharing = islandsSharingStore(with: island)
-        let alert = NSAlert()
-        alert.messageText = "Delete “\(island.name)”?"
-        alert.informativeText = sharing.isEmpty
-            ? """
-            Its tabs will close, and every cookie, login and site setting that \
-            belongs to this island will be erased. This cannot be undone.
-            """
-            : """
-            Its tabs and pinned sites will go. Your logins stay — this island \
-            shares them with \(IslandLayout.nameList(sharing.map(\.name))), where you'll \
-            still be signed in.
-            """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: deleteTitle(for: island))
-        alert.addButton(withTitle: "Cancel")
-        // So Return cancels and the destructive button has to be aimed at.
-        alert.buttons.last?.keyEquivalent = "\r"
-        alert.buttons.first?.keyEquivalent = ""
-
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let confirmed = Confirm.destructive(
+            "Delete “\(island.name)”?",
+            sharing.isEmpty
+                ? """
+                Its tabs will close, and every cookie, login and site setting \
+                that belongs to this island will be erased. This cannot be undone.
+                """
+                : """
+                Its tabs and pinned sites will go. Your logins stay — this island \
+                shares them with \(IslandLayout.nameList(sharing.map(\.name))), where \
+                you'll still be signed in.
+                """,
+            action: deleteTitle(for: island)
+        )
+        guard confirmed else { return }
         deleteIsland(island)
+    }
+
+    /// Empties one island's cookie jar, after asking.
+    ///
+    /// Named for what it does rather than for what it costs you. "Sign out of
+    /// everything" described the consequence accurately and made a routine
+    /// tidy-up sound like a decision about your identity; the consequence
+    /// belongs in the warning, where there is room to be exact about it, and
+    /// the row that opens it should say plainly what it clears.
+    ///
+    /// The counts come from the summary the menu already built, rather than
+    /// being recounted here, so the number in the warning is the number the
+    /// menu was showing a moment ago. Recounting would also race: the user can
+    /// have deleted a site's cookies from the same menu in between.
+    ///
+    /// Says so when the jar is shared, because then this is not only about this
+    /// island. Somebody who made a second island to keep one login is exactly
+    /// the person who needs telling.
+    func requestClearCookies(of island: Island, cookies: Int, sites: Int) async {
+        guard cookies > 0 else { return }
+        let sharing = islandsSharingStore(with: island).map(\.name)
+        let scope = sharing.isEmpty
+            ? "“\(island.name)” will be signed out everywhere it was signed in."
+            : """
+            This jar is shared, so \(IslandLayout.nameList(sharing)) \
+            \(sharing.count == 1 ? "is" : "are") signed out too.
+            """
+
+        let confirmed = Confirm.destructive(
+            "Clear cookies in “\(island.name)”?",
+            """
+            \(cookies) \(cookies == 1 ? "cookie" : "cookies") across \
+            \(sites) \(sites == 1 ? "site" : "sites") will be erased. \(scope) \
+            This cannot be undone.
+
+            Caches and site settings are left alone.
+            """,
+            action: "Clear Cookies"
+        )
+        guard confirmed else { return }
+        await CookieStore.deleteAllCookies(in: island.dataStore)
     }
 
     /// Deletes an island and everything it knows about you.
@@ -776,6 +822,10 @@ final class BrowserSession {
         }
         island.replaceTabs(with: [])
         island.recentlyClosed.removeAll()
+        // Its trail goes with it. Keyed by island id, so nothing else can be
+        // reached by mistake even when the jar it browsed with is shared and
+        // survives.
+        HistoryStore.shared.forget(island: island.id)
         islands.remove(at: index)
         saveNow()
 
@@ -1163,10 +1213,17 @@ final class BrowserSession {
     }
 
     /// Puts back the most recently closed tab, with its history if it had any.
-    func reopenClosedTab() {
+    func reopenClosedTab() { reopenClosedTab(at: 0) }
+
+    /// Puts back one closed tab by its position in the buffer.
+    ///
+    /// `⌘⇧T` is this with index 0 and always was; the index exists because the
+    /// island menu lists the buffer, and picking the fourth row has to reopen
+    /// the fourth tab rather than the newest one.
+    func reopenClosedTab(at index: Int) {
         let island = currentIsland
-        guard !island.recentlyClosed.isEmpty else { return }
-        let persisted = island.recentlyClosed.removeFirst()
+        guard island.recentlyClosed.indices.contains(index) else { return }
+        let persisted = island.recentlyClosed.remove(at: index)
         let tab = island.makeTab()
         tab.session = self
         tab.prepareRestore(from: persisted)
@@ -1174,6 +1231,17 @@ final class BrowserSession {
         island.insert(tab, at: insertAt)
         setSelection(to: tab.id)
         scheduleSave()
+    }
+
+    /// Forgets an island's closed tabs.
+    ///
+    /// Memory only, and no save: the buffer is deliberately never written to
+    /// the session file — see `Island.recentlyClosed` — so there is nothing on
+    /// disk to catch up. Which is also what makes this worth offering. The
+    /// buffer holds addresses of pages you closed, it survives for as long as
+    /// the app runs, and until now the only way to empty it was to quit.
+    func forgetClosedTabs(in island: Island) {
+        island.recentlyClosed.removeAll()
     }
 
     // MARK: - Split

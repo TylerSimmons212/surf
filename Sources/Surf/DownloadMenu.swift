@@ -23,6 +23,10 @@ import SwiftUI
 /// Both are fixed here. The hold is taken for as long as the menu is tracking,
 /// so the sidebar cannot collapse underneath it even though `NSMenu` would have
 /// survived that on its own.
+///
+/// The anchor and that hold now live in `MenuSupport.swift`, because the island
+/// menu wants the same three things and the hold has to be taken in exactly one
+/// way. This is still the file that records why any of it exists.
 struct DownloadMenuButton: View {
     let tab: Tab
     let hold: SidebarHold
@@ -69,27 +73,12 @@ struct DownloadMenuButton: View {
     }
 
     private func show(_ options: [DownloadOption], duration: Double?) {
-        guard let view = anchor.view, view.window != nil else {
-            // No menu to hang anywhere. Downloading is still the thing that was
-            // asked for, so it happens rather than nothing happening.
-            DownloadManager.shared.downloadMedia(from: tab)
-            return
-        }
-
-        // Held across the whole of tracking. `popUp` runs its own event loop and
-        // does not return until the menu closes, which is what makes the pair of
-        // calls around it correct rather than hopeful — there is no window in
-        // which the menu is up and the hold is not.
-        hold.set(Self.holdReason, true)
-        defer { hold.set(Self.holdReason, false) }
-
-        menu(for: options, duration: duration).popUp(
-            positioning: nil,
-            // The view is unflipped, so zero is its bottom edge. A few points
-            // below that leaves the gap a menu normally has from its button.
-            at: NSPoint(x: 0, y: -5),
-            in: view
-        )
+        let shown = menu(for: options, duration: duration)
+            .popUp(below: anchor, holding: hold, reason: Self.holdReason)
+        guard !shown else { return }
+        // No menu to hang anywhere. Downloading is still the thing that was
+        // asked for, so it happens rather than nothing happening.
+        DownloadManager.shared.downloadMedia(from: tab)
     }
 
     // MARK: - Building it
@@ -107,7 +96,7 @@ struct DownloadMenuButton: View {
         // because it is the right answer, so stating the resolution, the codec
         // and the size is three facts offered to someone who has already
         // decided not to care. Anyone who does care is one row further down.
-        add("Download Video", to: menu) {
+        menu.addAction("Download Video") {
             DownloadManager.shared.downloadMedia(from: tab)
         }
 
@@ -115,19 +104,17 @@ struct DownloadMenuButton: View {
         // submenu offering to choose is a submenu that wastes a hover to tell
         // you there was never a decision.
         if videos.count > 1 {
-            let choose = NSMenuItem(title: "Choose Quality", action: nil, keyEquivalent: "")
-            let ladder = NSMenu()
-            for option in videos {
-                // The height and the size, which are the two halves of the
-                // decision. Not the codec: it is the engine's problem, it has
-                // already guaranteed the result will play, and `avc1.64002a`
-                // was never a sentence anyone wanted to read.
-                add(option.rowTitle(duration: duration), to: ladder) {
-                    DownloadManager.shared.downloadMedia(from: tab, choosing: option)
+            menu.addSubmenu("Choose Quality") { ladder in
+                for option in videos {
+                    // The height and the size, which are the two halves of the
+                    // decision. Not the codec: it is the engine's problem, it
+                    // has already guaranteed the result will play, and
+                    // `avc1.64002a` was never a sentence anyone wanted to read.
+                    ladder.addAction(option.rowTitle(duration: duration)) {
+                        DownloadManager.shared.downloadMedia(from: tab, choosing: option)
+                    }
                 }
             }
-            choose.submenu = ladder
-            menu.addItem(choose)
         }
 
         if let sound {
@@ -136,64 +123,10 @@ struct DownloadMenuButton: View {
             // offered — the best one, because sound is a fraction of a video's
             // size and there is nothing to save by taking less — so its size is
             // not a number anybody is comparing against anything.
-            add("Audio Only", to: menu) {
+            menu.addAction("Audio Only") {
                 DownloadManager.shared.downloadMedia(from: tab, choosing: sound)
             }
         }
         return menu
-    }
-
-    private func add(_ title: String, to menu: NSMenu, _ run: @escaping () -> Void) {
-        let item = NSMenuItem(
-            title: title, action: #selector(MenuAction.fire), keyEquivalent: ""
-        )
-        let action = MenuAction(run)
-        item.target = action
-        // `target` is weak, so the only thing keeping the closure alive is this.
-        // Without it every item in the menu does nothing, which is a quiet
-        // failure rather than a crash.
-        item.representedObject = action
-        menu.addItem(item)
-    }
-}
-
-/// Carries a closure into `NSMenuItem`, which wants a target and a selector.
-private final class MenuAction: NSObject {
-    private let run: () -> Void
-
-    init(_ run: @escaping () -> Void) {
-        self.run = run
-        super.init()
-    }
-
-    @objc func fire() { run() }
-}
-
-/// A reference to the `NSView` a menu is positioned in.
-@MainActor
-private final class MenuAnchor {
-    weak var view: NSView?
-}
-
-/// Puts a real view behind a SwiftUI button, because `NSMenu` is positioned in
-/// one and SwiftUI does not hand its own out.
-private struct MenuAnchorView: NSViewRepresentable {
-    let anchor: MenuAnchor
-
-    func makeNSView(context: Context) -> NSView {
-        let view = PassThroughView()
-        anchor.view = view
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        anchor.view = nsView
-    }
-
-    /// Never takes a click. It sits over the same rectangle as the button, and
-    /// an ordinary `NSView` hit-tests to itself, which would swallow every press
-    /// the button exists for.
-    private final class PassThroughView: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 }

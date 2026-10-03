@@ -441,6 +441,76 @@ struct ContentView: View {
         openDevToolsIfAsked(on: primary)
         enterFocusIfAsked(on: primary)
         downloadMediaIfAsked(on: primary)
+        dumpIslandMenuIfAsked(on: primary)
+    }
+
+    /// Dev affordance: `SURF_ISLAND_MENU=1` writes the island menu's rows to
+    /// stderr once the page has loaded and set its cookies. `=2` also proves
+    /// the history partition, by making a second island and asking both of them
+    /// the same question.
+    ///
+    /// The menu is only reachable by clicking, and `NSMenu` tracks modally, so
+    /// there is no way to read it back from a script — which left the one thing
+    /// unit tests cannot cover, the assembled list, provable only by a human
+    /// describing three submenus.
+    ///
+    /// The partition needs a driver for a different reason: it is an *absence*.
+    /// Nobody can confirm by looking at an address bar that a page they visited
+    /// in another island is not being offered, because not being offered looks
+    /// exactly like not having typed enough of it.
+    private func dumpIslandMenuIfAsked(on tab: Tab) {
+        let want = ProcessInfo.processInfo.environment["SURF_ISLAND_MENU"]
+        guard want == "1" || want == "2" else { return }
+        Task { @MainActor in
+            // Waits for the load, because a page's cookies are the interesting
+            // half of what the menu reports and they arrive with it.
+            for _ in 0..<40 {
+                try? await Task.sleep(for: .milliseconds(500))
+                if tab.mode == .browsing, !tab.isLoading { break }
+            }
+            try? await Task.sleep(for: .seconds(1))
+            await dumpIslandMenu(for: session)
+            guard want == "2" else { return }
+            // Long enough for a download started by `SURF_DOWNLOAD` to have
+            // registered, so the two partitions can be reported together.
+            for _ in 0..<20 {
+                guard DownloadManager.shared.items.isEmpty else { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            provePartitions(on: tab)
+        }
+    }
+
+    /// Asks two islands the same question. One must answer, the other must not.
+    ///
+    /// Created rather than switched to: a fresh island has never browsed and
+    /// has saved nothing, so whatever it answers is entirely down to the
+    /// partition rather than to anything it did.
+    private func provePartitions(on tab: Tab) {
+        let here = session.currentIsland
+        let other = session.createIsland(name: "Probe")
+
+        if let host = tab.currentURL.flatMap(URL.init(string:))?.host {
+            // A prefix rather than the whole host, so this exercises ranking
+            // the way typing does instead of asking for an exact match.
+            let query = String(host.prefix(4))
+            let mine = HistoryStore.shared.suggestions(for: query, in: here.id).count
+            let theirs = HistoryStore.shared.suggestions(for: query, in: other.id).count
+            debugLog("island history: \(here.name)=\(mine) \(other.name)=\(theirs) for '\(query)'")
+            debugLog("island history: partitioned=\(mine > 0 && theirs == 0)")
+        } else {
+            debugLog("island history: no address to search for")
+        }
+
+        let manager = DownloadManager.shared
+        let mine = manager.items(in: here.id).count
+        let theirs = manager.items(in: other.id).count
+        debugLog("island downloads: \(here.name)=\(mine) \(other.name)=\(theirs)")
+        guard mine > 0 || theirs > 0 else {
+            debugLog("island downloads: nothing saved this run — set SURF_DOWNLOAD=1 too")
+            return
+        }
+        debugLog("island downloads: partitioned=\(mine > 0 && theirs == 0)")
     }
 
     /// Dev affordance: `SURF_FOCUS=1` alongside `SURF_URL` enters Focus on

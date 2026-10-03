@@ -21,20 +21,38 @@ struct MediaPlayerStack: View {
     private let rowHeight: CGFloat = 54
     private let rowSpacing: CGFloat = 4
 
-    /// Audible tabs at rest; everything holding media once the stack is
-    /// fanned open.
+    /// The front row: whatever is making a noise, or whatever is holding media
+    /// when nothing is.
     ///
-    /// The collapsed list is the one that interrupts you, so it only carries
-    /// what is making a noise. A muted video is still findable — it is just
-    /// behind the gesture that means "show me the rest" rather than in front
-    /// of somebody who was reading an article.
-    private var tabs: [Tab] {
-        isExpanded ? session.allMediaTabs : session.mediaTabs
+    /// Audible first, because the collapsed row is the one that interrupts you
+    /// and a muted autoplay ad should not take the slot from a podcast. But
+    /// something has to be drawn whenever media exists at all. This row is the
+    /// only way to reach the transport controls *and* the download menu, so a
+    /// card that only an audible tab can conjure leaves a video you are
+    /// deliberately watching muted with no handle anywhere in the app.
+    private var primary: Tab? {
+        let audible = session.mediaTabs
+        return audible.isEmpty ? session.silentMediaTabs.first : audible.first
+    }
+
+    /// Everything else holding media, audible or not.
+    ///
+    /// Taken from the full list rather than from whatever the collapsed row was
+    /// drawn from, which is the fix for a hole that swallowed the fan-out
+    /// entirely: `others` used to be the audible list minus its own first
+    /// element, so with one tab playing and one muted it was empty — the hover
+    /// guard below saw nothing to expand, and the muted tab could not be
+    /// reached however long you hovered. These cards are always built, and
+    /// `cardOpacity` is what hides them, so revealing them is an animation
+    /// rather than a card springing into being.
+    private var others: [Tab] {
+        guard let primary else { return [] }
+        return session.allMediaTabs.filter { $0.id != primary.id }
     }
 
     var body: some View {
-        if let primary = tabs.first {
-            let others = Array(tabs.dropFirst())
+        if let primary {
+            let others = self.others
 
             VStack(spacing: 0) {
                 ZStack(alignment: .bottom) {

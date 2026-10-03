@@ -8,13 +8,18 @@ struct DownloadsList: View {
     private var manager: DownloadManager { DownloadManager.shared }
 
     var body: some View {
-        VStack(spacing: 0) {
+        // This island's downloads. Read once rather than per row, since the
+        // filter walks the whole list.
+        let island = session.currentIsland.id
+        let items = manager.items(in: island)
+
+        return VStack(spacing: 0) {
             HStack {
                 Text("Downloads")
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
-                if manager.items.contains(where: { !$0.isActive }) {
-                    Button("Clear") { manager.clearFinished() }
+                if items.contains(where: { !$0.isActive }) {
+                    Button("Clear") { manager.clearFinished(in: island) }
                         .buttonStyle(.plain)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -27,7 +32,7 @@ struct DownloadsList: View {
 
             ScrollView {
                 LazyVStack(spacing: 1) {
-                    ForEach(manager.items) { item in
+                    ForEach(items) { item in
                         DownloadRow(item: item, session: session)
                     }
                 }

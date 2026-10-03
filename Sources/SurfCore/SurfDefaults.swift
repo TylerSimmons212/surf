@@ -45,6 +45,60 @@ public enum SurfDefaults {
     /// Whether this process is running against a scratch state directory.
     public static var isScratch: Bool { scratchDirectory != nil }
 
+    /// The cookie jar a scratch run's home island browses with, or nil outside
+    /// one.
+    ///
+    /// The second hole of exactly the kind this file was written for, and a
+    /// worse one. The home island names WebKit's *default* data store on
+    /// purpose — it is the jar Surf has been filling since before islands
+    /// existed, and there is no supported way to move cookies out of it. But
+    /// `SURF_STATE_DIR` cannot redirect that store, because it is WebKit's own
+    /// container rather than one of our files. So a scratch run's home island
+    /// was the real one: it read the user's cookies, and anything offering to
+    /// delete them was offering to delete theirs.
+    ///
+    /// Naming an identified store instead costs nothing. Nothing persisted
+    /// changes — `PersistedIsland.dataStoreID` stays nil for home, as it must
+    /// — and the redirection is entirely at runtime, in `IslandStores`.
+    public static var scratchDataStoreID: UUID? {
+        scratchDirectory.map(dataStoreID(forStateDirectory:))
+    }
+
+    /// A data store identifier of this state directory's own.
+    ///
+    /// Derived rather than random, for the same reason `suiteName` is: a run
+    /// that restarts has to find the jar it left behind, or no test can sign in
+    /// and then check it is still signed in.
+    public static func dataStoreID(forStateDirectory path: String) -> UUID {
+        // Sixty-four bits of digest, repeated to fill the hundred and
+        // twenty-eight a UUID wants. Not a version-4 UUID and it does not need
+        // to be: WebKit treats the identifier as a name, and the only
+        // properties required are that it parses and that it is stable.
+        let digest = Self.digest(path)
+        let half = String(repeating: "0", count: max(0, 16 - digest.count))
+            + digest.suffix(16)
+        let hex = Array(half + half)
+        func group(_ start: Int, _ length: Int) -> String {
+            String(hex[start..<(start + length)])
+        }
+        let text = [
+            group(0, 8), group(8, 4), group(12, 4), group(16, 4), group(20, 12),
+        ].joined(separator: "-")
+        // An all-zero identifier makes `WKWebsiteDataStore(forIdentifier:)`
+        // raise rather than return nil, so it is refused upstream and would
+        // degrade the run to a non-persistent store. Still isolated, but
+        // silently forgetful, so the sentinel keeps it persistent.
+        guard let id = UUID(uuidString: text), id != zeroStoreID else { return fallbackStoreID }
+        return id
+    }
+
+    static let zeroStoreID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    /// Only reachable from a digest of all zeros, which no real path produces.
+    static let fallbackStoreID = UUID(
+        uuidString: "5c7a7c40-0000-4000-8000-000000000001"
+    )!
+
     private static var scratchDirectory: String? {
         guard let override = ProcessInfo.processInfo.environment["SURF_STATE_DIR"],
               !override.isEmpty

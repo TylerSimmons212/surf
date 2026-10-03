@@ -66,7 +66,18 @@ public struct StorageCookie: Sendable, Equatable, Identifiable {
 
     /// Domain, path and name together — the triple that actually identifies a
     /// cookie. Two cookies can share a name and be entirely different things.
-    public var id: String { "\(domain)\(path)|\(name)" }
+    public var id: String { Self.identity(domain: domain, path: path, name: name) }
+
+    /// The same key, from the three fields alone.
+    ///
+    /// Spelled once and used from both ends. A batched delete has to match
+    /// WebKit's own `HTTPCookie` objects against a set of these, and if it
+    /// built the key with its own copy of the format string the two could drift
+    /// — at which point the delete silently matches nothing and signing out of
+    /// a site quietly does nothing at all.
+    public static func identity(domain: String, path: String, name: String) -> String {
+        "\(domain)\(path)|\(name)"
+    }
 
     public init(
         name: String, value: String, domain: String, path: String = "/",

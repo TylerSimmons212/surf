@@ -141,6 +141,17 @@ struct IslandEditorSheet: View {
         if keepsLogins, let source {
             return "Signed in as \(source.name). Its own tabs, its own shelf."
         }
+        // An island that already shares a jar has no `source` — that is only
+        // set while this sheet is the one making it — so every island created
+        // with "stay signed in" was being told "its own shore", which is the
+        // exact opposite of true, on the one screen devoted to explaining what
+        // it is.
+        //
+        // It is also the only place that fact is now stated at rest. The island
+        // menu's header used to carry it and no longer does, and this sheet is
+        // what that header opens.
+        let sharing = session.islandsSharingStore(with: island).map(\.name)
+        if !sharing.isEmpty { return IslandLayout.sharingLine(with: sharing) }
         return "Its own shore. Nothing washes over from the others."
     }
 

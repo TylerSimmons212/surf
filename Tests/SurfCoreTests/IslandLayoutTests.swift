@@ -266,4 +266,23 @@ struct IslandLayoutTests {
                 == [loose]
         )
     }
+
+    // MARK: - What an island shares
+
+    /// The sentence the island menu's header is for. It appears directly under
+    /// the island's name every time the menu opens, so it has to be true and
+    /// readable at none, one and several sharers.
+    @Test("An island sharing nothing says so without naming anyone")
+    func sharingLineAlone() {
+        #expect(IslandLayout.sharingLine(with: []) == "Signed in on its own")
+    }
+
+    @Test("An island sharing a jar names who with")
+    func sharingLineNamed() {
+        #expect(IslandLayout.sharingLine(with: ["Personal"]) == "Shares logins with Personal")
+        #expect(
+            IslandLayout.sharingLine(with: ["Home", "Work", "Play"])
+                == "Shares logins with Home, Work and Play"
+        )
+    }
 }

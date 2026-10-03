@@ -213,14 +213,38 @@ final class Tab: NSObject, Identifiable {
     /// user's main identity at some arbitrary moment an hour later.
     @ObservationIgnored let dataStore: WKWebsiteDataStore
 
+    /// The island this tab was made in.
+    ///
+    /// Carried rather than searched for, and the difference is a whole class of
+    /// tab. `BrowserSession.island(holding:)` walks `island.tabs`, and a
+    /// mini-window tab is deliberately absent from that list — "the sidebar
+    /// draws `island.tabs`, and this is not in it" is the entire mechanism of
+    /// the feature. So the search answers nil for a tab that browses, fires
+    /// `didFinish`, and has every right to be recorded against the island whose
+    /// cookies it is using.
+    ///
+    /// Safe as a `let` because `Island.makeTab` is the only place a `Tab` is
+    /// ever constructed, and a tab never changes island: mini-window promotion
+    /// files one back into the island it opened in, which is this one. If
+    /// "Move to Island" is ever built, note that the cross-island mini-window
+    /// path already shows the design's answer — reload into the new island
+    /// rather than carry a live view across — and that means a new tab with a
+    /// new id rather than a mutation here.
+    @ObservationIgnored let islandID: UUID
+
     /// `configuration` is non-nil only when WebKit hands us one for a popup or
     /// `target="_blank"` link — those must use the configuration WebKit supplies.
-    init(dataStore: WKWebsiteDataStore, configuration: WKWebViewConfiguration? = nil) {
+    init(
+        dataStore: WKWebsiteDataStore,
+        islandID: UUID,
+        configuration: WKWebViewConfiguration? = nil
+    ) {
         // WebKit's configuration for a popup already carries the opener's
         // store, by construction. Adopt that rather than the island's, so that
         // waking this tab later reproduces exactly what WebKit linked it to
         // rather than something merely equivalent.
         self.dataStore = configuration?.websiteDataStore ?? dataStore
+        self.islandID = islandID
         providedConfiguration = configuration
 
         super.init()
@@ -1514,8 +1538,8 @@ final class Tab: NSObject, Identifiable {
                     self?.pageTitle = webView.title ?? ""
                     self?.session?.scheduleSave()
                     // Titles arrive after didFinish, so backfill the entry.
-                    if let url = webView.url, let title = webView.title {
-                        HistoryStore.shared.updateTitle(title, for: url)
+                    if let self, let url = webView.url, let title = webView.title {
+                        HistoryStore.shared.updateTitle(title, for: url, in: self.islandID)
                     }
                 }
             },
@@ -2527,7 +2551,7 @@ extension Tab: WKNavigationDelegate {
         scheduleTopColorSampling()
         scheduleThemeSynthesis()
         if let url = webView.url {
-            HistoryStore.shared.record(url: url, title: webView.title ?? "")
+            HistoryStore.shared.record(url: url, title: webView.title ?? "", in: islandID)
         }
         scheduleAINaming()
         scheduleFocusDetection()

@@ -1253,7 +1253,12 @@ private struct SidebarMediaSection: View {
     let hold: SidebarHold
 
     var body: some View {
-        let mediaTabs = session.mediaTabs
+        // Every tab holding media, not just the audible ones. The stack decides
+        // for itself which row goes in front; this only decides whether there
+        // is anything to draw at all, and gating it on audibility meant a muted
+        // video produced no card — and therefore no transport controls and no
+        // download button — with nothing on screen left to hover.
+        let mediaTabs = session.allMediaTabs
         Group {
             if !mediaTabs.isEmpty {
                 MediaPlayerStack(session: session, hold: hold)
