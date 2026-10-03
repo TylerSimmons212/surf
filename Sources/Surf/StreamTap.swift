@@ -233,6 +233,15 @@ enum StreamTap {
           const endsWith = (suffix) => host === suffix || host.endsWith('.' + suffix);
           const isYouTube = endsWith('youtube.com') || endsWith('youtube-nocookie.com');
           if (isYouTube) {
+            // YouTube changes video without a page load; a request from before
+            // the click is another video's. Late arrivals must not land.
+            let generation = 0;
+            try {
+              window.addEventListener('yt-navigate-start', () => {
+                generation += 1;
+                abr = null;
+              }, true);
+            } catch (error) { /* no window to listen on */ }
             try {
               const native = window.fetch;
               window.fetch = function (input, init) {
@@ -244,8 +253,9 @@ enum StreamTap {
                     const method = String((init && init.method)
                       || (asRequest && asRequest.method) || 'GET').toUpperCase();
                     if (method === 'POST') {
+                      const madeIn = generation;
                       const take = (bytes) => {
-                        if (abr || !bytes || !bytes.length) { return; }
+                        if (abr || madeIn !== generation || !bytes || !bytes.length) { return; }
                         let text = '';
                         for (let i = 0; i < bytes.length; i++) {
                           text += String.fromCharCode(bytes[i]);
